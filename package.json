@@ -1,0 +1,15 @@
+{
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "viem": "^2.55.19"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.12"
+  },
+  "type": "module",
+  "scripts": {
+    "host": "tsx src/host.ts",
+    "rent": "tsx src/guest.ts",
+    "faucet": "tsx src/faucet.ts"
+  }
+}
