@@ -21,4 +21,4 @@ identity pseudonym. After each job a Groth16 proof is generated **and verified i
 guest's browser**. Roadmap: Semaphore on-chain verifier, Brevis ZK coprocessor,
 Phala TEE confidential inference, zkML proof-of-inference.
 
-## Run it
+Built with monskills on Monad testnet. *Every token is a tip.*
