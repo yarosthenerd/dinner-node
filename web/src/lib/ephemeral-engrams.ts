@@ -7,7 +7,6 @@
  * Spec: https://plur.ai/spec.html (v2.1)
  */
 
-import { nanoid } from 'nanoid';
 
 export type EngramType = 
   | 'behavioral'
@@ -71,7 +70,7 @@ function generateSecureNonce(): string {
   return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function createSessionBinding(jobId: string, nonce: string): Promise<string> {
+export async function createSessionBinding(jobId: string, nonce: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(`${jobId}:${nonce}:${Date.now()}`);
   const hashBuffer = await crypto.subtle.digest('SHA-256', data);
@@ -91,7 +90,7 @@ function generateEngramId(): string {
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
-  const unique = nanoid(3);
+  const unique = Math.random().toString(36).slice(2, 5);
   return `ENG-${year}-${month}${day}-${unique}`;
 }
 
