@@ -1,0 +1,2 @@
+@semaphore-protocol/contracts/=node_modules/@semaphore-protocol/contracts/contracts/
+poseidon-solidity/=node_modules/poseidon-solidity/
