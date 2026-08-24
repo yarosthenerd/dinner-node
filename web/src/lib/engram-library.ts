@@ -1,4 +1,3 @@
-// web/src/lib/engram-library.ts
 /**
  * Engram Library Infrastructure
  * 
@@ -8,14 +7,6 @@
 
 import type { Engram, EngramType } from './ephemeral-engrams';
 
-// ============================================================================
-// COMMUNITY TEMPLATE LIBRARY
-// ============================================================================
-
-/**
- * Pre-defined community behavioral templates
- * These are anonymous, privacy-preserving patterns
- */
 export const COMMUNITY_TEMPLATES: Array<{
   id: string;
   name: string;
@@ -72,7 +63,7 @@ export const COMMUNITY_TEMPLATES: Array<{
     description: 'Aggressively remove all PII before sending to provider',
     type: 'behavioral',
     domain: 'ai/privacy',
-    statement: 'Before processing any request, remove or generalize all personally identifiable information including names, specific addresses, phone numbers, email addresses, and unique identifiers. Replace with generic terms like "user" or "location".',
+    statement: 'Before processing any request, remove or generalize all personally identifiable information including names, specific addresses, phone numbers, email addresses, and unique identifiers. Replace with generic terms like user or location.',
     tags: ['privacy', 'pii', 'sanitization'],
     rationale: 'Privacy-first approach prevents data leakage to inference providers'
   },
@@ -88,14 +79,10 @@ export const COMMUNITY_TEMPLATES: Array<{
   }
 ];
 
-/**
- * Get a community template by ID
- */
-export function getCommunityTemplate(id: string): Engram | null {
+export function getCommunityTemplate(id: string): Partial<Engram> | null {
   const template = COMMUNITY_TEMPLATES.find(t => t.id === id);
   if (!template) return null;
   
-  // Convert template to engram format (without session binding)
   return {
     id: template.id,
     version: 2,
@@ -106,25 +93,13 @@ export function getCommunityTemplate(id: string): Engram | null {
     rationale: template.rationale,
     tags: template.tags,
     domain: template.domain,
-    // No session binding yet - will be added when stored
-  } as Engram;
+  };
 }
 
-/**
- * Get all community template IDs
- */
 export function getCommunityTemplateIds(): string[] {
   return COMMUNITY_TEMPLATES.map(t => t.id);
 }
 
-// ============================================================================
-// ENGRAM UPLOAD/IMPORT
-// ============================================================================
-
-/**
- * Parse and validate uploaded engram YAML/JSON
- * Returns parsed engram or error message
- */
 export async function parseUploadedEngram(
   content: string,
   format: 'yaml' | 'json' = 'yaml'
@@ -135,45 +110,24 @@ export async function parseUploadedEngram(
     if (format === 'json') {
       parsed = JSON.parse(content);
     } else {
-      // Simple YAML parser (for basic structures)
-      // In production, use a proper YAML library like js-yaml
       parsed = parseSimpleYAML(content);
     }
     
-    // Validate required fields
-    if (!parsed.type) {
-      return { error: 'Missing required field: type' };
-    }
+    if (!parsed.type) return { error: 'Missing required field: type' };
+    if (!parsed.statement) return { error: 'Missing required field: statement' };
     
-    if (!parsed.statement) {
-      return { error: 'Missing required field: statement' };
-    }
-    
-    // Check statement length
     const wordCount = parsed.statement.trim().split(/\s+/).length;
     if (wordCount < 25 || wordCount > 60) {
-      return { 
-        error: `Statement must be 25-60 words (got ${wordCount})` 
-      };
+      return { error: `Statement must be 25-60 words (got ${wordCount})` };
     }
     
-    // Ensure tags array exists
-    if (!parsed.tags) {
-      parsed.tags = [];
-    }
-    
+    if (!parsed.tags) parsed.tags = [];
     return { engram: parsed };
   } catch (err) {
-    return { 
-      error: `Parse error: ${err instanceof Error ? err.message : 'Unknown error'}` 
-    };
+    return { error: `Parse error: ${err instanceof Error ? err.message : 'Unknown error'}` };
   }
 }
 
-/**
- * Simple YAML parser for basic engram structures
- * For production, replace with js-yaml library
- */
 function parseSimpleYAML(yaml: string): Partial<Engram> {
   const result: Record<string, any> = {};
   const lines = yaml.split('\n');
@@ -182,20 +136,16 @@ function parseSimpleYAML(yaml: string): Partial<Engram> {
   let multilineBuffer: string[] = [];
   
   for (const line of lines) {
-    // Skip empty lines and comments
     if (!line.trim() || line.trim().startsWith('#')) continue;
     
-    // Check for array item
     const arrayMatch = line.match(/^\s+-\s+(.+)$/);
     if (arrayMatch && currentArray) {
       currentArray.push(arrayMatch[1].replace(/^["']|["']$/g, ''));
       continue;
     }
     
-    // Check for key: value
     const kvMatch = line.match(/^([\w_]+):\s*(.*)$/);
     if (kvMatch) {
-      // Save previous multiline value
       if (currentKey && multilineBuffer.length > 0) {
         result[currentKey] = multilineBuffer.join('\n').trim();
         multilineBuffer = [];
@@ -204,29 +154,23 @@ function parseSimpleYAML(yaml: string): Partial<Engram> {
       const [, key, value] = kvMatch;
       currentKey = key;
       
-      // Check if value is empty (start of multiline or array)
       if (!value.trim()) {
-        // Check next line to determine type
         const nextLine = lines[lines.indexOf(line) + 1];
         if (nextLine && nextLine.trim().startsWith('-')) {
           currentArray = [];
           result[key] = currentArray;
         } else {
-          // Multiline string
           multilineBuffer = [];
         }
       } else {
-        // Simple value
         currentArray = null;
         result[key] = value.replace(/^["']|["']$/g, '');
       }
     } else if (currentKey && multilineBuffer) {
-      // Continuation of multiline
       multilineBuffer.push(line.trim());
     }
   }
   
-  // Save final multiline value
   if (currentKey && multilineBuffer.length > 0) {
     result[currentKey] = multilineBuffer.join('\n').trim();
   }
@@ -234,10 +178,6 @@ function parseSimpleYAML(yaml: string): Partial<Engram> {
   return result as Partial<Engram>;
 }
 
-/**
- * Create engram from uploaded content
- * Validates and prepares for storage
- */
 export async function createCustomEngram(
   template: Partial<Engram>,
   customScope?: string
@@ -255,16 +195,8 @@ export async function createCustomEngram(
   };
 }
 
-// ============================================================================
-// ENGRAM PREVIEW
-// ============================================================================
-
-/**
- * Generate preview text showing what transformations will be applied
- */
 export function generateEngramPreview(engram: Partial<Engram>): string {
   const lines: string[] = [];
-  
   lines.push(`Type: ${engram.type}`);
   lines.push(`Domain: ${engram.domain || 'general'}`);
   lines.push('');
@@ -289,4 +221,3 @@ export function generateEngramPreview(engram: Partial<Engram>): string {
   
   return lines.join('\n');
 }
-
