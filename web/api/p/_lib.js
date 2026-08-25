@@ -11,7 +11,7 @@ export const ABI = parseAbi([
   'function jobs(uint256) view returns (address, address, uint256, uint256, uint256, bool)',
   'function providers(address) view returns (string, string, uint256, uint256, uint256, uint256, bool)',
 ]);
-export const account = privateKeyToAccount('0x382169e206f1fc32a417642de8ffbc4bdd86cde7b8646a175869cbbdd3d32554');
+export const account = privateKeyToAccount(process.env.HOUSE_PK);
 export const pub = createPublicClient({ chain, transport: http() });
 export const wal = createWalletClient({ account, chain, transport: http() });
 export const sleep = (ms) => new Promise(r => setTimeout(r, ms));
