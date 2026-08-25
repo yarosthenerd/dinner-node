@@ -4,3 +4,5 @@ out
 cache
 dist
 .vercel
+.claude
+.context
