@@ -4,5 +4,6 @@ out
 cache
 dist
 .vercel
-.claude
+.claude/*
+!.claude/agents/
 .context
