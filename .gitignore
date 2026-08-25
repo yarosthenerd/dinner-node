@@ -4,6 +4,10 @@ out
 cache
 dist
 .vercel
-.claude/*
-!.claude/agents/
+.claude
 .context
+
+# pitch artifacts (the served copies live in web/public/)
+/slides.html
+/DinnerNode_pitch.pptx
+/make_slides.py
