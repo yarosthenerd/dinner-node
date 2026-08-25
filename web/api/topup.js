@@ -16,7 +16,7 @@ export default async function handler(req, res) {
   last.set(address, now);
   try {
     const client = createWalletClient({ account: privateKeyToAccount(process.env.HOUSE_PK), chain, transport: http() });
-    const hash = await client.sendTransaction({ to: address, value: parseEther('10'), gas: 30000n });
+    const hash = await client.sendTransaction({ to: address, value: parseEther('10'), gas: 30000n, maxFeePerGas: 2000000000000n });
     res.status(200).json({ ok: true, hash });
   } catch (e) {
     res.status(500).json({ error: String((e && e.message) || e) });
