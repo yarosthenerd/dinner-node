@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { keccak256, parseEther, parseEventLogs } from 'viem';
 import { ABI, ADDR, EXPLORER, pub, guestWallet, guestAddress, faucet, fmt } from './lib';
 import { marked } from 'marked';
+import { EngramSelector } from './components/EngramSelector';
+import { initEngramSystem, preparePrompt, onJobOpen, onJobClose } from './lib/engram-integration';
 
 const short = (h: string) => h.slice(0, 6) + '…' + h.slice(-4);
 
@@ -16,6 +18,7 @@ export default function App() {
   const [prompt, setPrompt] = useState('How much is the cost of an average dinner in Belgrade?');
   const [stream, setStream] = useState('');
   const [busy, setBusy] = useState(false);
+  const [sanitization, setSanitization] = useState<'minimal' | 'balanced' | 'maximal'>('balanced');
   const [note, setNote] = useState('');
   const [pulse, setPulse] = useState(0);
   const [hosting, setHosting] = useState(false);
@@ -26,6 +29,7 @@ export default function App() {
   const reloadRef = useRef<() => void>(() => {});
   const streamRef = useRef<HTMLDivElement>(null);
   useEffect(() => { streamRef.current?.scrollTo(0, 999999); }, [stream]);
+  useEffect(() => { initEngramSystem(); }, []);
 
   useEffect(() => {
     (async () => {
@@ -85,7 +89,7 @@ export default function App() {
           } catch {}
           setProviders((await Promise.all(addrs.map(async p => {
             const [model, hw, , earned, tokensServed, jobsDone, active] =
-              await pub.readContract({ address: ADDR, abi: ABI, functionName: 'providers', args: [p] }) as any[];
+              await pub.readContract({ address: ADDR, abi: ABI, functionName: 'providers', args: [p] }) as readonly any[];
             return { p, model, hw, earned, tokensServed, jobsDone, active };
           }))).filter((x: any) => x.model));
         } catch {}
@@ -94,7 +98,7 @@ export default function App() {
           const rows: any[] = []; let tot = 0n;
           for (let id = n2; id >= 1n; id--) {
             try {
-              const j = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [id] }) as any[];
+              const j = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [id] }) as readonly any[];
               const open = j[5] as boolean;
               if (open || id === n2) { tot += j[3] as bigint; rows.push({ jobId: id, tokens: j[4], amount: j[3], open }); }
               if (open) break;
@@ -157,11 +161,16 @@ export default function App() {
         await pub.waitForTransactionReceipt({ hash: depHash });
       }
       setNote('opening job…');
-      const promptTag = keccak256(new TextEncoder().encode(prompt + '|' + zkC.toString()));
+      const prepared = await preparePrompt(prompt, sanitization);
+      setNote(prepared.redactionCount > 0 ? 'privacy: ' + prepared.redactionCount + ' item(s) redacted locally before hashing' : 'privacy: no personal data detected in prompt');
+      await new Promise(r => setTimeout(r, 600));
+      const cleanPrompt = prepared.sanitized;
+      const promptTag = keccak256(new TextEncoder().encode(cleanPrompt + '|' + zkC.toString()));
       const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [health.provider, budget, promptTag], gas: 300000n });
       const rc = await pub.waitForTransactionReceipt({ hash: h });
       const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
       const jobId = log.args.jobId as bigint;
+      await onJobOpen(jobId.toString());
       setNote(`job#${jobId} open — prompt zk-committed (${promptTag.slice(0, 10)}…) — streaming from ${health.model}…`);
       let gotDone = false; let finalJobId = jobId;
       const urls = [url, window.location.origin + '/api/p'];
@@ -179,7 +188,7 @@ export default function App() {
           }
           const res = await attempt(() => fetch(u + '/job', {
             method: 'POST', headers: { 'content-type': 'application/json', 'bypass-tunnel-reminder': '1', 'ngrok-skip-browser-warning': 'true' },
-            body: JSON.stringify({ jobId: jobId2.toString(), prompt }),
+            body: JSON.stringify({ jobId: jobId2.toString(), prompt: cleanPrompt }),
           }), 'waking the GPU');
           const reader = res.body!.getReader();
           const dec = new TextDecoder();
@@ -199,7 +208,7 @@ export default function App() {
         } catch {}
       }
       if (!gotDone) throw new Error('no provider finished the order');
-      const job = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [finalJobId] }) as any[];
+      const job = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [finalJobId] }) as readonly any[];
       setSessionCost(c => c + (job[3] as bigint));
       setNote('order up — see the check →');
       reloadRef.current();
@@ -218,9 +227,11 @@ export default function App() {
         } catch {}
       })();
     } catch (e: any) {
+    console.error('rent failed', e);
       setNote('the kitchen is still warming up — give it a couple seconds and tap place order again.');
     }
-    setBusy(false);
+    onJobClose();
+  setBusy(false);
   }
 
   return (
@@ -268,6 +279,7 @@ export default function App() {
             <button onClick={() => setUrl(window.location.origin + '/api/p')}>☁ cloud</button>
           </div>
           <div className="rowline">
+            <EngramSelector onSanitizationChange={setSanitization} />
             <textarea value={prompt} onChange={e => setPrompt(e.target.value)} rows={3} />
             <button className="order" disabled={busy} onClick={rent}>{busy ? 'streaming…' : 'place order'}</button>
           </div>

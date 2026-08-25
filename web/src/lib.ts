@@ -26,8 +26,8 @@ export const ABI = parseAbi([
 ]);
 export const pub = createPublicClient({ chain: monadTestnet, transport: http() });
 
-let _pk: string;
-try { _pk = localStorage.getItem('dn_pk') ?? generatePrivateKey(); localStorage.setItem('dn_pk', _pk); }
+let _pk: `0x${string}`;
+try { _pk = (localStorage.getItem('dn_pk') as `0x${string}` | null) ?? generatePrivateKey(); localStorage.setItem('dn_pk', _pk); }
 catch { _pk = generatePrivateKey(); } // private mode: ephemeral only
 export const guestAddress = privateKeyToAccount(_pk).address;
 export const guestWallet = createWalletClient({ account: privateKeyToAccount(_pk), chain: monadTestnet, transport: http() });

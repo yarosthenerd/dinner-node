@@ -19,7 +19,8 @@ const PII_PATTERNS: Array<{
   { type: 'url', pattern: /\bhttps?:\/\/[^\s/$.?#].[^\s]*\b/g, replacement: '[URL]', priority: 8 },
   { type: 'address', pattern: /\b\d+\s+[A-Za-z\s]+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln)\b/gi, replacement: '[ADDRESS]', priority: 7 },
   { type: 'name', pattern: /\b[A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b/g, replacement: '[PERSON]', priority: 5 },
-  { type: 'location', pattern: /\b(?:in|at|from|live(?:s)? in)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b/gi, replacement: '[LOCATION]', priority: 6 },
+  { type: 'location_personal', pattern: /\b(?:I\s+live\s+in|I'?m\s+from|I\s+am\s+from|my\s+city\s+is|we\s+live\s+in)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b/gi, replacement: '[LOCATION]', priority: 9 },
+  { type: 'location_generic', pattern: /\b(?:in|at|from)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b/g, replacement: '[LOCATION]', priority: 6 },
   { type: 'id_number', pattern: /\b(?:ID|SSN|Passport|License)[:\s]?\s*[\d-]{8,}\b/gi, replacement: '[ID_NUMBER]', priority: 10 },
   { type: 'credit_card', pattern: /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g, replacement: '[CREDIT_CARD]', priority: 10 },
   { type: 'api_key', pattern: /\b(?:api[_-]?key|secret|token|password)[:\s]?\s*['"]?[A-Za-z0-9_-]{20,}['"]?\b/gi, replacement: '[SECRET]', priority: 10 }
@@ -35,6 +36,7 @@ export function sanitizePrompt(
   const sortedPatterns = [...PII_PATTERNS].sort((a, b) => b.priority - a.priority);
   
   for (const { type, pattern, replacement } of sortedPatterns) {
+    if (type === 'location_generic' && options.strictness !== 'maximal') continue;
     const matches = sanitized.match(pattern);
     if (matches && matches.length > 0) {
       detected.add(type);

@@ -127,7 +127,7 @@ export function clearJobBinding(): void {
   clearAllEngrams();
 }
 
-export async function storeEngram(engramData: Omit<Engram, 'id' | '_sessionBinding'>): Promise<Engram> {
+export async function storeEngram(engramData: Omit<Engram, 'id' | '_sessionBinding'> & { id?: string }): Promise<Engram> {
   const currentBinding = getCurrentJobBinding();
   if (!currentBinding) {
     throw new Error('No active job binding. Call setJobBinding() first.');
