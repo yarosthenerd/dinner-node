@@ -7,7 +7,8 @@
   "devDependencies": {
     "@types/node": "^26.3.0",
     "tsx": "^4.23.12",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
   },
   "type": "module",
   "scripts": {
@@ -16,6 +17,7 @@
     "faucet": "tsx src/faucet.ts",
     "typecheck": "tsc --noEmit",
     "setup": "tsx src/setup.ts",
-    "doctor": "tsx src/setup.ts --check"
+    "doctor": "tsx src/setup.ts --check",
+    "test": "vitest run"
   }
 }
