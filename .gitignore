@@ -4,10 +4,26 @@ out
 cache
 dist
 .vercel
-.claude
+# .claude is local state except for the agent definitions, which are part of
+# the project and were being lost. They loaded fine all along; being ignored by
+# git is what kept them out of the repo, not out of the tool.
+.claude/*
+!.claude/agents/
 .context
 
 # pitch artifacts (the served copies live in web/public/)
 /slides.html
 /DinnerNode_pitch.pptx
 /make_slides.py
+
+# runtime state written by src/discovery.ts
+.discovery-cache.json
+
+# `vercel env pull` writes this and the `.env` rule above does not match it.
+# It was committed once with a live VERCEL_OIDC_TOKEN in it (expired
+# 2026-08-23). Untracked with `git rm --cached web/.envtmp`.
+.envtmp
+web/.envtmp
+
+# dev-only patch script, contradicts commit 09c6579 "ship product only"
+patch_engrams3.cjs
