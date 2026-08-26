@@ -20,9 +20,13 @@ const TUNNEL_HEADERS = { 'bypass-tunnel-reminder': '1', 'ngrok-skip-browser-warn
 const MAX_FEE = 2000000000000n;
 // Coupled to TOPUP_AMOUNT and TOPUP_RECIPIENT_MAX in web/api/topup.js. See
 // the funding invariant comment in the balance effect below before changing.
-// Re-derived 2026-08-26 with the 0.10 MON escrow: a first order costs the guest
-// 0.10 of escrow plus about 0.06 of gas, so the trigger has to clear 0.16.
-const TOPUP_TRIGGER = parseEther('0.25');
+// Re-derived 2026-08-26 with the 0.30 MON escrow: a first order costs the guest
+// 0.30 of escrow plus about 0.06 of gas, so the trigger has to clear 0.36.
+// The invariant is unchanged and is what this number exists to satisfy: the
+// trigger must clear the cost of one full order, or the app loops asking for a
+// top-up it has already been given, and it must sit below TOPUP_RECIPIENT_MAX
+// in web/api/topup.js, or the faucet refuses every request the app makes.
+const TOPUP_TRIGGER = parseEther('0.4');
 
 // How many jobs back the receipt walks. Each one is a sequential eth_call, so
 // this is a latency budget as much as a display choice, and it is the reason
@@ -66,11 +70,13 @@ export default function App() {
   const [url, setUrl] = useState(() => new URLSearchParams(window.location.search).get('host') || DEFAULT_HOST);
   const [prompt, setPrompt] = useState('How much is the cost of an average dinner in Belgrade?');
   const [stream, setStream] = useState('');
-  // The model's reasoning, streamed as {th} frames and never billed. Held apart
-  // from `stream` because it is not part of the answer, is not in the
+  // The model's reasoning, streamed as {th} frames. It IS billed, as output
+  // tokens, the way every commercial provider bills it. It is held apart from
+  // `stream` because it is still not part of the answer: it is not in the
   // checkpoint chain, and must not reach the markdown renderer or the saved
-  // session. It exists so that 15 to 47 seconds of thinking looks like a model
-  // working rather than a dead node.
+  // session. Showing it is what makes the charge honest, and it is also what
+  // makes 15 to 47 seconds of silence look like a model working rather than a
+  // dead node.
   const [thinking, setThinking] = useState('');
   const [thinkOpen, setThinkOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -328,20 +334,24 @@ export default function App() {
         }
       }
 
-      // 0.10 MON at RATE_PER_MILLION = 3.353e19 buys about 2,980 output tokens,
-      // which is roughly 68 seconds of output at the 44 tok/s this node measures.
-      // Sized from that, not from a round number: at 0.05 the ceiling was 1,491
-      // tokens, and when a settle exhausts the escrow the CONTRACT closes the job
-      // itself (DinnerNode.sol:78), so the guest's answer stops mid-sentence.
-      // A 900 word briefing is about 1,200 output tokens, so this clears the
-      // measured long case roughly 2.5x over.
+      // 0.30 MON at RATE_PER_MILLION = 3.353e19 buys about 8,940 billable
+      // tokens. Sized from the longest measured job, not from a round number:
+      // when a settle exhausts the escrow the CONTRACT closes the job itself
+      // (DinnerNode.sol:78), so the guest's answer stops mid-sentence.
+      //
+      // Raised from 0.10 because the node now bills reasoning tokens, and
+      // reasoning is most of what a reasoning model produces. A measured 900
+      // word briefing is about 1,200 visible tokens on top of about 3,090
+      // reasoning tokens, so it is a 4,290 token job, not a 1,200 token one.
+      // The old 0.10 ceiling was 2,980 tokens, which the briefing would have
+      // blown through with the answer roughly a third written.
       //
       // The escrow is a ceiling rather than a charge, and it is deposited once:
       // closeJob refunds the unspent remainder to deposits[guest], and the next
       // order tops that back up to budget rather than depositing again. So
       // raising it costs the guest a larger one-time deposit and nothing per
       // order beyond the tokens actually produced.
-      const budget = parseEther('0.10');
+      const budget = parseEther('0.30');
       setNote('opening job…');
       // The staged engrams go in here, not only into applyPendingEngrams below.
       // Storage cannot hold them until openJob has landed, and by then this
@@ -499,8 +509,9 @@ export default function App() {
                   // does NOT set `streaming`: that collapses the budget to the
                   // 30s wedge timer, and this node thinks for up to 47s before
                   // the first visible character. Reasoning is displayed, never
-                  // appended to liveRef, so it cannot enter a checkpoint or the
-                  // answer the guest is charged for.
+                  // appended to liveRef, so it cannot enter a checkpoint or
+                  // the visible answer. It is billed by the host, but the
+                  // checkpoint chain covers the visible answer only.
                   if (msg.th) { lastToken = Date.now(); setThinking(x => x + msg.th); }
                   // A checkpoint frame is written after the tokens it covers,
                   // so at this instant liveRef holds exactly the prefix that
@@ -688,7 +699,7 @@ export default function App() {
                     <div className={'thinking' + (thinkOpen || !stream ? ' open' : '')}>
                       <button className="thinking-head" onClick={() => setThinkOpen(o => !o)}>
                         {stream ? '▸ thought before answering' : '◌ thinking…'}
-                        <span className="dim"> ({Math.ceil(thinking.length / 4)} tok, not billed)</span>
+                        <span className="dim"> ({Math.ceil(thinking.length / 4)} tok, billed as output)</span>
                       </button>
                       {(thinkOpen || !stream) && <div className="thinking-body">{thinking}</div>}
                     </div>

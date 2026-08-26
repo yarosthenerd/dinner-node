@@ -169,6 +169,13 @@ const settle = (jobId: bigint, delta: number) => {
 // k = 10 puts gas at about 9 percent of each settlement. SETTLE_MAX_MS is the
 // backstop so a very slow node still pays out on a human timescale, and the
 // end-of-stream flush in serveJob settles whatever is left regardless.
+//
+// Note that billing reasoning tokens brought this threshold back into range.
+// At 100,915 gas it is worth about 3,070 tokens, which no job reached while
+// only visible output was billed, so every job settled exactly once at the
+// end. A measured 900 word briefing is about 4,290 billable tokens now, so a
+// long job settles mid-stream again and the guest sees value moving while the
+// answer is still being written.
 const SETTLE_GAS_MULTIPLE = BigInt(process.env.SETTLE_GAS_MULTIPLE ?? 10);
 const SETTLE_MAX_MS = Number(process.env.SETTLE_MAX_MS ?? 60000);
 // SELF-CALIBRATING, because the hardcoded figure was wrong by 2.9x.
@@ -302,6 +309,20 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
       // single visible character.
       if (c.th !== undefined) {
         thought += c.th;
+        // Reasoning IS billed. It is compute this node performs and delivers,
+        // it is what OpenRouter providers charge for as output tokens, and not
+        // charging for it made a 900 word briefing - the job shape this
+        // project is built around - net negative at full utilization. One
+        // frame is one token here exactly as it is on the visible path, so it
+        // increments the same counter.
+        active.get(jobId)!.delta++;
+        // It is still NOT appended to `prefix` and NOT counted in `produced`.
+        // The checkpoint chain covers the visible answer only, because that is
+        // the text a replacement provider is handed and must reproduce. What
+        // this costs is the strength of the claim: a settlement can no longer
+        // be fully reconstructed from the published prefix, since part of it
+        // paid for reasoning that was streamed but never checkpointed. The
+        // claim narrows to the visible answer; see terms.html.
         res.write(`data: ${JSON.stringify({ th: c.th })}\n\n`);
         continue;
       }
@@ -326,7 +347,7 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
   clearInterval(hb);
   if (thought) {
     const th = estTokens(thought);
-    console.log(`[job#${jobId}] ${produced} tok billed, ~${th} tok thinking unbilled (${Math.round((th / (th + produced || 1)) * 100)}% of output)`);
+    console.log(`[job#${jobId}] ${produced} tok visible + ~${th} tok reasoning, both billed (${Math.round((th / (th + produced || 1)) * 100)}% reasoning)`);
   }
   if (!res.writableEnded) {
     res.write(`data: ${JSON.stringify({ cp: { n: (resume?.n ?? 0) + produced, h: keccak256(stringToHex(prefix)), final: true } })}\n\n`);

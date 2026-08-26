@@ -123,6 +123,11 @@
   <p>Machine-generated output can be inaccurate, incomplete, outdated, biased, or entirely fabricated while appearing confident and well-formed. Do not rely on it. Do not use it as a substitute for professional advice, and in particular not for medical, legal, financial, safety, or engineering decisions. Verify anything that matters against an independent source before acting on it.</p>
 </div>
 
+<h3>3.1 What you are billed for</h3>
+<p>Nodes bill by output token at the rate each node publishes on its own <code>/health</code> endpoint. Your prompt is not billed. Output is.</p>
+<p>Reasoning models produce two kinds of output: the reasoning they work through, and the visible answer. <strong>Both are billed as output tokens.</strong> On the reference node the reasoning is often larger than the answer, and on a long request it can be roughly three times the size, so the number of tokens you are charged for is usually well above the length of the reply you read. The reasoning is shown to you in the interface as it streams, so what you are charged for is visible rather than hidden. This is the same convention commercial inference providers use.</p>
+<p>One consequence is worth stating plainly, because an earlier version of this page claimed more. When a node hands an unfinished answer to a replacement node, the replacement verifies a keccak checkpoint of the visible answer so far and bills only the tokens it writes itself. That check covers <strong>the visible answer only</strong>. Reasoning tokens are streamed and billed but are not part of the checkpoint chain, so a settlement cannot be reconstructed in full from the published text. The protection against being charged twice for the same visible answer is real and verifiable. It does not extend to reasoning.</p>
+
 <h2>4. The hosted cloud kitchen returns a demo passage</h2>
 <div class="card warn">
   <p><strong>Disclosed plainly:</strong> the hosted cloud kitchen endpoint at <code>/api/p</code> does not perform model inference. It returns a fixed, pre-written passage of text, streamed word by word to imitate the pacing of a real model. The passage is the same every time, apart from an echo of the first fifty characters of your prompt. It does not answer your question and it does not attempt to.</p>
