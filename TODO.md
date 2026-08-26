@@ -10,8 +10,8 @@ stale and marks several things done that never existed. Read alongside:
 Legend: `[x]` done and verified, `[~]` done but not verified against a live run,
 `[ ]` open.
 
-Last updated 2026-08-26. Now items 2, 3 and 4 are closed; item 1, the deploy,
-is unblocked.
+Last updated 2026-08-26 (evening). Now items 1, 2, 3 and 4 are closed. Item 5,
+the cloud kitchen as a real second provider, is the load-bearing one left.
 
 ---
 
@@ -35,9 +35,10 @@ demonstrable and the price honest. See "Now" below.
 
 Ordered. Everything here is ahead of every remaining defect in this file.
 
-1. **Deploy the current tree.** It is a strict improvement over what is live and
-   it removes two exploitable endpoints. Gated on items 2 and 3 below, both of
-   which are minutes.
+1. ~~**Deploy the current tree.**~~ Done 2026-08-26 evening. `web-okskdkmvt`,
+   verified against the deployed bundle. The node now also streams reasoning as
+   its own frame and bills it as output; escrow and the three faucet constants
+   were re-derived around that. See `SNAPSHOT.md` section 6b.
 2. ~~**Fill the three ToS placeholders.**~~ Done 2026-08-26. Operator is
    Yaroslav Belkin, an individual; contact `jacksavvy3003@gmail.com`, abuse
    `yaros3920@gmail.com`. No entity is named, because none is formed and GDPR

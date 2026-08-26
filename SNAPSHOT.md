@@ -224,6 +224,56 @@ For the first time the economics and the positioning agree: long jobs are both
 the only ones that pay and the only ones mid-answer migration is worth
 anything for. Short chat is a segment to decline rather than to lose.
 
+## 6b. Addendum, same evening: thinking is billed, and this is deployed
+
+**Decision taken on section 6: reasoning tokens are billed as output.** The node
+counts a `{th}` frame into `delta` exactly as it counts a visible one. Gross
+income becomes throughput times rate, $0.1604/h on this node, independent of
+job shape, and only gas still varies with how the work is split into jobs.
+
+| job shape (visible + reasoning) | reasoning | jobs/h | gross/h | gas/h | net/h | net/mo at 100% |
+|---|---|---|---|---|---|---|
+| short factual, 800 + 732 | not billed | 104.1 | $0.0838 | $0.0503 | $0.0060 | $4.35 |
+| | **billed** | 104.1 | $0.1604 | $0.0503 | **$0.0826** | **$60.31** |
+| reasoning, 800 + 931 | not billed | 92.1 | $0.0741 | $0.0445 | $0.0021 | $1.54 |
+| | **billed** | 92.1 | $0.1604 | $0.0445 | **$0.0884** | **$64.53** |
+| 900 word briefing, 1,200 + 3,090 | not billed | 37.2 | $0.0449 | $0.0180 | **-$0.0006** | -$0.43 |
+| | **billed** | 37.2 | $0.1604 | $0.0180 | **$0.1150** | **$83.93** |
+
+At 44.3 tok/s, $1.006/M, 157,959 gas per job at MON $0.03, 250W **[A]** at
+$0.11/kWh. Wall clock is identical in both rows of each pair.
+
+Section 6 says billing reasoning "roughly doubles revenue per job", which is
+true of gross and understates net badly: gas and electricity are already paid
+either way, so doubling gross against a near-zero net is a 14x to 42x move.
+And the briefing, the job shape both the economics and the positioning point
+at, was **net negative** unbilled. Billed it is the best shape on the node.
+That inverts section 6's conclusion.
+
+Consequences that shipped with it:
+
+- **Escrow 0.10 -> 0.30 MON.** A briefing is a 4,290 billable token job, not a
+  1,200 token one. The old ceiling was 2,980 tokens, so the contract would have
+  closed it with the answer about a third written.
+- **Faucet re-derived:** `TOPUP_TRIGGER` 0.25 -> 0.4, `TOPUP_AMOUNT` 0.3 -> 0.5,
+  `TOPUP_RECIPIENT_MAX` 0.7 -> 1.0. Invariant unchanged. House capacity drops to
+  about 4 grants above the floor on 2.5 MON, so the house wallet needs refilling
+  rather than the amount lowering.
+- **The k=10 settle trigger is reachable again.** It is worth about 3,070 tokens
+  and a briefing is 4,290, so long jobs settle mid-stream once more. Section 5's
+  "every job settles exactly once" holds only for short ones now.
+- **The checkpoint claim is narrowed, not dropped.** Reasoning is billed but is
+  still not appended to `prefix`, so the chain covers the visible answer only.
+  `terms.html` 3.1 now says exactly that. Claim "the replacement provider
+  settles only the visible tokens it produced, verified against a keccak
+  checkpoint chain". Do not claim it covers reasoning.
+
+**Thinking is now visible to the guest**, which is what makes the charge
+honest as well as what stops the watchdog killing jobs during it. Engines yield
+a tagged `Chunk`; the host forwards `th` frames; the browser refreshes its
+watchdog on them without setting `streaming`, and shows them in a panel that
+opens by itself while no answer exists yet.
+
 ## 7. Live state
 
 ```
@@ -236,30 +286,25 @@ settle      value trigger k=10, 60s backstop, self-calibrating gas units
 web         tsc clean, oxlint clean, 61 tests passing, vite build clean
 ```
 
-**Nothing in this session is committed.** The working tree carries changes to
-`src/host.ts`, `src/engines.ts`, `src/setup.ts`, `web/api/p/job.js`,
-`web/api/topup.js`, `web/api/p/health.js`, `web/public/terms.html`,
-`web/public/hosting.html`, `web/src/App.tsx`, `web/src/config.ts`,
-`web/src/components/EngramSelector.tsx`, `web/src/lib/engram-integration.ts`,
-plus untracked `src/hardware.ts`, `src/models.ts` and two new test files.
-**Production has not been redeployed since the rate change**, so the live site
-still ships the old escrow and faucet constants.
+**Committed and deployed.** Three commits: `0482ad2` the session's work,
+`97b364c` thinking frames, `0da8fbe` billing reasoning. Production is
+`web-okskdkmvt`, promoted and verified against the deployed bundle: escrow
+`0.30` and trigger `0.4` present in the JS, `.thinking` rules in the CSS,
+`/terms.html` 200 carrying section 3.1, `/api/p/health` reporting
+33530000000000000000. Only `HOUSE_PK` is set in Vercel, so every faucet
+constant is a code default and cannot be reverted by a forgotten variable.
+Root: 36 tests. `web/`: 61 tests. tsc, oxlint and vite build all clean.
 
 ## 8. Open, in priority order
 
-1. **The browser cannot see thinking.** The host emits `{t}` frames only for
-   visible output, so 15 to 47 seconds of reasoning is indistinguishable from a
-   wedged engine, against a 60 s cold budget measured on an idle machine.
-   Job#50 in testing died as `This operation was aborted` with 0 tokens, which
-   is consistent with the watchdog firing during thinking. Needs a `{th}` frame
-   and a browser that shows it. **This will bite in a demo.**
-2. **Decide whether thinking tokens are billed.** See section 6: the node
-   performs about twice the compute it invoices, and the market convention is
-   to charge for it. Doubles revenue per job; costs some of the checkpoint
-   claim's strength.
+1. ~~The browser cannot see thinking.~~ Done, `97b364c`. Not yet confirmed
+   against a real job on the node: the fix is deployed but no job has been run
+   through it end to end since. **Do that before demoing.**
+2. ~~Decide whether thinking tokens are billed.~~ Decided and shipped,
+   `0da8fbe`. See section 6b.
 3. **Correct the gas comment in `web/api/p/_lib.js`** and the economics in the
    2026-08-26 morning snapshot section 4 that derive from it.
-4. **Deploy.** The live site runs the pre-rate-change bundle.
+4. ~~Deploy.~~ Done. `web-okskdkmvt`, verified live.
 5. **Node distribution.** `src/discovery.ts` works and is not deployed:
    `VITE_DISCOVERY_URL` is unset, and it listens on plain http which an https
    page cannot fetch. There is no routing policy of any kind, and `PUBLIC_URL`
