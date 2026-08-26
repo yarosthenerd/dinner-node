@@ -34,7 +34,14 @@ export const guestWallet = createWalletClient({ account: privateKeyToAccount(_pk
 export const faucet = async () => {
   try {
     const r = await fetch(`/api/topup?address=${guestAddress}`);
-    if (r.ok) return true;
+    // A 200 is not necessarily a grant. The endpoint returns
+    // {ok:false, reason:'already funded'} with a 200, and treating that as
+    // success would tell a caller funds are coming when none are.
+    if (r.ok) {
+      const body = await r.json().catch(() => ({ ok: true }));
+      if (body.ok !== false) return true;
+      console.warn('faucet declined:', body.reason);
+    }
   } catch {}
   return fetch('https://agents.devnads.com/v1/faucet', {
     method: 'POST', headers: { 'content-type': 'application/json' },

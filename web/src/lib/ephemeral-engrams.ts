@@ -164,8 +164,9 @@ export async function getEngram(id: string): Promise<Engram | null> {
   try {
     const engram: Engram = JSON.parse(stored);
     const currentBinding = getCurrentJobBinding();
-    if (!currentBinding) return null;
-    
+    // Same rule as getAllEngrams: unreachable means removed, not hidden.
+    if (!currentBinding) { sessionStorage.removeItem(storageKey); return null; }
+
     const isValid = await verifySessionBinding(engram, currentBinding.jobId, getSessionNonce());
     if (!isValid) {
       sessionStorage.removeItem(storageKey);
@@ -173,23 +174,29 @@ export async function getEngram(id: string): Promise<Engram | null> {
     }
     return engram;
   } catch {
+    // Unparseable. getAllEngrams removes these; this path used to leave them,
+    // so the two disagreed about the same corrupt key.
+    sessionStorage.removeItem(storageKey);
     return null;
   }
 }
 
 export async function getAllEngrams(): Promise<Engram[]> {
   const currentBinding = getCurrentJobBinding();
-  if (!currentBinding) return [];
+  // No binding means nothing stored can be valid. Returning [] alone HID the
+  // engrams without removing them, so dn_engram_* keys survived a cleared
+  // binding and sat in sessionStorage until the next sweep. Invariant 4 is
+  // that unreachable engrams are gone, not merely unreturned.
+  if (!currentBinding) { clearAllEngrams(); return []; }
   
   const engrams: Engram[] = [];
   const nonce = getSessionNonce();
-  
-  for (let i = 0; i < sessionStorage.length; i++) {
-    const key = sessionStorage.key(i);
-    if (!key || !key.startsWith(STORAGE_KEY_PREFIX)) continue;
-    
+
+  for (const key of engramKeys()) {
     try {
-      const engram: Engram = JSON.parse(sessionStorage.getItem(key)!);
+      const raw = sessionStorage.getItem(key);
+      if (raw === null) continue;
+      const engram: Engram = JSON.parse(raw);
       const isValid = await verifySessionBinding(engram, currentBinding.jobId, nonce);
       if (isValid) {
         engrams.push(engram);
@@ -210,15 +217,23 @@ export function deleteEngram(id: string): boolean {
   return exists;
 }
 
-export function clearAllEngrams(): void {
-  const keysToRemove: string[] = [];
+// sessionStorage is indexed live: removing key i shifts every later key down
+// by one, and the loop's i++ then steps straight over the next one. Iterating
+// by index while removing therefore both leaves stale engrams behind and drops
+// valid ones from the returned set, which under-sanitizes the prompt. Collect
+// the keys first, then act on the snapshot. clearAllEngrams already did this
+// correctly and is the shape the other two callers now share.
+function engramKeys(): string[] {
+  const keys: string[] = [];
   for (let i = 0; i < sessionStorage.length; i++) {
     const key = sessionStorage.key(i);
-    if (key && key.startsWith(STORAGE_KEY_PREFIX)) {
-      keysToRemove.push(key);
-    }
+    if (key && key.startsWith(STORAGE_KEY_PREFIX)) keys.push(key);
   }
-  keysToRemove.forEach(key => sessionStorage.removeItem(key));
+  return keys;
+}
+
+export function clearAllEngrams(): void {
+  for (const key of engramKeys()) sessionStorage.removeItem(key);
 }
 
 let cleanupScheduled = false;
@@ -237,12 +252,12 @@ async function runCleanup(): Promise<void> {
   const nonce = getSessionNonce();
   const now = Date.now();
   
-  for (let i = 0; i < sessionStorage.length; i++) {
-    const key = sessionStorage.key(i);
-    if (!key || !key.startsWith(STORAGE_KEY_PREFIX)) continue;
-    
+  let remaining = 0;
+  for (const key of engramKeys()) {
     try {
-      const engram: Engram = JSON.parse(sessionStorage.getItem(key)!);
+      const raw = sessionStorage.getItem(key);
+      if (raw === null) continue;
+      const engram: Engram = JSON.parse(raw);
       if (engram._sessionBinding.expiresAt && now > engram._sessionBinding.expiresAt) {
         sessionStorage.removeItem(key);
         continue;
@@ -255,10 +270,15 @@ async function runCleanup(): Promise<void> {
         sessionStorage.removeItem(key);
         continue;
       }
+      remaining++;
     } catch {
       sessionStorage.removeItem(key);
     }
   }
+
+  // The TTL is a promise to the user, so the sweep has to keep running while
+  // anything is still stored rather than firing once after the last write.
+  if (remaining > 0) scheduleCleanup();
 }
 
 export function initEphemeralEngrams(): void {

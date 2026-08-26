@@ -7,12 +7,15 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@semaphore-protocol/group": "^4.14.3",
     "@semaphore-protocol/identity": "^4.14.3",
     "@semaphore-protocol/proof": "^4.14.3",
+    "dompurify": "^3.4.14",
     "marked": "^18.0.10",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -23,8 +26,10 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.4",
+    "jsdom": "^30.0.1",
     "oxlint": "^1.75.0",
     "typescript": "~6.0.2",
-    "vite": "^8.2.0"
+    "vite": "^8.2.0",
+    "vitest": "^4.1.11"
   }
 }

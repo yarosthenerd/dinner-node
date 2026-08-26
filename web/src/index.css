@@ -21,8 +21,37 @@ h2 { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:
 .model { color:var(--mint); }
 .dim { color:var(--dim); }
 input, textarea { width:100%; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:9px; font:inherit; margin-bottom:10px; }
-.rowline { display:flex; gap:10px; align-items:flex-start; }
-.rowline textarea { flex:1; }
+/* `select` had no rule at all, so every dropdown rendered as a white OS
+   control on the dark panel. */
+select { width:100%; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:9px; font:inherit; }
+select:focus, input:focus, textarea:focus { outline:none; border-color:var(--mint); }
+
+.rowline { display:flex; gap:10px; align-items:center; }
+.rowline textarea, .rowline input { flex:1; margin-bottom:0; }
+.rowline .dim { flex:1; }
+
+/* The engram panel. Collapsed by default: expanded it is taller than the rest
+   of the column combined, and nothing in it is needed to place an order. */
+.engram { padding:0; overflow:hidden; }
+.engram-head { display:flex; justify-content:space-between; align-items:center; gap:10px;
+  width:100%; background:none; border:none; border-radius:0; padding:10px 12px; text-align:left; }
+.engram-head:hover { border:none; color:var(--mint); }
+.engram-body { padding:0 12px 12px; border-top:1px solid var(--line); }
+.engram-label { display:block; color:var(--dim); font-size:11px; text-transform:uppercase;
+  letter-spacing:.1em; margin:12px 0 6px; }
+.engram-note { font-size:12px; margin-top:6px; }
+.engram-ok, .engram-err { padding:8px 10px; border-radius:6px; margin-top:12px; font-size:12px; }
+.engram-ok { background:rgba(159,239,0,.08); border:1px solid var(--mint); color:var(--mint); }
+.engram-err { background:rgba(255,92,77,.08); border:1px solid var(--ketchup); color:var(--ketchup); }
+.engram-toggle { width:100%; margin-top:12px; text-align:left; }
+.engram-upload { margin-top:10px; }
+.engram-formats { display:flex; gap:16px; margin-bottom:8px; color:var(--dim); }
+.engram-formats label { display:flex; align-items:center; gap:6px; cursor:pointer; }
+.engram-formats input { width:auto; margin:0; accent-color:var(--mint); }
+.engram-preview { background:var(--ink); border:1px solid var(--line); border-radius:6px;
+  padding:8px; margin-top:10px; white-space:pre-wrap; font-size:12px; color:var(--dim); }
+
+.stream:empty::before { content:"the answer streams here, token by token, as each one settles on chain"; color:var(--dim); }
 .order { box-shadow:0 0 0 1px var(--mint) inset; }
 .note { color:var(--mint); min-height:20px; margin-bottom:8px; }
 .stream { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; min-height:180px; max-height:300px; overflow:auto; white-space:pre-wrap; }
