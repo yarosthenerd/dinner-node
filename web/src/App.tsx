@@ -66,6 +66,13 @@ export default function App() {
   const [url, setUrl] = useState(() => new URLSearchParams(window.location.search).get('host') || DEFAULT_HOST);
   const [prompt, setPrompt] = useState('How much is the cost of an average dinner in Belgrade?');
   const [stream, setStream] = useState('');
+  // The model's reasoning, streamed as {th} frames and never billed. Held apart
+  // from `stream` because it is not part of the answer, is not in the
+  // checkpoint chain, and must not reach the markdown renderer or the saved
+  // session. It exists so that 15 to 47 seconds of thinking looks like a model
+  // working rather than a dead node.
+  const [thinking, setThinking] = useState('');
+  const [thinkOpen, setThinkOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [sanitization, setSanitization] = useState<'minimal' | 'balanced' | 'maximal'>('balanced');
   const [pendingEngrams, setPendingEngrams] = useState<PendingEngrams>({});
@@ -302,6 +309,7 @@ export default function App() {
     // while an answer streams does not silently rewrite the question it was an
     // answer to. On a resume the original prompt stays; it is the same question.
     if (!resume) { setStream(''); cpRef.current = null; liveRef.current = ''; setCanResume(false); setSentPrompt(prompt); setServedByCloud(false); }
+    setThinking('');
     const opened: bigint[] = [];
     let finished = false;
     // Set by a {warn} frame, which means the answer completed but the
@@ -404,6 +412,9 @@ export default function App() {
           const base = cp?.h ? cp.text : '';
           liveRef.current = base;
           setStream(base);
+          // Reasoning belongs to the attempt that produced it. A failover to a
+          // second provider starts its own.
+          setThinking('');
 
           const ac = new AbortController();
           abortRef.current = ac;
@@ -483,6 +494,14 @@ export default function App() {
                   // Only a real token proves the engine is producing, so this
                   // is the one place the watchdog's clock may be reset.
                   if (msg.t) { lastToken = Date.now(); streaming = true; liveRef.current += msg.t; setStream(x => x + msg.t); }
+                  // A thinking frame proves the engine is producing just as a
+                  // token does, so it refreshes the watchdog. It deliberately
+                  // does NOT set `streaming`: that collapses the budget to the
+                  // 30s wedge timer, and this node thinks for up to 47s before
+                  // the first visible character. Reasoning is displayed, never
+                  // appended to liveRef, so it cannot enter a checkpoint or the
+                  // answer the guest is charged for.
+                  if (msg.th) { lastToken = Date.now(); setThinking(x => x + msg.th); }
                   // A checkpoint frame is written after the tokens it covers,
                   // so at this instant liveRef holds exactly the prefix that
                   // msg.cp.h hashes. Snapshotting here, rather than tracking
@@ -659,8 +678,23 @@ export default function App() {
                   {servedByCloud && (
                     <div className="note">Served by the hosted kitchen: this text is a fixed demo passage, not model inference. Its on-chain settlements are real.</div>
                   )}
+                  {/* Collapsed by default, and open on its own while nothing
+                      visible has arrived yet. Before this existed the guest saw
+                      an empty box for the whole reasoning phase, which reads as
+                      a broken node rather than as a working one. Reasoning is
+                      plain text, not markdown: it is untrusted provider output
+                      and there is no reason to give it a renderer. */}
+                  {thinking && (
+                    <div className={'thinking' + (thinkOpen || !stream ? ' open' : '')}>
+                      <button className="thinking-head" onClick={() => setThinkOpen(o => !o)}>
+                        {stream ? '▸ thought before answering' : '◌ thinking…'}
+                        <span className="dim"> ({Math.ceil(thinking.length / 4)} tok, not billed)</span>
+                      </button>
+                      {(thinkOpen || !stream) && <div className="thinking-body">{thinking}</div>}
+                    </div>
+                  )}
                   <div className="md" dangerouslySetInnerHTML={{ __html: renderedStream }} />
-                  {busy && !stream && <span className="caret">▍</span>}
+                  {busy && !stream && !thinking && <span className="caret">▍</span>}
                   {artifacts.length > 0 && (
                     <div className="artifacts">
                       {artifacts.map(a => <button key={a.name} onClick={() => download(a)}>⭳ {a.name}</button>)}

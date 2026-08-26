@@ -72,6 +72,18 @@ select:focus, input:focus, textarea:focus { outline:none; border-color:var(--min
 .msg.assistant { background:var(--panel); align-self:stretch; border-bottom-left-radius:3px; }
 .msg.assistant .md > *:first-child { margin-top:0; }
 .msg.assistant .md > *:last-child { margin-bottom:0; }
+/* Reasoning. Dimmer and smaller than the answer on purpose: it is context for
+   why the node is quiet, not the thing the guest asked for. The body scrolls
+   itself so a 3,000 token reasoning trace cannot push the answer off screen. */
+.thinking { border:1px dashed var(--line); border-radius:8px; margin-bottom:12px;
+  background:var(--ink); }
+.thinking-head { display:block; width:100%; text-align:left; background:none; border:none;
+  color:var(--dim); font-size:12px; padding:8px 10px; cursor:pointer; }
+.thinking-head:hover { color:var(--mint); }
+.thinking.open .thinking-head { border-bottom:1px dashed var(--line); }
+.thinking-body { padding:10px; max-height:180px; overflow-y:auto; white-space:pre-wrap;
+  font-size:12px; line-height:1.5; color:var(--dim); }
+
 .caret { color:var(--mint); animation:blink 1s step-start infinite; }
 @keyframes blink { 50% { opacity:0; } }
 .artifacts { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px;

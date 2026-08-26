@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { formatEther, keccak256, parseEther, parseEventLogs, stringToHex, toHex } from 'viem';
 import { ABI, ADDR, EXPLORER, pub, wallet } from './chain';
-import { mock, ollama, openai, SYSTEM_PROMPT } from './engines';
+import { mock, ollama, openai, SYSTEM_PROMPT, type Chunk } from './engines';
 import { describeHardware, probeHardware } from './hardware';
 
 const w = wallet(process.env.PROVIDER_PK!);
@@ -80,7 +80,7 @@ const HW = probeHardware();
 let firstTokenMs: number | null = null;
 let gpuFraction: number | null = null;
 
-type Engine = { kind: string; model: string; gen: (p: string, signal?: AbortSignal) => AsyncGenerator<string> };
+type Engine = { kind: string; model: string; gen: (p: string, signal?: AbortSignal) => AsyncGenerator<Chunk> };
 async function pickEngine(): Promise<Engine> {
   if (process.env.ENGINE !== 'mock') {
     if (process.env.LLM_BASE_URL) {
@@ -246,18 +246,21 @@ const GUEST_HTML = `<!doctype html><meta charset="utf-8"><meta name=viewport con
 <div id=est style="color:#6b7a89;font-size:12px"></div>
 <button id=b style="background:#10161f;color:#9fef00;border:1px solid #9fef00;padding:10px 18px;cursor:pointer">place order</button>
 <span id=st style="color:#9fef00"></span>
+<div id=th style="display:none;white-space:pre-wrap;background:#0d131c;border:1px dashed #1d2733;padding:10px;color:#6b7a89;font-size:12px;max-height:140px;overflow-y:auto"></div>
 <pre id=o style="white-space:pre-wrap;background:#10161f;border:1px solid #1d2733;padding:12px;min-height:240px"></pre>
 <script>
 var BUDGET=${PROMPT_BUDGET};
 function upd(){var n=Math.ceil(p.value.length/4);est.textContent=n+' / '+BUDGET+' tokens (estimate)';est.style.color=n>BUDGET?'#ff6b6b':'#6b7a89';b.disabled=n>BUDGET;}
 p.oninput=upd;upd();
-b.onclick=async()=>{o.textContent='';st.textContent=' — opening job on the laptop…';b.disabled=true;
+b.onclick=async()=>{o.textContent='';th.textContent='';th.style.display='none';st.textContent=' — opening job on the laptop…';b.disabled=true;
 try{const r=await fetch('/lanjob',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({prompt:p.value})});
 if(!r.ok){st.textContent=' — '+(await r.text());b.disabled=false;return;}
 const rd=r.body.getReader(),d=new TextDecoder();let buf='';
 for(;;){const{done,value}=await rd.read();if(done)break;buf+=d.decode(value,{stream:true});let i;
 while((i=buf.indexOf('\\n'))>=0){const l=buf.slice(0,i);buf=buf.slice(i+1);
-if(l.startsWith('data: ')&&l!=='data: [DONE]'){try{var j=JSON.parse(l.slice(6));if(j.t)o.textContent+=j.t}catch(e){}}}}
+if(l.startsWith('data: ')&&l!=='data: [DONE]'){try{var j=JSON.parse(l.slice(6));
+if(j.th){th.style.display='block';th.textContent+=j.th;th.scrollTop=th.scrollHeight;st.textContent=' — thinking…';}
+if(j.t){st.textContent=' — streaming…';o.textContent+=j.t}}catch(e){}}}}
 st.textContent=' — order up. settlements live on Monad testnet.';}catch(e){st.textContent=' failed: '+e;}
 b.disabled=false;upd();};
 </script>`;
@@ -283,9 +286,26 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
   let produced = 0;
   let prefix = resume?.text ?? '';
   let sinceCp = 0;
+  // Unbilled reasoning, accumulated only to report the ratio. This node
+  // performs roughly twice the compute it invoices and nothing measured it
+  // per job until now.
+  let thought = '';
   try {
-    for await (const tok of e.gen(effective, ac.signal)) {
+    for await (const c of e.gen(effective, ac.signal)) {
       if (res.writableEnded) break;
+      // Reasoning is forwarded and nothing else. It is not billed, because
+      // `delta` is what settle() charges for; it is not appended to `prefix`,
+      // because the checkpoint hash must cover exactly the text a replacement
+      // provider can be handed to reproduce. Its only job is to tell the
+      // browser that a 15 to 47 second silence is a model working rather than
+      // an engine wedged, which was aborting jobs before they produced a
+      // single visible character.
+      if (c.th !== undefined) {
+        thought += c.th;
+        res.write(`data: ${JSON.stringify({ th: c.th })}\n\n`);
+        continue;
+      }
+      const tok = c.t;
       res.write(`data: ${JSON.stringify({ t: tok })}\n\n`);
       prefix += tok;
       produced++;
@@ -304,6 +324,10 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
     if (!res.writableEnded) res.write(`data: ${JSON.stringify({ err: String(err?.message ?? err) })}\n\n`);
   }
   clearInterval(hb);
+  if (thought) {
+    const th = estTokens(thought);
+    console.log(`[job#${jobId}] ${produced} tok billed, ~${th} tok thinking unbilled (${Math.round((th / (th + produced || 1)) * 100)}% of output)`);
+  }
   if (!res.writableEnded) {
     res.write(`data: ${JSON.stringify({ cp: { n: (resume?.n ?? 0) + produced, h: keccak256(stringToHex(prefix)), final: true } })}\n\n`);
     res.write('data: [DONE]\n\n');

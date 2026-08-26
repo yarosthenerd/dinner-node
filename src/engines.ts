@@ -25,9 +25,21 @@ async function* lines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> 
   if (buf.trim()) yield buf;
 }
 
-export async function* mock(prompt: string): AsyncGenerator<string> {
+/**
+ * One frame from an engine.
+ *
+ * `t` is visible output: it is billed, it enters the checkpoint chain, and it
+ * is what the guest reads. `th` is the model's reasoning, which a reasoning
+ * model produces for 15 to 47 seconds before the first visible character on
+ * the reference node. Separating them at the source is what lets the host
+ * forward proof-of-life to the browser without either billing for it or
+ * putting it in a hash the next provider has to reproduce.
+ */
+export type Chunk = { t: string; th?: never } | { th: string; t?: never };
+
+export async function* mock(prompt: string): AsyncGenerator<Chunk> {
   const text = `Analyzing request "${prompt.slice(0, 60)}". This response is being served by idle hardware someone left on. Every token you read is a micropayment settling on Monad. At this rate the host machine funds its owner's dinner in roughly one streaming session. Proof: watch the settlement feed. `;
-  for (const w of text.split(' ')) { yield w + ' '; await sleep(30); } // ~33 tok/s
+  for (const w of text.split(' ')) { yield { t: w + ' ' }; await sleep(30); } // ~33 tok/s
 }
 
 // Ollama unloads a model after five minutes idle by default, and a 27B evicting
@@ -63,7 +75,7 @@ export const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ?? [
   'Do not preface answers with dates, hedges, or apologies for what you might not know.',
 ].join(' ');
 
-export async function* ollama(prompt: string, model: string, signal?: AbortSignal, numCtx?: number, system: string = SYSTEM_PROMPT): AsyncGenerator<string> {
+export async function* ollama(prompt: string, model: string, signal?: AbortSignal, numCtx?: number, system: string = SYSTEM_PROMPT): AsyncGenerator<Chunk> {
   const res = await fetch('http://localhost:11434/api/generate', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -81,12 +93,16 @@ export async function* ollama(prompt: string, model: string, signal?: AbortSigna
   for await (const l of lines(res.body)) {
     let j: any;
     try { j = JSON.parse(l); } catch { continue; }
-    if (j.response) yield j.response;
+    // Ollama returns reasoning in its own field, never in `response`. Yielding
+    // it as a distinct frame is what stops it being billed or checkpointed
+    // while still letting the host prove the engine is alive.
+    if (j.thinking) yield { th: j.thinking };
+    if (j.response) yield { t: j.response };
     if (j.done) return;
   }
 }
 
-export async function* openai(prompt: string, base: string, model: string, signal?: AbortSignal): AsyncGenerator<string> {
+export async function* openai(prompt: string, base: string, model: string, signal?: AbortSignal): AsyncGenerator<Chunk> {
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ model, stream: true, messages: [
@@ -99,8 +115,14 @@ export async function* openai(prompt: string, base: string, model: string, signa
     if (!l.startsWith('data: ')) continue;
     if (l === 'data: [DONE]') return;
     try {
-      const d = JSON.parse(l.slice(6)).choices?.[0]?.delta?.content;
-      if (d) yield d;
+      const delta = JSON.parse(l.slice(6)).choices?.[0]?.delta;
+      // There is no standard field name for reasoning on the OpenAI-compatible
+      // wire. OpenRouter sends `reasoning`, vLLM and DeepSeek send
+      // `reasoning_content`. Accept both; a server that sends neither simply
+      // produces no thinking frames.
+      const r = delta?.reasoning ?? delta?.reasoning_content;
+      if (r) yield { th: String(r) };
+      if (delta?.content) yield { t: delta.content };
     } catch { continue; }
   }
 }
