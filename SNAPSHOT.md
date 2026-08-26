@@ -1,3 +1,278 @@
+# Session snapshot, 2026-08-26 (evening)
+
+> Newest first. Earlier snapshots follow below, unchanged.
+> `TODO.md` remains the roadmap; this is the build and defect state.
+
+## 1. Headline
+
+The node now runs a model that fits its work, at a price taken from that
+model's own market, on a settlement cadence derived from measured gas rather
+than from a timer. Three numbers this project has been reasoning from were
+wrong, and all three were found by measuring rather than by reading:
+
+- **`settle` costs 100,915 gas, not 28,809.** Every economic figure in
+  section 4 of the previous snapshot was built on a constant that was never
+  achievable. See section 5.
+- **`firstTokenMs` was measuring a thinking token.** It published 616 ms while
+  the real wait is 15 s to 47 s. See section 4.
+- **The reference 27B runs at 5.2 to 6.3 tok/s at every context**, and reducing
+  context does not help, because its weights overflow VRAM before any KV cache
+  exists. It is retired from this node.
+
+## 2. Model selection, measured not assumed
+
+All measured warm on the RTX 5070 Ti Laptop, 12,227 MiB, at `num_ctx` 16384.
+
+| model | GPU split | tok/s short | tok/s @9.1k prompt | prompt eval | first visible token |
+|---|---|---|---|---|---|
+| qwen3:8b | **100% GPU** | 53.9 | 37.9 | 2,123 tok/s | 181 ms |
+| **qwen3.6:35b-a3b** | 56%/44% CPU | 44.3 | 56.2 | 505 tok/s | 15.0 s |
+| qwen3.8:27b | 51%/49% CPU | 6.3 | 5.7 | 158 tok/s | ~10 s |
+
+Context sweep for qwen3:8b: 50.9 / 49.3 / 49.4 tok/s at 4k / 8k / 16k, all
+100% GPU, dropping to **27.8 tok/s and 28% on CPU at 32768**, and to 4.5 tok/s
+on a 20,617 token prompt. The "one model fits all PCs" claim holds only up to
+16k context. `CONTEXT_TOKENS` is now 16384 for exactly this reason.
+
+**Chosen: `qwen3.6:35b-a3b` at 16384.** It earns roughly 1.7x the 8B per hour
+of wall clock and 3.4x the 27B, because revenue is throughput times price and
+it is the only one of the three that is good at both.
+
+qwen3:8b stays in `src/models.ts` as the right answer for a node with less
+VRAM. It is the fastest and the only one with 100% residency, and it earns the
+least, because at $0.454/M it needs a 449 token answer just to cover gas.
+
+## 3. Rate raised to $1.006/M
+
+`RATE_PER_MILLION` 2.67e19 -> **3.353e19**, live on chain at tx
+`0xa47f844b…a854e1`, verified by reading the provider struct back.
+
+Sourced from this model's own market rather than from a general band: ten
+providers serve qwen3.6 35B A3B on OpenRouter at a weighted average of
+**$1.006/M output** and $0.1082/M input, cheapest credible $0.6996 (Darkbloom),
+modal $1.00. DinnerNode bills output only, so input is free here.
+
+`CLOUD_RATE_PER_MILLION` in `web/api/p/health.js` moved with it, or the receipt
+would show two prices for one service.
+
+A4, the long-tail assumption, is **refuted for this model**: ten providers
+serve it. The position taken is "at market for a model everyone has", with
+continuity and the committed plan ceiling as the reason to choose this node,
+rather than "premium for a model nobody has".
+
+## 4. Defects found and fixed
+
+**`settle` fired on a 3 second timer.** Gas per settle is fixed and revenue per
+settle is tokens times rate, so a timer charged identical gas for 12 tokens on
+a slow node and 159 on a fast one. Replaced with a value trigger: settle once
+the unsettled tokens are worth `SETTLE_GAS_MULTIPLE` (10) times the current
+cost of settling them, with a 60 s backstop and the end-of-stream flush that
+already existed. Verified in production on job#49: **one settle for 509 tokens**
+where the timer would have fired three or four.
+
+**The settlement gas constant was self-calibrated after being found wrong.**
+`SETTLE_GAS_UNITS` was a hardcoded 34,571. It now takes whatever
+`estimateContractGas` last returned for a real settle, seeded at 101,000, and
+`/health` publishes it. See section 5.
+
+**`firstTokenMs` measured a thinking token.** The probe used
+`stream: false, num_predict: 1`. Ollama returns reasoning in a separate
+`thinking` field and `num_predict` counts those tokens, so the probe stopped
+after one thinking token and published 616 ms. Measured properly, first
+*visible* token on this node is 15.0 s for a short factual question, 21.0 s for
+a reasoning question and **46.6 s for a 900 word briefing**. The browser sizes
+its abort budget from this number, so 616 ms told every guest to give up while
+the model was still thinking. Now streamed, uncapped, read to the first visible
+character, on a real question rather than `hi`. Publishes 7.7 s to 14.1 s.
+
+**The answer opened with "as of 2024-2025".** Reasoning models volunteer a
+knowledge-cutoff hedge. `src/engines.ts` now sends a node-side `SYSTEM_PROMPT`
+on both the ollama and openai-compatible paths, overridable per operator. It
+deliberately does not say "never mention your cutoff", because suppressing the
+caveat pushes the model to state dated figures as current. It says where the
+caveat belongs: at the point it affects an answer. Its 86 tokens are subtracted
+from `PROMPT_BUDGET`, which went 14,336 -> 14,250, so `/health` cannot promise
+context the engine will not have.
+
+**`releaseJob` waited 5 seconds, sized against a cadence that no longer
+exists.** With up to 60 s able to go unsettled, closing that early could
+confiscate an entire answer's worth of delivered tokens on any failover. The
+grace now comes from the node's published `settleMaxMs` plus five seconds.
+
+**Per-job escrow was 34 seconds of output.** At the new rate 0.05 MON buys
+1,491 tokens, and when a settle exhausts the escrow the contract closes the job
+itself (`DinnerNode.sol:78`), cutting the answer off mid-sentence. Raised to
+**0.10 MON**, about 2,980 tokens or 68 s at 44 tok/s, which clears the measured
+900 word briefing roughly 2.5x over. The three faucet constants were re-derived
+with it: `TOPUP_TRIGGER` 0.1 -> 0.25, `TOPUP_AMOUNT` 0.15 -> 0.3,
+`TOPUP_RECIPIENT_MAX` 0.5 -> 0.7. The invariant is unchanged: the trigger must
+clear the cost of one full order (0.10 escrow plus about 0.06 gas) and must sit
+below the recipient ceiling, or the app loops on a top-up that is always
+refused.
+
+**The behaviour template dropdown did nothing.** Two compounding defects.
+`applyEngramSanitization` skips every engram that is not `ai/privacy` or tagged
+`sanitization`, so five of six community templates were stored, counted in the
+panel summary, and never reached the model. And `preparePrompt` runs before
+`openJob` while `applyPendingEngrams` runs after, so even the one privacy
+template arrived a job late. Fixed with `resolvePendingEngrams` and
+`behavioralPreamble`, the preamble prepended after redaction so maximal
+strictness cannot eat the place name out of a location template. 14 new tests.
+
+**The cloud kitchen ignored `resume`.** It destructured `{ jobId, prompt }` and
+streamed one hardcoded sentence. It now verifies the checkpoint hash, 400s on
+mismatch, 413s on a prefix over 200k chars, emits chained checkpoints every 64
+tokens plus a final one, and settles only the tokens it produces. Migration is
+triggerable from a browser for the first time. The continuation passage is
+still canned and is labelled as such.
+
+**Claims the UI made that the code contradicted.** The footer advertised a ZK
+identity layer that was removed from `App.tsx`; `terms.html` 2.7 said "none of
+it is transmitted to us" while `/api/topup` receives the wallet address and
+`/api/p/job` receives the prompt; an answer that failed over to the hosted
+kitchen showed canned text with no label, because the disclosure only fired
+when the guest had *selected* that endpoint. All three corrected.
+
+**The receipt showed one row labelled TOTAL.** The feed loop pushed a row only
+when `open || id === n2` and broke at the first open job, so a section headed
+"live settlements" discarded every completed settlement it had just read from
+chain. Now walks the whole 25-job window, labelled "last 25 jobs" and "WINDOW
+TOTAL" rather than implying an all-time figure. Also removed a duplicate
+`eth_getBalance` and a duplicate `jobCounter` read on every 30 s poll.
+
+## 5. The gas correction
+
+Read from the receipts of job#49, not modelled:
+
+| | assumed everywhere before | measured |
+|---|---|---|
+| `settle` | 34,571 gas / 0.0035 MON | **100,915 gas / 0.010293 MON** |
+| `closeJob` | 32,047 gas / 0.0033 MON | **57,044 gas / 0.005818 MON** |
+| per job | 0.0068 MON | **0.016112 MON** |
+
+The `28,809 warm` figure in `web/api/p/_lib.js` was never achievable. `settle`
+writes four already-non-zero slots, so 21,000 intrinsic plus 4 x 5,000 is a
+41,000 floor before a single SLOAD or event. That comment is the origin of the
+wrong economics in the previous snapshot's section 4 and everything derived
+from it. **It has not yet been corrected at the source.**
+
+Consequence: **job#49 earned 0.0135903 MON for 509 tokens and cost 0.016112 in
+gas. It lost 0.0025 MON.** The value trigger still saved roughly 0.02 MON on
+that job by collapsing four settlements into one; the floor is simply higher
+than believed.
+
+Break-even answer length on measured gas:
+
+| | break-even | if the guest paid closeJob |
+|---|---|---|
+| old rate $0.80/M | 603 tok | 386 tok |
+| **new rate $1.006/M** | **481 tok** | 307 tok |
+
+Ten times the measured settle cost is 3,855 tokens and the whole escrow is
+2,980, so the k=10 threshold is unreachable inside one job. **Every job now
+settles exactly once, at the end.** That is the correct behaviour at this rate,
+not a bug.
+
+**Decision taken:** `closeJob` stays with the provider. Moving it to the guest
+is the larger lever (36% of provider cost against 25.6% of added revenue) but
+today the guest is faucet-funded from `HOUSE_PK`, so it moves cost to the house
+rather than out of the system, and it creates a locked-escrow case when a guest
+closes the tab, which V1 has no expiry for. The better fix is in the contract:
+`settle` already closes the job in the escrow-exhausted branch, so `closeJob`
+is a pure refund transaction. V2 should fold the refund into the final settle.
+
+## 6. Income at the new rate, and the unpaid half
+
+800-token answers, measured gas, 250W **[A]** and $0.11/kWh, MON $0.03.
+
+| | gross/h | gas/h | net/h | net/mo at 100% |
+|---|---|---|---|---|
+| counting generation only | $0.1604 | $0.0964 | $0.0366 | $26.69 |
+| **including measured thinking** | $0.0876 | $0.0526 | **$0.0075** | **$5.47** |
+
+**Thinking is not billed and it is most of the compute.** Ollama returns
+reasoning in a separate `thinking` field, `src/engines.ts` correctly yields
+only `response`, and `active.get(jobId).delta++` therefore counts visible
+tokens only. Measured on this node:
+
+| prompt | thinking produced | billed | unpaid share of compute |
+|---|---|---|---|
+| short factual | ~732 tok | 800 | **47.8%** |
+| reasoning | ~931 tok | 800 | **53.8%** |
+| 900 word briefing | ~3,090 tok | ~1,200 | **72.0%** |
+
+So the node performs roughly twice the work it invoices, and the 15 s to 47 s
+of thinking is wall clock during which it earns nothing. That is what takes an
+800-token job from $26.69/month to $5.47/month at full utilization.
+
+OpenRouter providers bill reasoning tokens as output tokens, so **the market
+convention is to charge for them and this node does not.** Counting them in
+`delta` is arithmetically trivial and roughly doubles revenue per job. It
+carries one design tension worth deciding deliberately: thinking text is not in
+the checkpoint chain, so a settlement that includes it can no longer be fully
+reconstructed from the published prefix, which weakens "the replacement settles
+only the suffix it produced, verified against a keccak checkpoint" from a
+provable claim to a partly-trusted one. **Not changed. Flagged for decision.**
+
+Margin is otherwise flat across utilization, because gross, gas and electricity
+all scale with it. **Utilization scales income without changing the
+economics.** What changes them is answer length, since `settle` plus `closeJob`
+are fixed per job. Below 481 output tokens every job loses money however busy
+the node is.
+
+For the first time the economics and the positioning agree: long jobs are both
+the only ones that pay and the only ones mid-answer migration is worth
+anything for. Short chat is a segment to decline rather than to lose.
+
+## 7. Live state
+
+```
+node        qwen3.6:35b-a3b, CONTEXT_TOKENS=16384, promptBudget 14250
+rate        3.353e19 wei/M ($1.006/M), on chain, verified
+provider    0x055a…326A, active, 0.75 MON
+contract    V1 0xaF2c…3A92, unchanged. V2 still a draft, still not deployed.
+tunnel      https://litter-unfunded-improvise.ngrok-free.dev  200
+settle      value trigger k=10, 60s backstop, self-calibrating gas units
+web         tsc clean, oxlint clean, 61 tests passing, vite build clean
+```
+
+**Nothing in this session is committed.** The working tree carries changes to
+`src/host.ts`, `src/engines.ts`, `src/setup.ts`, `web/api/p/job.js`,
+`web/api/topup.js`, `web/api/p/health.js`, `web/public/terms.html`,
+`web/public/hosting.html`, `web/src/App.tsx`, `web/src/config.ts`,
+`web/src/components/EngramSelector.tsx`, `web/src/lib/engram-integration.ts`,
+plus untracked `src/hardware.ts`, `src/models.ts` and two new test files.
+**Production has not been redeployed since the rate change**, so the live site
+still ships the old escrow and faucet constants.
+
+## 8. Open, in priority order
+
+1. **The browser cannot see thinking.** The host emits `{t}` frames only for
+   visible output, so 15 to 47 seconds of reasoning is indistinguishable from a
+   wedged engine, against a 60 s cold budget measured on an idle machine.
+   Job#50 in testing died as `This operation was aborted` with 0 tokens, which
+   is consistent with the watchdog firing during thinking. Needs a `{th}` frame
+   and a browser that shows it. **This will bite in a demo.**
+2. **Decide whether thinking tokens are billed.** See section 6: the node
+   performs about twice the compute it invoices, and the market convention is
+   to charge for it. Doubles revenue per job; costs some of the checkpoint
+   claim's strength.
+3. **Correct the gas comment in `web/api/p/_lib.js`** and the economics in the
+   2026-08-26 morning snapshot section 4 that derive from it.
+4. **Deploy.** The live site runs the pre-rate-change bundle.
+5. **Node distribution.** `src/discovery.ts` works and is not deployed:
+   `VITE_DISCOVERY_URL` is unset, and it listens on plain http which an https
+   page cannot fetch. There is no routing policy of any kind, and `PUBLIC_URL`
+   is unset so a second node cannot announce itself. Deliberately deferred.
+6. Cloud kitchen still returns canned text. `HOUSE_PK` is still both faucet and
+   cloud-kitchen provider key. `web/api/topup.js` must be deleted before
+   mainnet. The five same-day legal edits remain unapplied.
+7. Meter the wall draw to retire A2. The GPU rail alone reads 47 W on a model
+   at 100% GPU, so the 250 W estimate is probably pessimistic and every net
+   figure above with it.
+
+---
+
 # Session snapshot, 2026-08-26
 
 > Newest first. The 2026-08-25 snapshot follows below and is unchanged.

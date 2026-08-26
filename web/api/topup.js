@@ -37,8 +37,12 @@ const chain = defineChain({
   rpcUrls: { default: { http: ['https://testnet-rpc.monad.xyz'] } },
 });
 
-const AMOUNT = parseEther(process.env.TOPUP_AMOUNT ?? '0.15');
-const RECIPIENT_MAX = parseEther(process.env.TOPUP_RECIPIENT_MAX ?? '0.5');
+// Must lift a guest holding nothing to above the cost of one full order
+// (0.10 escrow + ~0.06 gas), or a grant arrives that still cannot buy anything.
+const AMOUNT = parseEther(process.env.TOPUP_AMOUNT ?? '0.3');
+// Must sit ABOVE TOPUP_TRIGGER in web/src/App.tsx (0.25), or the app asks for
+// a top-up the faucet always refuses and loops forever.
+const RECIPIENT_MAX = parseEther(process.env.TOPUP_RECIPIENT_MAX ?? '0.7');
 const HOUSE_FLOOR = parseEther(process.env.TOPUP_HOUSE_FLOOR ?? '0.5');
 const COOLDOWN_MS = 60_000;
 const REFUSAL_COOLDOWN_MS = 5_000;

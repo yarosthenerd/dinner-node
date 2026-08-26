@@ -1,11 +1,12 @@
 import 'dotenv/config';
 import http from 'node:http';
 import os from 'node:os';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { keccak256, parseEther, parseEventLogs, stringToHex, toHex } from 'viem';
+import { formatEther, keccak256, parseEther, parseEventLogs, stringToHex, toHex } from 'viem';
 import { ABI, ADDR, EXPLORER, pub, wallet } from './chain';
-import { mock, ollama, openai } from './engines';
+import { mock, ollama, openai, SYSTEM_PROMPT } from './engines';
+import { describeHardware, probeHardware } from './hardware';
 
 const w = wallet(process.env.PROVIDER_PK!);
 const me = w.account.address;
@@ -24,7 +25,12 @@ const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT_JOBS ?? 2);
 // Roughly four characters per token. Deliberately an estimate: it only has to
 // be good enough to reject an impossible prompt before any money moves.
 const estTokens = (s: string) => Math.ceil(s.length / 4);
-const PROMPT_BUDGET = CONTEXT_TOKENS - OUTPUT_RESERVE;
+// The serving instruction is sent with every job and occupies context like any
+// other text, so it comes out of the budget. Leaving it out would advertise a
+// number the engine cannot honour, which is the same class of defect as the
+// missing num_ctx: a prompt accepted here and silently truncated there.
+const SYSTEM_TOKENS = Math.ceil(SYSTEM_PROMPT.length / 4);
+const PROMPT_BUDGET = CONTEXT_TOKENS - OUTPUT_RESERVE - SYSTEM_TOKENS;
 
 // HOST_PRIORITY decides who loses when the machine is busy. "owner" means the
 // person sitting at the keyboard wins and guests get throttled early; "guest"
@@ -59,10 +65,20 @@ const throttleMs = () => {
 };
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-function probeHW(): string {
-  const gpu = spawnSync('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader']).stdout?.toString().trim();
-  return `${gpu || 'CPU-only'} | ${os.cpus().length} cores | ${Math.round(os.totalmem() / 1e9)}GB | ${os.hostname()}`;
-}
+// Probed once at start. The string goes on chain in the provider record, so a
+// guest choosing between nodes sees what they are choosing between.
+const HW = probeHardware();
+
+/**
+ * What a guest has to wait for before the first token, and how much of the
+ * model is actually on the GPU. Both are measured rather than assumed, and
+ * both are published on /health, because the guest's stream watchdog has to
+ * size its patience from something. A node serving a model too large for its
+ * VRAM answers in minutes, and a client that gives up at sixty seconds aborts
+ * every job on it before a single token exists.
+ */
+let firstTokenMs: number | null = null;
+let gpuFraction: number | null = null;
 
 type Engine = { kind: string; model: string; gen: (p: string, signal?: AbortSignal) => AsyncGenerator<string> };
 async function pickEngine(): Promise<Engine> {
@@ -83,7 +99,7 @@ async function pickEngine(): Promise<Engine> {
 }
 const engineP = pickEngine();
 
-const active = new Map<bigint, { delta: number }>();
+const active = new Map<bigint, { delta: number; since: number }>();
 // gate() runs two awaited round trips before serveJob populates `active`, so
 // concurrent requests all saw size 0 and the concurrency ceiling never bound.
 // Count in-flight requests from the moment the gate admits one instead.
@@ -112,6 +128,10 @@ async function gasFor(fn: string, args: readonly unknown[], fallback: bigint): P
 // completed payment, which is the worst possible way for this to fail.
 async function sendChecked(label: string, fn: string, args: readonly unknown[], fallback: bigint) {
   const gas = await gasFor(fn, args, fallback);
+  // Monad charges the limit, so this is what the call actually costs. Feeding it
+  // back is what keeps the settlement threshold calibrated to reality instead of
+  // to a constant somebody measured once on a different contract state.
+  if (fn === 'settle') settleGasUnits = gas;
   const h = await w.writeContract({ address: ADDR, abi: ABI, functionName: fn as any, args: args as any, gas, maxFeePerGas: 2000000000000n });
   const rc = await pub.waitForTransactionReceipt({ hash: h });
   if (rc.status !== 'success') throw new Error(`${label} reverted (gas ${gas}, used ${rc.gasUsed}) ${EXPLORER}/tx/${h}`);
@@ -124,7 +144,81 @@ const settle = (jobId: bigint, delta: number) => {
       .then(h => console.log(`  [settle] job#${jobId} +${delta} tok  ${EXPLORER}/tx/${h}`))
       .catch(e => console.log(`  [settle] FAILED job#${jobId}:`, (e as any).shortMessage ?? (e as any).message)));
 };
-setInterval(() => { for (const [id, j] of active) if (j.delta > 0) { settle(id, j.delta); j.delta = 0; } }, 3000);
+// SETTLEMENT CADENCE.
+//
+// This was a flat 3 second timer, and that is the single most expensive line
+// the project has had. Gas per settle is fixed; revenue per settle is
+// tokens x RATE, so a timer charges identical gas no matter how much work it
+// covers. Measured: settle costs 28,809 gas warm, Monad charges the limit
+// rather than the usage, and gasFor adds 20 percent, so 34,571 gas is charged
+// every time. At 102 gwei that is 0.00353 MON. At RATE = 2.67e19 wei per
+// million, a token earns 0.0000267 MON. Gas therefore equals revenue at
+// exactly 132 tokens per settle, and every settle covering fewer than that
+// loses the provider money.
+//
+// A 3 second timer covers 12 tokens on a node running 4 tok/s and 159 on one
+// running 53, so the same interval is a 10x loss on one machine and roughly
+// break-even on the next. Node speed is not something this file can know.
+//
+// So the trigger is denominated in value instead. Settle once the unsettled
+// tokens are worth SETTLE_GAS_MULTIPLE times what it currently costs to settle
+// them. That self-corrects for a slow node, a fast node, and a base fee spike,
+// which is the third variable: at 2000 gwei break-even moves from 132 tokens to
+// 2,590, and any hardcoded token count would be catastrophically wrong there.
+//
+// k = 10 puts gas at about 9 percent of each settlement. SETTLE_MAX_MS is the
+// backstop so a very slow node still pays out on a human timescale, and the
+// end-of-stream flush in serveJob settles whatever is left regardless.
+const SETTLE_GAS_MULTIPLE = BigInt(process.env.SETTLE_GAS_MULTIPLE ?? 10);
+const SETTLE_MAX_MS = Number(process.env.SETTLE_MAX_MS ?? 60000);
+// SELF-CALIBRATING, because the hardcoded figure was wrong by 2.9x.
+//
+// This was 34571n, from a "28,809 warm" measurement carried in
+// web/api/p/_lib.js and repeated through SNAPSHOT's economics. The first job
+// served after the value trigger shipped (job#49) charged 100,915 gas for its
+// settle and 57,044 for its closeJob, so the real estimate is about 84,000 and
+// the constant understated the cost of settling by nearly three times. Every
+// threshold derived from it fired far too early.
+//
+// A constant cannot be right here anyway: settle costs more the first time a
+// provider is ever paid, more again when a storage slot goes from zero to
+// non-zero, and the contract may change under it. gasFor already asks the node
+// for a real estimate before every call, so the threshold now uses what that
+// estimate last returned and only falls back to a static figure before the
+// first settlement of the process.
+//
+// Seeded high on purpose. Being pessimistic settles later, which costs the
+// provider a little unsettled exposure; being optimistic settles too often,
+// which costs real money on every job.
+let settleGasUnits = 101000n;
+
+// Cached rather than read per tick. It only sizes a threshold, so a value up to
+// fifteen seconds stale is fine, and this runs once per second per job.
+let gasPriceWei = 102_000_000_000n;
+const refreshGasPrice = async () => {
+  try { gasPriceWei = await pub.getGasPrice(); } catch {}
+};
+refreshGasPrice();
+setInterval(refreshGasPrice, 15000).unref?.();
+
+/** What one settle transaction costs right now, in wei. */
+const settleCostWei = () => settleGasUnits * gasPriceWei;
+/** What `delta` unsettled tokens are worth, in wei. */
+const settleValueWei = (delta: number) => (BigInt(delta) * RATE) / 1_000_000n;
+
+setInterval(() => {
+  const now = Date.now();
+  const threshold = settleCostWei() * SETTLE_GAS_MULTIPLE;
+  for (const [id, j] of active) {
+    if (j.delta <= 0) continue;
+    const worthIt = settleValueWei(j.delta) >= threshold;
+    const waitedLongEnough = now - j.since >= SETTLE_MAX_MS;
+    if (!worthIt && !waitedLongEnough) continue;
+    settle(id, j.delta);
+    j.delta = 0;
+    j.since = now;
+  }
+}, 1000);
 
 // Announce to the discovery listener so the web app can find this node by URL.
 // The listener re-checks providers(me) on chain before it trusts any of this.
@@ -172,7 +266,7 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' });
   const e = await engineP;
   const hb = setInterval(() => { try { res.write(': hb\n\n'); } catch {} }, 1000);
-  active.set(jobId, { delta: 0 });
+  active.set(jobId, { delta: 0, since: Date.now() });
 
   // On a resume the earlier text is replayed as context but is never charged
   // again: this node only settles the tokens it actually produces.
@@ -216,7 +310,7 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
     res.end();
   }
   const j = active.get(jobId);
-  if (j && j.delta > 0) { settle(jobId, j.delta); j.delta = 0; }
+  if (j && j.delta > 0) { settle(jobId, j.delta); j.delta = 0; j.since = Date.now(); }
   queue = queue.then(() => sendChecked('closeJob', 'closeJob', [jobId], 120000n)
     .then(h => console.log(`[job#${jobId}] closed  ${EXPLORER}/tx/${h}`))
     .catch(e => console.log(`[job#${jobId}] close FAILED:`, (e as any).shortMessage ?? (e as any).message)));
@@ -272,6 +366,118 @@ function gate(res: http.ServerResponse, prompt: string, resumeText = ''): boolea
   return true;
 }
 
+// Registration needs gas. Setup funds the wallet from the faucet, but the
+// faucet returns before the transfer confirms, so a node started immediately
+// after can come up, fail to register, and listen forever as a provider no
+// guest can find. That failure used to be one line of log and nothing else.
+// Wait for the balance, then retry, then say plainly whether this node is
+// discoverable.
+const REGISTER_MIN_BALANCE = 10n ** 16n; // 0.01 MON, one registration's gas
+
+async function register(e: Engine): Promise<void> {
+  for (let i = 0; i < 24; i++) {
+    const bal = await pub.getBalance({ address: me }).catch(() => 0n);
+    if (bal >= REGISTER_MIN_BALANCE) break;
+    if (i === 0) console.log(`waiting for gas — ${me} holds ${formatEther(bal)} MON`);
+    await sleep(5000);
+  }
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const h = await w.writeContract({
+        address: ADDR, abi: ABI, functionName: 'registerProvider',
+        args: [e.model, describeHardware(HW), RATE], gas: 250000n, maxFeePerGas: 2000000000000n,
+      });
+      await pub.waitForTransactionReceipt({ hash: h });
+      console.log(`registered ${e.kind}/${e.model}\n  tx: ${EXPLORER}/tx/${h}`);
+      break;
+    } catch (err: any) {
+      const msg = err?.shortMessage ?? err?.message ?? String(err);
+      console.log(`register attempt ${attempt}/3 failed: ${msg}`);
+      if (attempt < 3) await sleep(5000 * attempt);
+    }
+  }
+
+  // Whatever happened above, the only thing that matters is what the registry
+  // says. A node that is not active here earns nothing, however healthy it
+  // looks locally.
+  try {
+    const p = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'providers', args: [me] });
+    const [model, , rate, , , , active] = p as unknown as [string, string, bigint, bigint, bigint, bigint, boolean];
+    if (active) console.log(`registry: active as ${model} at ${rate} wei per million tokens`);
+    else console.log('\n  !  NOT REGISTERED — this node is invisible to guests and will earn nothing.\n' +
+                     `     fund ${me} with testnet MON and restart.\n`);
+  } catch {
+    console.log('  !  could not read the registry to confirm registration');
+  }
+}
+
+/**
+ * One short generation, after warming, to learn what this machine's guests are
+ * actually in for. Runs in the background: a slow node must not be a node that
+ * takes ninety seconds to start listening.
+ */
+function measureFirstToken(model: string): void {
+  const t0 = Date.now();
+  fetch('http://localhost:11434/api/generate', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      // Streamed, uncapped, and read until the first VISIBLE character.
+      //
+      // This was `stream: false, num_predict: 1`, which on a reasoning model
+      // measures nothing a guest experiences. Ollama returns thinking in a
+      // separate `thinking` field and num_predict counts those tokens, so the
+      // probe stopped after one thinking token and reported 616 ms while the
+      // real wait on this node is 15 s for a short question and 47 s for a long
+      // one. The browser sizes its abort budget from this number, so publishing
+      // 616 ms told every guest to give up while the model was still thinking.
+      //
+      // The prompt is a real question rather than 'hi', because how long a
+      // reasoning model thinks depends on what it was asked, and 'hi' is the
+      // one input it will not think about.
+      model, prompt: 'In two sentences, what is idle compute?', stream: true,
+      keep_alive: process.env.OLLAMA_KEEP_ALIVE ?? '30m',
+      options: { num_ctx: CONTEXT_TOKENS },
+    }),
+  }).then(async r => {
+    if (!r.ok || !r.body) return;
+    const rd = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    let seen = false;
+    outer: for (;;) {
+      const { done, value } = await rd.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i: number;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+        if (!line) continue;
+        try {
+          const j = JSON.parse(line);
+          if (typeof j.response === 'string' && j.response.length) { seen = true; break outer; }
+          if (j.done) break outer;
+        } catch { /* partial frame */ }
+      }
+    }
+    try { await rd.cancel(); } catch { /* already closed */ }
+    if (!seen) return;
+    firstTokenMs = Date.now() - t0;
+    // /api/ps reports how much of the model ollama could keep in VRAM. Anything
+    // below 1 means layers are running on the CPU, which is the usual reason
+    // firstTokenMs is large.
+    const ps = await fetch('http://localhost:11434/api/ps').then(x => x.json() as Promise<any>).catch(() => null);
+    const m = ps?.models?.find((x: any) => x.name === model || x.model === model);
+    if (m?.size > 0) gpuFraction = Math.min(1, (m.size_vram ?? 0) / m.size);
+    const pct = gpuFraction === null ? '' : `, ${Math.round(gpuFraction * 100)}% on GPU`;
+    console.log(`first token in ${(firstTokenMs / 1000).toFixed(1)}s${pct}`);
+    if (firstTokenMs > 20000) {
+      console.log('  !  that is slow enough that guests will time out. This model does not fit in\n' +
+                  '     this machine\'s VRAM at the current context. Run: npm run setup');
+    }
+  }).catch(() => { /* a node that cannot measure still serves */ });
+}
+
 http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -288,7 +494,16 @@ http.createServer(async (req, res) => {
       ratePerMillion: String(RATE),
       contextTokens: CONTEXT_TOKENS, promptBudget: PROMPT_BUDGET, checkpointEvery: CHECKPOINT_EVERY,
       maxBodyBytes: MAX_BODY, maxConcurrent: MAX_CONCURRENT, activeJobs: active.size,
+      // The guest closes an unfinished job to recover its escrow, and closing
+      // before this node's last flush lands trips settle()'s require(j.open)
+      // and takes tokens the guest already received without paying for them.
+      // Published so the browser waits on THIS node's cadence rather than on a
+      // constant that silently stopped matching when the cadence changed.
+      settleMaxMs: SETTLE_MAX_MS, settleGasMultiple: Number(SETTLE_GAS_MULTIPLE),
+      settleGasUnits: Number(settleGasUnits),
       priority: PRIORITY, pressure: Number(pressure().toFixed(2)),
+      // null until the startup measurement lands, a few seconds in.
+      firstTokenMs, gpuFraction, hardware: describeHardware(HW),
       accepting: pressure() <= THRESHOLDS.hard && active.size < MAX_CONCURRENT,
     }));
   }
@@ -370,9 +585,7 @@ http.createServer(async (req, res) => {
   }
 }).listen(PORT, async () => {
   const e = await engineP;
-  await w.writeContract({ address: ADDR, abi: ABI, functionName: 'registerProvider', args: [e.model, probeHW(), RATE], gas: 250000n, maxFeePerGas: 2000000000000n })
-    .then(h => console.log(`registered ${e.kind}/${e.model}\n  tx: ${EXPLORER}/tx/${h}`))
-    .catch(err => console.log('register failed (non-fatal, already active):', (err as any).shortMessage));
+  await register(e);
   const lan = Object.values(os.networkInterfaces()).flat().find(a => a?.family === 'IPv4' && !a.internal)?.address;
   console.log(`\nprovider ${me} listening on :${PORT}`);
   console.log(`priority=${PRIORITY} soft=${THRESHOLDS.soft} hard=${THRESHOLDS.hard} maxConcurrent=${MAX_CONCURRENT}`);
@@ -397,6 +610,7 @@ http.createServer(async (req, res) => {
       ? `warm in ${((Date.now() - t0) / 1000).toFixed(1)}s`
       : `warm failed: ollama ${r.status}`))
       .catch(err => console.log('warm failed (non-fatal):', err?.message ?? err));
+    measureFirstToken(e.model);
   }
   announce();
   setInterval(announce, 4 * 60 * 1000).unref();

@@ -55,9 +55,9 @@
 <h2>What you need</h2>
 <table>
   <tr><th>Thing</th><th>Why</th></tr>
-  <tr><td>A GPU with 8&nbsp;GB VRAM or more</td><td>Below that you are offloading to CPU and serving single-digit tokens per second, which is slower than a guest will wait.</td></tr>
+  <tr><td>A GPU with 8&nbsp;GB VRAM or more</td><td>Below that you are offloading to CPU and serving single-digit tokens per second, which is slower than a guest will wait. Setup measures your card and picks a model that fits it.</td></tr>
   <tr><td><a href="https://nodejs.org" target="_blank" rel="noreferrer">Node.js</a> 20 or newer</td><td>Runs the provider daemon.</td></tr>
-  <tr><td><a href="https://ollama.com/download" target="_blank" rel="noreferrer">Ollama</a>, with one model pulled</td><td>Does the actual inference. <code>ollama pull qwen3:8b</code> is a reasonable start.</td></tr>
+  <tr><td><a href="https://ollama.com/download" target="_blank" rel="noreferrer">Ollama</a></td><td>Does the actual inference. You do not need to pick a model first: if you have none, setup recommends one for your hardware and offers to pull it.</td></tr>
   <tr><td>Testnet MON for gas</td><td>Every settlement is a transaction. The setup script requests some for you.</td></tr>
   <tr><td class="dim">Optional: <a href="https://developers.cloudflare.com/cloudflare-tunnel/downloads/" target="_blank" rel="noreferrer">cloudflared</a></td><td>Gives your node a public URL so guests beyond your LAN can reach it. No account needed.</td></tr>
 </table>
@@ -74,7 +74,7 @@ missing and it never overwrites a key you already have.</p>
 <p>On the first run it will:</p>
 <ul>
   <li>check Node and Ollama, and tell you what to install if either is absent</li>
-  <li>ask which of your installed models to serve</li>
+  <li>measure your GPU, size every model you have against it, and default to the largest one that fits entirely in VRAM</li>
   <li>generate a node wallet and save it to <code>.env</code> with owner-only permissions</li>
   <li>offer to request testnet MON for it</li>
   <li>register your node on chain so guests can find it</li>
@@ -114,12 +114,35 @@ the point is that the mechanism works, not that it pays.</p>
 </table>
 
 <div class="card">
-  <h3>A note on VRAM</h3>
-  <p>Ollama sizes its KV cache from the context window, so a large <code>CONTEXT_TOKENS</code> costs
-  VRAM on top of the model weights. If your model and context do not fit, Ollama silently spills to
-  system RAM and throughput collapses. If your node feels far slower than it should, lower
-  <code>CONTEXT_TOKENS</code> before you blame the model, and make sure nothing else is holding a
-  model resident on the same GPU.</p>
+  <h3>A note on VRAM, which is the whole game</h3>
+  <p>Ollama does not refuse a model that is too large for your GPU. It loads what fits and runs the
+  rest on the CPU, silently, and throughput collapses. This is the single most common way a node
+  ends up earning nothing: it looks healthy, it is registered, and it is too slow for any guest to
+  wait for.</p>
+  <p>Two things have to fit, not one:</p>
+  <pre><code>need = weights + KV cache + about 0.6 GB of working buffers
+KV cache = context x layers x kv_heads x (key + value width) x 2 bytes</code></pre>
+  <p>The KV cache is not a rounding error. <code>qwen3:8b</code> is 4.9&nbsp;GB of weights and
+  4.5&nbsp;GB of KV cache at the default 32,768 context: sizing on the download size alone is out by
+  nearly a factor of two, and that error is exactly what puts half your model on the CPU.</p>
+  <p>Setup does this arithmetic for you. It reads your VRAM, reads the layer geometry of each model
+  you have installed from Ollama itself, and tells you which ones fit. If one is close, it offers to
+  serve it at a smaller context rather than spilling. If none fit, it offers to pull one that does.</p>
+
+  <h3>Reasonable starting points</h3>
+  <p>Sizes are the Q4 weights Ollama serves, plus the KV cache at a 32,768 context. Measured from
+  the registry, not estimated.</p>
+  <table>
+    <tr><th>Your VRAM</th><th>Model</th><th>Needs</th><th>Note</th></tr>
+    <tr><td>4&nbsp;GB or CPU only</td><td><code>llama3.2:1b</code></td><td>2.8&nbsp;GB</td><td>Runs anywhere. Small answers, but a working node.</td></tr>
+    <tr><td>6&nbsp;GB</td><td><code>qwen2.5:3b</code></td><td>3.5&nbsp;GB</td><td>The cheapest long context of the small models.</td></tr>
+    <tr><td>8&nbsp;GB</td><td><code>qwen3:4b</code></td><td>7.4&nbsp;GB</td><td>The sweet spot on an 8&nbsp;GB card.</td></tr>
+    <tr><td>12&nbsp;GB</td><td><code>qwen3:8b</code></td><td>10.0&nbsp;GB</td><td>General purpose. Fits whole on a 12&nbsp;GB card.</td></tr>
+    <tr><td>16&nbsp;GB or more</td><td><code>qwen3:14b</code></td><td>14.2&nbsp;GB</td><td>Noticeably better answers.</td></tr>
+  </table>
+  <p class="dim">A bigger model that spills is worse than a smaller model that does not. On the
+  reference laptop, a 27B on a 12&nbsp;GB card runs 56% on the CPU and takes 84 seconds to produce
+  its first token with the model already resident. Guests give up long before that.</p>
 </div>
 
 <h2>What you are agreeing to</h2>

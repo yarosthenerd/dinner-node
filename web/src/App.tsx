@@ -5,7 +5,7 @@ import { DISCOVERY, KNOWN_PROVIDERS } from './config';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { EngramSelector } from './components/EngramSelector';
-import { initEngramSystem, preparePrompt, onJobOpen, onJobClose, applyPendingEngrams } from './lib/engram-integration';
+import { initEngramSystem, preparePrompt, onJobOpen, onJobClose, applyPendingEngrams, resolvePendingEngrams, behavioralPreamble } from './lib/engram-integration';
 import type { PendingEngrams } from './lib/engram-integration';
 
 const short = (h: string) => h.slice(0, 6) + '…' + h.slice(-4);
@@ -20,7 +20,17 @@ const TUNNEL_HEADERS = { 'bypass-tunnel-reminder': '1', 'ngrok-skip-browser-warn
 const MAX_FEE = 2000000000000n;
 // Coupled to TOPUP_AMOUNT and TOPUP_RECIPIENT_MAX in web/api/topup.js. See
 // the funding invariant comment in the balance effect below before changing.
-const TOPUP_TRIGGER = parseEther('0.1');
+// Re-derived 2026-08-26 with the 0.10 MON escrow: a first order costs the guest
+// 0.10 of escrow plus about 0.06 of gas, so the trigger has to clear 0.16.
+const TOPUP_TRIGGER = parseEther('0.25');
+
+// How many jobs back the receipt walks. Each one is a sequential eth_call, so
+// this is a latency budget as much as a display choice, and it is the reason
+// every total on the page is scoped to a window rather than to all time: the
+// public Monad RPC caps eth_getLogs at 100 blocks, so there is no cheap way to
+// read the full history from a browser. Every label that shows one of these
+// numbers has to say so.
+const FEED_WINDOW = 25n;
 
 // Same four-characters-per-token rule the host uses, so the number shown here
 // matches the number the host enforces instead of disagreeing with it.
@@ -66,6 +76,11 @@ export default function App() {
   const [sessions, setSessions] = useState<Session[]>(loadSessions);
   const [canResume, setCanResume] = useState(false);
   const [discoveryUp, setDiscoveryUp] = useState<boolean | null>(null);
+  // Whether the text on screen was produced by the hosted kitchen. The note
+  // above the composer disclosed this only when the guest had SELECTED the
+  // cloud endpoint, so an answer that failed over to it mid-order arrived as a
+  // canned passage with nothing on the page saying it was one.
+  const [servedByCloud, setServedByCloud] = useState(false);
 
   // The last checkpoint published by whichever provider was streaming. This is
   // what lets a replacement continue the same answer instead of starting over
@@ -77,6 +92,12 @@ export default function App() {
   const finalPromptRef = useRef('');
   const abortRef = useRef<AbortController | null>(null);
   const reloadRef = useRef<() => void>(() => {});
+  // How long to wait for the provider's final settle before closing a job to
+  // recover escrow. Published by the node as settleMaxMs, because the host no
+  // longer settles on a fixed timer: it settles once the unsettled tokens are
+  // worth more than the gas, with settleMaxMs as the backstop. A constant here
+  // silently stopped matching the moment that cadence changed.
+  const settleGraceRef = useRef(65000);
   const streamRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { streamRef.current?.scrollTo(0, 999999); }, [stream]);
@@ -84,7 +105,15 @@ export default function App() {
   // Abort any in-flight stream if the component goes away mid-order.
   useEffect(() => () => { try { abortRef.current?.abort(); } catch {} }, []);
 
-  const promptTokens = useMemo(() => estTokens(prompt), [prompt]);
+  // The behaviour preamble is prepended to the prompt that is actually sent
+  // and is gated by the host's context check along with it, so it has to be
+  // inside the number shown here. Counting the raw box alone understated the
+  // request and let a guest over the host's budget press an enabled button.
+  const preambleTokens = useMemo(
+    () => estTokens(behavioralPreamble(resolvePendingEngrams(pendingEngrams))),
+    [pendingEngrams],
+  );
+  const promptTokens = useMemo(() => estTokens(prompt) + preambleTokens, [prompt, preambleTokens]);
   const overBudget = promptTokens > budgetTokens;
   const artifacts = useMemo(() => artifactsOf(stream), [stream]);
   const renderedStream = useMemo(
@@ -134,9 +163,12 @@ export default function App() {
   useEffect(() => {
     let timer: any = null, un: any = null;
     const load = async () => {
-      try { setBal(await pub.getBalance({ address: guestAddress })); } catch {}
+      // One read, used for both the header figure and the funding check. This
+      // was two identical eth_getBalance calls back to back on every poll.
+      let bb: bigint | null = null;
+      try { bb = await pub.getBalance({ address: guestAddress }); setBal(bb); } catch {}
       try {
-        const bb = await pub.getBalance({ address: guestAddress });
+        if (bb === null) throw new Error('balance unavailable');
         // FUNDING INVARIANT, and web/api/topup.js has to move with this file.
         // Measured on testnet at a 100 gwei base fee, and Monad charges
         // gas_limit rather than gas_used: openJob alone costs 0.03 MON, and a
@@ -157,20 +189,32 @@ export default function App() {
           } catch (e) { console.error('auto top-up failed', e); }
         }
       } catch {}
-      try { setJobs(await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobCounter' }) as bigint); } catch {}
       await loadProviders().catch(() => {});
       try {
+        // One jobCounter read drives both the stat and the walk below. It was
+        // read twice per poll, and the second read could disagree with the
+        // first if a job opened between them.
         const n2 = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobCounter' }) as bigint;
+        setJobs(n2);
         const rows: any[] = []; let tot = 0n;
         // Bounded: with no open job this used to walk every job back to 1,
         // one sequential RPC call each, on mount and on every settlement.
-        const floor = n2 > 25n ? n2 - 25n : 0n;
+        const floor = n2 > FEED_WINDOW ? n2 - FEED_WINDOW : 0n;
+        // Every job in the window, not just the newest and the first open one.
+        // The old loop pushed a row only when `open || id === n2` and then broke
+        // at the first open job, so a section headed "live settlements" with a
+        // row labelled TOTAL was, in the ordinary case, one job: the newest.
+        // Anything already closed and paid - which is to say every settlement
+        // that had actually completed - was read from the chain and discarded.
         for (let id = n2; id > floor; id--) {
           try {
             const j = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [id] }) as readonly any[];
             const open = j[5] as boolean;
-            if (open || id === n2) { tot += j[3] as bigint; rows.push({ jobId: id, tokens: j[4], amount: j[3], open }); }
-            if (open) break;
+            const paid = j[3] as bigint;
+            const tokens = j[4] as bigint;
+            if (paid === 0n && tokens === 0n && !open) continue; // opened and refunded, nothing to show
+            tot += paid;
+            rows.push({ jobId: id, tokens, amount: paid, open });
           } catch {}
         }
         setFeed(rows);
@@ -202,6 +246,8 @@ export default function App() {
       try {
         const h = await (await fetch(url + '/health', { headers: TUNNEL_HEADERS, signal: AbortSignal.timeout(6000) })).json();
         if (!dead && h?.promptBudget) setBudgetTokens(Number(h.promptBudget));
+        // Plus five seconds for the settle transaction itself to land.
+        if (!dead && h?.settleMaxMs) settleGraceRef.current = Number(h.settleMaxMs) + 5000;
       } catch {}
     })();
     return () => { dead = true; };
@@ -222,12 +268,16 @@ export default function App() {
   // Any job we opened and did not finish still holds escrow. closeJob returns
   // the unspent remainder to the guest's deposit balance. Without this every
   // failover permanently stranded a job's budget on chain.
-  async function releaseJob(jobId: bigint, graceMs = 5000) {
+  async function releaseJob(jobId: bigint, graceMs = settleGraceRef.current) {
     try {
-      // The host flushes settlements on a 3 second interval and closes the job
-      // itself when it finishes. Closing from here the instant the stream
-      // breaks would trip settle()'s require(j.open) and rob the provider of
-      // tokens it already delivered. Wait out one flush window and re-check.
+      // The host settles when the unsettled tokens are worth more than the gas
+      // to settle them, with a backstop it publishes as settleMaxMs. Closing
+      // from here the instant the stream breaks would trip settle()'s
+      // require(j.open) and rob the provider of tokens it already delivered.
+      // The old fixed 5s was sized against a 3 second flush interval that no
+      // longer exists: with a 60s backstop it could confiscate an entire
+      // answer's worth of unsettled work on any failover. Wait out the node's
+      // own window, polling so the common case still returns in about a second.
       const deadline = Date.now() + graceMs;
       for (;;) {
         const cur = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [jobId] }) as readonly any[];
@@ -251,7 +301,7 @@ export default function App() {
     // The transcript shows the prompt as submitted, so a guest editing the box
     // while an answer streams does not silently rewrite the question it was an
     // answer to. On a resume the original prompt stays; it is the same question.
-    if (!resume) { setStream(''); cpRef.current = null; liveRef.current = ''; setCanResume(false); setSentPrompt(prompt); }
+    if (!resume) { setStream(''); cpRef.current = null; liveRef.current = ''; setCanResume(false); setSentPrompt(prompt); setServedByCloud(false); }
     const opened: bigint[] = [];
     let finished = false;
     // Set by a {warn} frame, which means the answer completed but the
@@ -270,13 +320,27 @@ export default function App() {
         }
       }
 
-      // 0.05 MON at RATE_PER_MILLION = 2.67e19 buys about 1,870 output tokens.
-      // The escrow is a ceiling, not a charge: closeJob refunds the unspent
-      // remainder to the guest's deposit balance, so a short answer costs the
-      // guest only the tokens it actually produced plus gas.
-      const budget = parseEther('0.05');
+      // 0.10 MON at RATE_PER_MILLION = 3.353e19 buys about 2,980 output tokens,
+      // which is roughly 68 seconds of output at the 44 tok/s this node measures.
+      // Sized from that, not from a round number: at 0.05 the ceiling was 1,491
+      // tokens, and when a settle exhausts the escrow the CONTRACT closes the job
+      // itself (DinnerNode.sol:78), so the guest's answer stops mid-sentence.
+      // A 900 word briefing is about 1,200 output tokens, so this clears the
+      // measured long case roughly 2.5x over.
+      //
+      // The escrow is a ceiling rather than a charge, and it is deposited once:
+      // closeJob refunds the unspent remainder to deposits[guest], and the next
+      // order tops that back up to budget rather than depositing again. So
+      // raising it costs the guest a larger one-time deposit and nothing per
+      // order beyond the tokens actually produced.
+      const budget = parseEther('0.10');
       setNote('opening job…');
-      const prepared = await preparePrompt(prompt, sanitization);
+      // The staged engrams go in here, not only into applyPendingEngrams below.
+      // Storage cannot hold them until openJob has landed, and by then this
+      // prompt is already sanitized, hashed and on its way, so the panel's
+      // selection has to be applied to the prompt at this point or it never
+      // touches the job it was staged for.
+      const prepared = await preparePrompt(prompt, sanitization, pendingEngrams);
       setNote(prepared.redactionCount > 0
         ? `privacy: ${prepared.redactionCount} item(s) redacted locally before hashing (pattern matching, best effort, not a guarantee)`
         : 'privacy: no personal data matched by the local patterns (best effort, not a guarantee)');
@@ -336,6 +400,7 @@ export default function App() {
           // provider sends either continues that prefix or replaces it, so
           // anything the previous provider streamed past the last checkpoint
           // must be dropped rather than concatenated with the new answer.
+          setServedByCloud(u !== url || canned);
           const base = cp?.h ? cp.text : '';
           liveRef.current = base;
           setStream(base);
@@ -368,7 +433,20 @@ export default function App() {
           let lastToken = Date.now();
           let streaming = false;
           let streamErr = '';
-          const COLD_BUDGET_MS = 60000 + Math.ceil(promptTokens / 150) * 1000;
+          //
+          // The 60s floor is not enough on its own. A node serving a model too
+          // large for its VRAM runs most layers on the CPU: measured on the
+          // reference laptop, a 27B already resident took 84s to the first
+          // token on a 14 token prompt, so every job on it was aborted before
+          // it produced anything. The host now measures that on startup and
+          // publishes it as firstTokenMs, so the budget can come from the node
+          // in front of us rather than from an assumption about it. Three times
+          // measured, because the measurement was taken on an idle machine and
+          // a guest arrives on a busy one. Capped, because a node this slow is
+          // one the guest should be leaving, not waiting on for ten minutes.
+          const measured = Number(health?.firstTokenMs) || 0;
+          const COLD_BUDGET_MS =
+            Math.min(300000, Math.max(60000, measured * 3)) + Math.ceil(promptTokens / 150) * 1000;
           const watchdog = setInterval(() => {
             const budget = streaming ? 30000 : COLD_BUDGET_MS;
             if (Date.now() - lastToken > budget) ac.abort();
@@ -514,7 +592,7 @@ export default function App() {
       </header>
 
       <div className="stats">
-        jobs {jobs.toString()} · providers {providers.length} · settled total <b>{fmt(total)} MON</b> · settlements {feed.length}+
+        jobs {jobs.toString()} · providers {providers.length} · settled in the last {feed.length} jobs <b>{fmt(total)} MON</b>
         {discoveryUp === false && <span className="dim"> · discovery offline, using known list</span>}
       </div>
 
@@ -578,6 +656,9 @@ export default function App() {
                       stream markup, and the guest key sits in localStorage
                       under dn_pk. marked does not sanitize, so the output is
                       scrubbed before it is set. */}
+                  {servedByCloud && (
+                    <div className="note">Served by the hosted kitchen: this text is a fixed demo passage, not model inference. Its on-chain settlements are real.</div>
+                  )}
                   <div className="md" dangerouslySetInnerHTML={{ __html: renderedStream }} />
                   {busy && !stream && <span className="caret">▍</span>}
                   {artifacts.length > 0 && (
@@ -620,7 +701,7 @@ export default function App() {
         </section>
 
         <section>
-          <h2>the check — live settlements</h2>
+          <h2>the check — last {FEED_WINDOW.toString()} jobs</h2>
           <div className="receipt">
             {feed.map((l, i) => (
               <div className="rrow" key={String(l.jobId) + ':' + i}>
@@ -629,7 +710,10 @@ export default function App() {
                 <span>{fmt(l.amount)} MON</span>
               </div>
             ))}
-            <div className="rtotal"><span>TOTAL</span><b>{fmt(total)} MON</b></div>
+            {feed.length === 0 && <div className="rrow dim"><span>no jobs yet</span></div>}
+            {/* Not an all-time total and it must not be labelled as one. It is
+                the sum of the window walked above. */}
+            <div className="rtotal"><span>WINDOW TOTAL</span><b>{fmt(total)} MON</b></div>
             {sessionCost > 0n && <div className="rcost">guest cost −{fmt(sessionCost)} MON</div>}
           </div>
           {sessions.length > 0 && (
@@ -650,7 +734,7 @@ export default function App() {
         </section>
       </main>
       <footer>
-        every token is a tip. · prompts are committed on-chain as salted hashes, never as text. the guest wallet address is public on chain. ZK identity layer is in progress and not yet load-bearing.
+        every token is a tip. · prompts are committed on-chain as salted hashes, never as text. the guest wallet address is public on chain and is not anonymised: there is no ZK identity layer in this build.
       </footer>
     </div>
   );

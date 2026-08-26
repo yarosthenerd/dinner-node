@@ -45,11 +45,35 @@ const KEEP_ALIVE = process.env.OLLAMA_KEEP_ALIVE ?? '30m';
 // Silently is the problem: a truncated prompt returns a confident answer to a
 // question the model never fully saw. Sending it per request ties what is served
 // to CONTEXT_TOKENS, the same number /health advertises, so the two cannot drift.
-export async function* ollama(prompt: string, model: string, signal?: AbortSignal, numCtx?: number): AsyncGenerator<string> {
+// A serving instruction, applied by this node to every job it takes.
+//
+// Reasoning models open with a knowledge-cutoff hedge unprompted: the first
+// answer served from this node began "as of 2024-2025", which reads as a stale
+// machine rather than as an answer. The instruction below is deliberately NOT
+// "never mention your cutoff". Suppressing the caveat outright would push the
+// model to state dated figures as current, which is a worse failure than an
+// awkward opening. It says where the caveat belongs instead: at the point it
+// affects an answer, not as a preamble to every answer.
+//
+// Operators can replace it. A node serving a specialised model may want
+// something else entirely, and nothing here depends on the default text.
+export const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ?? [
+  'Answer directly. Do not open with a disclaimer about your training data or knowledge cutoff.',
+  'If the answer genuinely depends on information that may have changed, say so in one short clause at the point it matters, and give your best current figure anyway.',
+  'Do not preface answers with dates, hedges, or apologies for what you might not know.',
+].join(' ');
+
+export async function* ollama(prompt: string, model: string, signal?: AbortSignal, numCtx?: number, system: string = SYSTEM_PROMPT): AsyncGenerator<string> {
   const res = await fetch('http://localhost:11434/api/generate', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       model, prompt, stream: true, keep_alive: KEEP_ALIVE,
+      // Sent as `system` rather than glued onto the prompt, so the guest's
+      // prompt reaches the model exactly as it was committed on chain, and so
+      // the instruction cannot be mistaken for guest text by anything reading
+      // the request. Its tokens still consume context, which is why host.ts
+      // charges them against PROMPT_BUDGET.
+      ...(system ? { system } : {}),
       ...(numCtx ? { options: { num_ctx: numCtx } } : {}),
     }), signal,
   });
@@ -65,7 +89,10 @@ export async function* ollama(prompt: string, model: string, signal?: AbortSigna
 export async function* openai(prompt: string, base: string, model: string, signal?: AbortSignal): AsyncGenerator<string> {
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model, stream: true, messages: [{ role: 'user', content: prompt }] }), signal,
+    body: JSON.stringify({ model, stream: true, messages: [
+      ...(SYSTEM_PROMPT ? [{ role: 'system', content: SYSTEM_PROMPT }] : []),
+      { role: 'user', content: prompt },
+    ] }), signal,
   });
   if (!res.ok || !res.body) throw new Error(`openai-compat ${res.status}`);
   for await (const l of lines(res.body)) {

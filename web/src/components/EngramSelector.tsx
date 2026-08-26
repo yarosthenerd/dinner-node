@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { getAvailableTemplates } from '../lib/engram-integration';
 import type { PendingEngrams } from '../lib/engram-integration';
 import { parseUploadedEngram } from '../lib/engram-library';
@@ -15,12 +15,10 @@ const LEVEL_NOTE: Record<string, string> = {
 };
 
 export function EngramSelector({ onSanitizationChange, onPendingChange }: EngramSelectorProps) {
-  const [templates, setTemplates] = useState<Array<{
-    id: string;
-    name: string;
-    description: string;
-    domain: string;
-  }>>([]);
+  // The template list is a static module constant, so it is initialized rather
+  // than fetched in a mount effect: the effect rendered once with an empty
+  // dropdown and then again with the real one, for no gain.
+  const templates = getAvailableTemplates();
   const [open, setOpen] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<string>('');
   const [strictness, setStrictness] = useState<'minimal' | 'balanced' | 'maximal'>('balanced');
@@ -31,17 +29,13 @@ export function EngramSelector({ onSanitizationChange, onPendingChange }: Engram
   const [custom, setCustom] = useState<PendingEngrams['custom']>(undefined);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  useEffect(() => {
-    setTemplates(getAvailableTemplates());
-  }, []);
-
   // Staged, not stored. See PendingEngrams in engram-integration: there is no
   // job binding yet at selection time, so storing here always threw.
   const handleTemplateSelect = (templateId: string) => {
     setSelectedTemplate(templateId);
     onPendingChange?.({ templateId: templateId || undefined, custom });
     setMessage(templateId
-      ? { type: 'success', text: 'Staged. It is applied when your order opens and wiped when the job closes.' }
+      ? { type: 'success', text: 'Staged. Its instructions go to the node with your next order, and it is wiped when the job closes.' }
       : null);
   };
 
@@ -71,7 +65,7 @@ export function EngramSelector({ onSanitizationChange, onPendingChange }: Engram
       );
       setCustom(result.engram);
       onPendingChange?.({ templateId: selectedTemplate || undefined, custom: result.engram });
-      setMessage({ type: 'success', text: 'Validated and staged. It is applied when your order opens.' });
+      setMessage({ type: 'success', text: 'Validated and staged. Its text goes to the node with your next order.' });
     }
   };
 
@@ -116,6 +110,11 @@ export function EngramSelector({ onSanitizationChange, onPendingChange }: Engram
           </p>
 
           <label className="engram-label" htmlFor="engram-template">behavior template (optional, session-only)</label>
+          <p className="dim engram-note">
+            A behaviour template is an instruction, so it is prepended to your prompt and sent
+            to the node in plaintext along with it. It is also part of what the on-chain hash
+            commits to. A privacy template instead adds redaction rules and is applied locally.
+          </p>
           <select
             id="engram-template"
             value={selectedTemplate}

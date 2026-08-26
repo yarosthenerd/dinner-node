@@ -8,7 +8,7 @@ import { account, readProvider, sendChecked } from './_lib.js';
 // Now a read failure reports degraded and sends nothing. Registration happens
 // only on a successful read that says the provider is genuinely inactive, at
 // most once per instance per cooldown, and never concurrently.
-const RATE = BigInt(process.env.CLOUD_RATE_PER_MILLION ?? '26700000000000000000');
+const RATE = BigInt(process.env.CLOUD_RATE_PER_MILLION ?? '33530000000000000000');
 const MODEL = 'cloud-mock-7b (hosted)';
 const HW = 'Vercel serverless cloud kitchen';
 const REGISTER_COOLDOWN_MS = 10 * 60_000;

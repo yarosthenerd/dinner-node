@@ -1,5 +1,8 @@
 export const ADDR = '0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92' as `0x${string}`;
-export const ZK = '0x1D6fE5F98A9b0cE6415925859DFF4dd624CFc8A0' as `0x${string}`;
+// DinnerZK.sol is deployed at 0x1D6fE5F98A9b0cE6415925859DFF4dd624CFc8A0 and is
+// not wired to anything. The Semaphore proof path was removed from App.tsx and
+// the address is deliberately not exported: an export invites a claim the code
+// does not support. Re-export it in the change that actually uses it.
 
 // Discovery listener (src/discovery.ts). Primary source for who is online.
 // Empty string disables it and the app falls back to the known list below.

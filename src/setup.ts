@@ -20,6 +20,8 @@ import { spawnSync } from 'node:child_process';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { formatEther } from 'viem';
 import { pub, DEFAULT_ADDR } from './chain.js';
+import { probeHardware, describeHardware } from './hardware.js';
+import { gb, rankInstalled, recommend } from './models.js';
 
 // Overridable so the fresh-operator path (generates a key, writes a new file)
 // can be exercised against a throwaway file instead of a real one.
@@ -33,7 +35,20 @@ const MIN_BALANCE = 10n ** 17n; // 0.1 MON
 
 const args = new Set(process.argv.slice(2));
 const CHECK_ONLY = args.has('--check');
-const ASSUME_YES = args.has('--yes') || CHECK_ONLY;
+// Without a terminal there is nobody to answer a question. readline resolves
+// no promise on a closed stdin, so main() simply stopped mid-run, the event
+// loop drained, and node exited 0 having printed neither verdict. ./dinnernode
+// read that as success and started serving an unconfigured node.
+const INTERACTIVE = Boolean(process.stdin.isTTY);
+const ASSUME_YES = args.has('--yes') || CHECK_ONLY || !INTERACTIVE;
+
+// The context a node advertises. Read here rather than in host.ts because the
+// number decides which models fit: the KV cache at 32768 tokens is as large as
+// the weights of an 8B model.
+const CONTEXT_TOKENS = Number(process.env.CONTEXT_TOKENS ?? 32768);
+
+// Nothing below may exit 0 by accident. finish() is the only success path.
+process.exitCode = 1;
 
 const C = process.stdout.isTTY
   ? { g: '\x1b[32m', r: '\x1b[31m', y: '\x1b[33m', d: '\x1b[2m', b: '\x1b[1m', x: '\x1b[0m' }
@@ -97,6 +112,9 @@ const has = (cmd: string) => spawnSync('command', ['-v', cmd], { shell: true, st
 
 async function main() {
   console.log(`\n${C.b}DinnerNode node setup${C.x}\n`);
+  if (!INTERACTIVE && !CHECK_ONLY) {
+    console.log(`  ${C.d}no terminal attached: taking defaults, asking nothing, downloading nothing${C.x}`);
+  }
   const env = readEnvFile();
 
   // ---- runtime ----------------------------------------------------------
@@ -104,36 +122,132 @@ async function main() {
   if (major >= 20) ok(`node ${process.versions.node}`);
   else bad(`node ${process.versions.node} is too old`, 'DinnerNode needs node 20 or newer: https://nodejs.org');
 
+  // ---- hardware ---------------------------------------------------------
+  // Probed before anything is chosen, because every model decision below is
+  // decided by one number: how much memory a model may occupy here.
+  const hw = probeHardware();
+  ok(`${describeHardware(hw)}`);
+  ok(`model budget ${gb(hw.budgetMB)} ${C.d}(${hw.budgetSource})${C.x}`);
+
   // ---- ollama -----------------------------------------------------------
+  let reachable = false;
   let models: string[] = [];
   try {
     const r = await fetch(`${OLLAMA}/api/tags`, { signal: AbortSignal.timeout(4000) });
     models = ((await r.json() as any).models ?? []).map((m: any) => m.name);
+    reachable = true;
     if (models.length) ok(`ollama running, ${models.length} model${models.length > 1 ? 's' : ''} installed`);
-    else bad('ollama is running but has no models', 'ollama pull qwen3:8b');
   } catch {
     bad('ollama is not reachable on :11434',
       has('ollama') ? 'it is installed but not running: ollama serve'
-                    : 'install it from https://ollama.com/download, then: ollama pull qwen3:8b');
+                    : 'install it from https://ollama.com/download');
   }
 
   // ---- model choice -----------------------------------------------------
-  // A model with no num_ctx in its Modelfile is served at ollama's 4096 default
-  // regardless of what the architecture supports, so a node advertising a large
-  // context would silently truncate. Warn rather than block: the host now sends
-  // num_ctx per request, which overrides the Modelfile either way.
-  if (models.length) {
-    const current = env.get('MODEL') ?? process.env.MODEL;
-    let chosen = current && models.includes(current) ? current : models[0];
-    if (!CHECK_ONLY && (!current || !models.includes(current))) {
-      console.log(`    ${C.d}${models.map((m, i) => `[${i + 1}] ${m}`).join('  ')}${C.x}`);
-      const pick = await ask('serve which model? (number or name)', '1');
-      const byIndex = models[Number(pick) - 1];
-      chosen = byIndex ?? (models.includes(pick) ? pick : models[0]);
-      setEnv('MODEL', chosen);
+  // The one decision an operator cannot make well without help, and the one
+  // that decides whether the node is usable. Ollama does not refuse a model
+  // that is too large for the GPU: it loads what fits and runs the remaining
+  // layers on the CPU, silently. On the reference machine that is a 27B model
+  // 56% on CPU, four tokens a second, and 84 seconds to the first token with
+  // the model already resident, which is longer than any guest waits.
+  //
+  // So the wizard sizes rather than lists: weights plus the KV cache at the
+  // advertised context, against the memory actually present.
+  if (reachable && !models.length) {
+    const { pick, fit: f, fitsWhole } = recommend(hw, CONTEXT_TOKENS);
+    bad('ollama has no models installed');
+    console.log(`    ${C.d}for ${gb(hw.budgetMB)} the best fit is ${C.x}${C.b}${pick.tag}${C.x}` +
+      ` ${C.d}(${pick.note}; needs ${gb(f.needMB)} at ${CONTEXT_TOKENS} context)${C.x}`);
+    if (!fitsWhole) console.log(`    ${C.d}nothing in the catalog fits whole here, so this is the smallest one${C.x}`);
+    if (!CHECK_ONLY && INTERACTIVE && has('ollama') && await confirm(`pull ${pick.tag} now?`)) {
+      console.log();
+      // Inherit stdio: the pull is minutes long and its progress bar is the
+      // only thing telling the operator the machine has not hung.
+      const r = spawnSync('ollama', ['pull', pick.tag], { stdio: 'inherit' });
+      console.log();
+      if (r.status === 0) { models = [pick.tag]; failed = false; ok(`pulled ${pick.tag}`); }
+      else bad(`ollama pull ${pick.tag} failed`, 'pull it yourself and re-run');
+    } else if (!CHECK_ONLY) {
+      // A multi-gigabyte download is not something to start unattended.
+      console.log(`    ${C.d}then: ollama pull ${pick.tag}${C.x}`);
     }
-    if (current && !models.includes(current)) warn(`MODEL was ${current}, which is not installed`);
-    ok(`model ${chosen}`);
+  }
+
+  if (models.length) {
+    const ranked = await rankInstalled(hw.budgetMB, CONTEXT_TOKENS, OLLAMA).catch(() => []);
+    const byName = new Map(ranked.map(r => [r.name, r]));
+    const best = ranked.find(r => r.fit?.fits);
+    const current = env.get('MODEL') ?? process.env.MODEL;
+    const currentUsable = current && models.includes(current);
+    // Default to the largest model that fits whole. models[0] used to win,
+    // which on this machine is a 22 GB model against 12 GB of VRAM.
+    let chosen = currentUsable ? current : (best?.name ?? ranked[0]?.name ?? models[0]);
+
+    // One line per model, each carrying the number that decides it.
+    const line = (name: string, i?: number) => {
+      const r = byName.get(name);
+      const mark = i === undefined ? '   ' : `[${i + 1}]`;
+      if (!r?.fit) return `    ${C.d}${mark} ${name}${C.x}`;
+      const tail = r.fit.fits
+        ? `${C.g}fits${C.x} ${C.d}${gb(r.fit.needMB)} of ${gb(hw.budgetMB)}${C.x}`
+        : `${C.y}spills to CPU${C.x} ${C.d}needs ${gb(r.fit.needMB)}, ` +
+          `${r.fit.maxCtx > 0 ? `fits at ${r.fit.maxCtx} context` : 'weights alone do not fit'}${C.x}`;
+      return `    ${mark} ${name.padEnd(24)} ${tail}`;
+    };
+
+    if (!CHECK_ONLY && !currentUsable && ranked.length) {
+      const order = ranked.map(r => r.name);
+      console.log(order.map((n, i) => line(n, i)).join('\n'));
+      const dflt = String(order.indexOf(chosen) + 1 || 1);
+      const pick = await ask('serve which model? (number or name)', dflt);
+      const byIndex = order[Number(pick) - 1];
+      chosen = byIndex ?? (models.includes(pick) ? pick : chosen);
+    }
+    if (!CHECK_ONLY && chosen !== current) setEnv('MODEL', chosen);
+    if (current && !currentUsable) warn(`MODEL was ${current}, which is not installed`);
+
+    const r = byName.get(chosen);
+    if (!r?.fit) {
+      ok(`model ${chosen}`);
+      warn('could not size this model, serving it unchecked');
+    } else if (r.fit.fits) {
+      ok(`model ${chosen} ${C.d}fits whole: ${gb(r.fit.needMB)} of ${gb(hw.budgetMB)} at ${CONTEXT_TOKENS} context${C.x}`);
+    } else if (r.fit.maxCtx >= 8192) {
+      // A smaller context is the cheap fix: the KV cache, not the weights, is
+      // what pushed this model over. Below 8192 the node is not much use to a
+      // guest, so that is not offered as a fix.
+      const ctx = Math.min(r.fit.maxCtx, CONTEXT_TOKENS);
+      warn(`${chosen} needs ${gb(r.fit.needMB)} at ${CONTEXT_TOKENS} context, ${gb(hw.budgetMB)} available`);
+      if (!CHECK_ONLY && await confirm(`serve it at ${ctx} context instead, so it stays on the GPU?`)) {
+        setEnv('CONTEXT_TOKENS', String(ctx));
+        ok(`context ${ctx} ${C.d}(written to .env)${C.x}`);
+      } else {
+        warn('serving with layers on the CPU: expect single-digit tokens per second');
+      }
+    } else {
+      warn(`${chosen} does not fit in ${gb(hw.budgetMB)} at any useful context`);
+      // Nothing installed fits, so the fix is a different model rather than a
+      // different context. Offer the strongest catalog entry this machine can
+      // hold, and switch to it if the operator takes the offer.
+      const { pick, fitsWhole } = recommend(hw, CONTEXT_TOKENS);
+      let fixed = false;
+      if (fitsWhole && !CHECK_ONLY && INTERACTIVE && has('ollama')) {
+        console.log(`    ${C.d}${pick.tag} would fit whole and be several times faster${C.x}`);
+        if (await confirm(`pull ${pick.tag} and serve that instead?`)) {
+          console.log();
+          const pull = spawnSync('ollama', ['pull', pick.tag], { stdio: 'inherit' });
+          console.log();
+          if (pull.status === 0) { setEnv('MODEL', pick.tag); ok(`model ${pick.tag} ${C.d}fits whole${C.x}`); fixed = true; }
+          else bad(`ollama pull ${pick.tag} failed`, 'pull it yourself and re-run');
+        }
+      } else if (fitsWhole) {
+        console.log(`    ${C.d}a model that fits would be several times faster: ollama pull ${pick.tag}${C.x}`);
+      }
+      if (!fixed) {
+        warn('serving with layers on the CPU: expect single-digit tokens per second');
+        console.log(`    ${C.d}this is the state where a guest's client gives up before the first token${C.x}`);
+      }
+    }
   }
 
   // ---- wallet -----------------------------------------------------------
