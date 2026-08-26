@@ -123,7 +123,7 @@ const PII_PATTERNS: PiiPattern[] = [
     // clause with a comma in it is over-redacted, rather than a real address
     // without a house number being sent in the clear.
     guard: (m) => /\d/.test(m) || m.includes(','),
-    replacer: (m, cue: string, _rest: string) => cue + '[ADDRESS]' },
+    replacer: (_m, cue: string, _rest: string) => cue + '[ADDRESS]' },
 
   { type: 'email', priority: 11, minLevel: 'minimal',
     pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
