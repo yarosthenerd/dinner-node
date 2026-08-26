@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex" />
+<title>DinnerNode — Run a Node</title>
+<style>
+  :root { --ink:#0B0E14; --panel:#10161F; --line:#1D2733; --mint:#9FEF00; --ketchup:#FF5C4D; --text:#D7E0EA; --dim:#6B7A89; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--ink); color:var(--text); font:13px/1.65 ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace; }
+  .wrap { max-width:860px; margin:0 auto; padding:24px 20px 60px; }
+  header { border-bottom:1px dashed var(--line); padding-bottom:14px; margin-bottom:18px; }
+  h1 { font:800 26px/1.15 system-ui,-apple-system,'Segoe UI',sans-serif; color:var(--mint); letter-spacing:-.5px; }
+  .sub { color:var(--dim); margin-top:6px; }
+  a { color:#5AA9FF; text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  h2 { color:var(--mint); font:700 14px/1.3 ui-monospace,monospace; text-transform:uppercase; letter-spacing:.10em; margin:26px 0 10px; }
+  h3 { color:var(--text); font-size:13px; font-weight:700; margin:16px 0 6px; }
+  p { margin:8px 0; }
+  ul, ol { margin:8px 0 8px 18px; }
+  li { margin:4px 0; }
+  code { background:var(--line); padding:1px 5px; border-radius:4px; word-break:break-all; }
+  pre { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin:12px 0; overflow-x:auto; }
+  pre code { background:none; padding:0; word-break:normal; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; margin:14px 0; }
+  table { width:100%; border-collapse:collapse; margin:12px 0; font-size:12px; display:block; overflow-x:auto; }
+  th, td { border:1px solid var(--line); padding:7px 9px; text-align:left; vertical-align:top; }
+  th { color:var(--mint); font-weight:700; background:var(--panel); }
+  .warn { border-color:var(--ketchup); }
+  .warn strong { color:var(--ketchup); }
+  .dim { color:var(--dim); }
+  .ok { color:var(--mint); }
+  nav.back { margin-bottom:18px; }
+  footer { border-top:1px dashed var(--line); margin-top:34px; padding-top:16px; color:var(--dim); }
+  @media (max-width:600px) { .wrap { padding:18px 14px 48px; } h1 { font-size:21px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav class="back"><a href="/">&larr; back to DinnerNode</a></nav>
+
+<header>
+  <h1>Run a node</h1>
+  <p class="sub">Turn an idle GPU into a kitchen. Testnet only, so what you earn is MON with no monetary value.</p>
+</header>
+
+<div class="card warn">
+  <p><strong>Read this first.</strong> Guests send you their prompts in plaintext. You are running a
+  machine that strangers type into, and on testnet you are doing it for play money. Do not run a node
+  on a work machine, a machine holding anything sensitive, or a connection you do not control.</p>
+</div>
+
+<h2>What you need</h2>
+<table>
+  <tr><th>Thing</th><th>Why</th></tr>
+  <tr><td>A GPU with 8&nbsp;GB VRAM or more</td><td>Below that you are offloading to CPU and serving single-digit tokens per second, which is slower than a guest will wait.</td></tr>
+  <tr><td><a href="https://nodejs.org" target="_blank" rel="noreferrer">Node.js</a> 20 or newer</td><td>Runs the provider daemon.</td></tr>
+  <tr><td><a href="https://ollama.com/download" target="_blank" rel="noreferrer">Ollama</a>, with one model pulled</td><td>Does the actual inference. <code>ollama pull qwen3:8b</code> is a reasonable start.</td></tr>
+  <tr><td>Testnet MON for gas</td><td>Every settlement is a transaction. The setup script requests some for you.</td></tr>
+  <tr><td class="dim">Optional: <a href="https://developers.cloudflare.com/cloudflare-tunnel/downloads/" target="_blank" rel="noreferrer">cloudflared</a></td><td>Gives your node a public URL so guests beyond your LAN can reach it. No account needed.</td></tr>
+</table>
+
+<h2>Start</h2>
+<pre><code>git clone &lt;repo&gt; dinnernode
+cd dinnernode
+./dinnernode</code></pre>
+
+<p>That is the whole thing. It installs dependencies, runs setup, opens a tunnel if it can, and
+starts serving. Setup is idempotent, so you can run it as often as you like; it only writes what is
+missing and it never overwrites a key you already have.</p>
+
+<p>On the first run it will:</p>
+<ul>
+  <li>check Node and Ollama, and tell you what to install if either is absent</li>
+  <li>ask which of your installed models to serve</li>
+  <li>generate a node wallet and save it to <code>.env</code> with owner-only permissions</li>
+  <li>offer to request testnet MON for it</li>
+  <li>register your node on chain so guests can find it</li>
+</ul>
+
+<p>To check readiness without changing anything, run <code>npm run doctor</code>. It exits non-zero
+and prints what to fix if the node is not ready to serve.</p>
+
+<h2>What it costs you to run</h2>
+
+<p>Be clear-eyed about this. On testnet the economics are not favourable and are not meant to be:
+the point is that the mechanism works, not that it pays.</p>
+
+<ul>
+  <li><strong>Gas.</strong> Your node settles periodically during a job, and every settlement is a
+  transaction whose gas you pay. At current testnet gas this costs more than the tokens earn. Keep
+  an eye on your balance; a node that runs dry mid-job strands a guest's escrow and loses the work
+  it had already done but not yet settled.</li>
+  <li><strong>Electricity.</strong> A loaded consumer GPU draws a few hundred watts. Over a month of
+  real use this is the larger number, and it is denominated in real money while your earnings are
+  not.</li>
+  <li><strong>Your machine, while it works.</strong> Set <code>HOST_PRIORITY=owner</code> (the
+  default) and guests get throttled when you are using the machine yourself.</li>
+</ul>
+
+<h2>Settings worth knowing</h2>
+<p>All optional, all in <code>.env</code>.</p>
+<table>
+  <tr><th>Variable</th><th>Default</th><th>What it does</th></tr>
+  <tr><td><code>MODEL</code></td><td>chosen at setup</td><td>Which Ollama model you serve.</td></tr>
+  <tr><td><code>RATE_PER_MILLION</code></td><td>2.67e19</td><td>What you charge per million output tokens, in wei. Providers set their own rate.</td></tr>
+  <tr><td><code>CONTEXT_TOKENS</code></td><td>32768</td><td>Context window. Sent to Ollama explicitly, so it applies whatever the model tag says.</td></tr>
+  <tr><td><code>MAX_CONCURRENT_JOBS</code></td><td>2</td><td>How many guests you serve at once.</td></tr>
+  <tr><td><code>HOST_PRIORITY</code></td><td><code>owner</code></td><td><code>owner</code> throttles guests when you need the machine; <code>guest</code> does the opposite.</td></tr>
+  <tr><td><code>OLLAMA_KEEP_ALIVE</code></td><td><code>30m</code></td><td>How long the model stays in VRAM between jobs. Loading a large model takes tens of seconds, so unloading it between jobs is expensive.</td></tr>
+  <tr><td><code>PUBLIC_URL</code></td><td>unset</td><td>Set this if you run your own tunnel instead of letting the script open one.</td></tr>
+</table>
+
+<div class="card">
+  <h3>A note on VRAM</h3>
+  <p>Ollama sizes its KV cache from the context window, so a large <code>CONTEXT_TOKENS</code> costs
+  VRAM on top of the model weights. If your model and context do not fit, Ollama silently spills to
+  system RAM and throughput collapses. If your node feels far slower than it should, lower
+  <code>CONTEXT_TOKENS</code> before you blame the model, and make sure nothing else is holding a
+  model resident on the same GPU.</p>
+</div>
+
+<h2>What you are agreeing to</h2>
+<p>Running a node means handling other people's prompt text on your hardware. The
+<a href="/terms.html">Terms of Use</a> section 5 sets out what that involves, and the
+<a href="/acceptable-use.html">Acceptable Use Policy</a> covers what you may refuse to serve and how
+to report abuse. Both are short. Read them before you start, not after someone sends you something
+you would rather not have received.</p>
+
+<p>You choose what your machine runs. Nothing in DinnerNode obliges you to serve any particular
+request, and you can stop your node at any time with <code>Ctrl-C</code>.</p>
+
+<div class="card warn">
+  <p><strong>Stop with <code>Ctrl-C</code>, not <code>Ctrl-Z</code>.</strong> <code>Ctrl-Z</code>
+  suspends the process and leaves it holding port 4173, so the next start fails with
+  <code>EADDRINUSE</code>. If that happens, bring it back with <code>fg</code> and then
+  <code>Ctrl-C</code> it.</p>
+</div>
+
+<footer>
+  <p>DinnerNode · testnet only · <a href="/terms.html">terms</a> ·
+  <a href="/acceptable-use.html">acceptable use</a></p>
+</footer>
+
+</div>
+</body>
+</html>

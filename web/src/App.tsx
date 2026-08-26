@@ -61,9 +61,7 @@ export default function App() {
   const [pendingEngrams, setPendingEngrams] = useState<PendingEngrams>({});
   const [note, setNote] = useState('');
   const [pulse, setPulse] = useState(0);
-  const [hosting, setHosting] = useState(false);
-  const [simRows, setSimRows] = useState<any[]>([]);
-  const [simEarned, setSimEarned] = useState(0n);
+  const [sentPrompt, setSentPrompt] = useState('');
   const [budgetTokens, setBudgetTokens] = useState(30720);
   const [sessions, setSessions] = useState<Session[]>(loadSessions);
   const [canResume, setCanResume] = useState(false);
@@ -94,19 +92,6 @@ export default function App() {
     [stream],
   );
   const canned = url.endsWith('/api/p');
-
-  useEffect(() => {
-    if (!hosting) return;
-    let n = 0;
-    const iv = setInterval(() => {
-      n++;
-      const tok = 1 + Math.floor(Math.random() * 7);
-      const amt = BigInt(tok) * 2000000000000n;
-      setSimRows(r => [{ id: n, tok, amt, job: 100 + Math.floor(n / 8) }, ...r].slice(0, 8));
-      setSimEarned(e => e + amt);
-    }, 1200);
-    return () => clearInterval(iv);
-  }, [hosting]);
 
   // Provider discovery. The listener is primary; the on-chain read of the
   // known list is the fallback. Note that scanning ProviderRegistered logs is
@@ -263,7 +248,10 @@ export default function App() {
     if (overBudget) { setNote(`prompt is ${promptTokens} tokens, over this host's ${budgetTokens} limit — shorten it`); return; }
     setBusy(true);
     setNote('');
-    if (!resume) { setStream(''); cpRef.current = null; liveRef.current = ''; setCanResume(false); }
+    // The transcript shows the prompt as submitted, so a guest editing the box
+    // while an answer streams does not silently rewrite the question it was an
+    // answer to. On a resume the original prompt stays; it is the same question.
+    if (!resume) { setStream(''); cpRef.current = null; liveRef.current = ''; setCanResume(false); setSentPrompt(prompt); }
     const opened: bigint[] = [];
     let finished = false;
     // Set by a {warn} frame, which means the answer completed but the
@@ -521,7 +509,7 @@ export default function App() {
           <button onClick={async () => { try { await faucet(); } catch {} reloadRef.current(); }}>faucet</button>
         </span>
         <span className="addr">
-          <a href="/terms.html">terms</a> · <a href="/acceptable-use.html">acceptable use</a> · testnet only, MON here has no monetary value
+          <a href="/hosting.html">run a node</a> · <a href="/terms.html">terms</a> · <a href="/acceptable-use.html">acceptable use</a> · testnet only, MON here has no monetary value
         </span>
       </header>
 
@@ -544,14 +532,14 @@ export default function App() {
               <div className="dim">earned {fmt(p.earned)} MON · {p.tokensServed.toString()} tok · {p.jobsDone.toString()} jobs</div>
             </div>
           ))}
+          {/* Replaced the "your kitchen (sim)" card. It generated rows locally
+              and settled nothing, so the one thing on the page inviting someone
+              to become a provider was the one thing that was not real. */}
           <div className="card">
-            <div className="model">your kitchen (sim)</div>
-            <button onClick={() => setHosting(h => !h)}>{hosting ? '■ stop hosting' : '▶ start hosting'}</button>
-            {hosting && <div className="note">simulation only — these rows are generated locally and settle nothing</div>}
-            {hosting && simRows.map(r => (
-              <div className="dim" key={r.id}>job#{r.job} +{r.tok} tok +{fmt(r.amt)} MON</div>
-            ))}
-            {hosting && <div className="model">earned {fmt(simEarned)} MON (sim)</div>}
+            <div className="model">your kitchen</div>
+            <div className="dim">Turn an idle GPU into a node. One command, and it serves real jobs
+              for real settlements.</div>
+            <a className="cta" href="/hosting.html">run a node →</a>
           </div>
         </section>
 
@@ -568,29 +556,67 @@ export default function App() {
               textarea's flex:1 collapsed it to a few pixels. It is its own block
               now and the row holds only the prompt and its controls. */}
           <EngramSelector onSanitizationChange={setSanitization} onPendingChange={setPendingEngrams} />
-          <textarea
-            value={prompt}
-            onChange={e => setPrompt(e.target.value)}
-            rows={5}
-            placeholder="ask for something. it is served by the node you picked above, and settles per token as it streams."
-          />
-          <div className="rowline">
-            <div className="dim" style={{ color: overBudget ? '#ff6b6b' : undefined }}>
-              {promptTokens} / {budgetTokens} tokens (estimate)
+
+          {/* Transcript above, composer below, which is the shape every reader
+              already knows from a chat client. The answer used to sit in a
+              180px box under the controls, so the most valuable thing on the
+              page was also the smallest. */}
+          <div className="chat">
+            <div className="transcript" ref={streamRef}>
+              {!sentPrompt && !stream && (
+                <div className="empty">
+                  <p>Ask for something.</p>
+                  <p className="dim">It is served by the node selected above, and settles on chain
+                    token by token as it streams. Long jobs are the interesting case: the answer
+                    survives its provider going away.</p>
+                </div>
+              )}
+              {sentPrompt && <div className="msg user">{sentPrompt}</div>}
+              {(stream || busy) && (
+                <div className="msg assistant">
+                  {/* The answer is attacker-controlled: a hostile provider can
+                      stream markup, and the guest key sits in localStorage
+                      under dn_pk. marked does not sanitize, so the output is
+                      scrubbed before it is set. */}
+                  <div className="md" dangerouslySetInnerHTML={{ __html: renderedStream }} />
+                  {busy && !stream && <span className="caret">▍</span>}
+                  {artifacts.length > 0 && (
+                    <div className="artifacts">
+                      {artifacts.map(a => <button key={a.name} onClick={() => download(a)}>⭳ {a.name}</button>)}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-            <button className="order" disabled={busy || overBudget} onClick={() => rent(false)}>{busy ? 'streaming…' : 'place order'}</button>
-            {canResume && !busy && <button onClick={() => rent(true)}>resume from checkpoint</button>}
+
+            <div className="composer">
+              <textarea
+                value={prompt}
+                onChange={e => setPrompt(e.target.value)}
+                rows={3}
+                placeholder="Ask for something…"
+                onKeyDown={e => {
+                  // Enter sends, shift-enter breaks the line. Guard on busy and
+                  // overBudget too, or the keyboard bypasses the button's own
+                  // disabled state and opens a job the guest cannot afford.
+                  if (e.key === 'Enter' && !e.shiftKey && !busy && !overBudget) {
+                    e.preventDefault();
+                    rent(false);
+                  }
+                }}
+              />
+              <div className="composer-row">
+                <span className="dim" style={{ color: overBudget ? '#ff6b6b' : undefined }}>
+                  {promptTokens} / {budgetTokens} tokens
+                </span>
+                <span className="note">{note}</span>
+                {canResume && !busy && <button onClick={() => rent(true)}>resume from checkpoint</button>}
+                <button className="order" disabled={busy || overBudget} onClick={() => rent(false)}>
+                  {busy ? 'streaming…' : 'place order'}
+                </button>
+              </div>
+            </div>
           </div>
-          <div className="note">{note}</div>
-          {/* The answer is attacker-controlled: a hostile provider can stream
-              markup, and the guest key sits in localStorage under dn_pk. marked
-              does not sanitize, so the output is scrubbed before it is set. */}
-          <div className="stream md" ref={streamRef} dangerouslySetInnerHTML={{ __html: renderedStream }} />
-          {artifacts.length > 0 && (
-            <div className="rowline">
-              {artifacts.map(a => <button key={a.name} onClick={() => download(a)}>⭳ {a.name}</button>)}
-            </div>
-          )}
         </section>
 
         <section>
