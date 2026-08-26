@@ -1,0 +1,86 @@
+#!/bin/sh
+# DinnerNode node, one command.
+#
+#   git clone <repo> && cd dinnernode && ./dinnernode
+#
+# Installs dependencies if needed, runs setup (idempotent, only writes what is
+# missing), opens a public tunnel if it can, and serves. Ctrl-C stops
+# everything, tunnel included.
+#
+# POSIX sh on purpose: this is the first thing a new operator runs, and it has
+# to work before anything about their machine is known.
+set -eu
+
+cd "$(dirname "$0")"
+
+if [ -t 1 ]; then B='\033[1m'; G='\033[32m'; Y='\033[33m'; D='\033[2m'; X='\033[0m'
+else B=''; G=''; Y=''; D=''; X=''; fi
+
+say() { printf "%b\n" "$1"; }
+die() { printf "%b\n" "\033[31m✗${X} $1" >&2; exit 1; }
+
+command -v node >/dev/null 2>&1 || die "node is not installed. Get it from https://nodejs.org (version 20 or newer)."
+command -v npm  >/dev/null 2>&1 || die "npm is not installed. It ships with node: https://nodejs.org"
+
+# ---- dependencies ---------------------------------------------------------
+# package-lock.json is newer than node_modules after a git pull that changed it.
+if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then
+  say "${B}installing dependencies${X} ${D}(first run takes a minute)${X}"
+  npm install --no-audit --no-fund
+  # Keep the marker fresh so the next run skips this.
+  touch node_modules
+fi
+
+# ---- setup ----------------------------------------------------------------
+# Interactive and idempotent. Exits nonzero if the node is not ready to serve,
+# having already printed what to fix.
+npm run --silent setup || exit 1
+
+# ---- tunnel ---------------------------------------------------------------
+# A node only earns from guests who can reach it. cloudflared quick tunnels need
+# no account and no token, which is why they are preferred over ngrok here.
+TUNNEL_PID=''
+cleanup() {
+  [ -n "$TUNNEL_PID" ] && kill "$TUNNEL_PID" 2>/dev/null || true
+  exit 0
+}
+trap cleanup INT TERM
+
+PORT="${PORT:-4173}"
+# Respect an operator who set their own URL; only auto-tunnel when they have not.
+PUBLIC_URL="$(grep -E '^PUBLIC_URL=' .env 2>/dev/null | cut -d= -f2- || true)"
+
+if [ -z "$PUBLIC_URL" ] && command -v cloudflared >/dev/null 2>&1; then
+  LOG="$(mktemp)"
+  say "${B}opening a public tunnel${X}"
+  cloudflared tunnel --url "http://localhost:${PORT}" >"$LOG" 2>&1 &
+  TUNNEL_PID=$!
+
+  # cloudflared prints the assigned hostname a second or two after start.
+  i=0
+  while [ $i -lt 30 ]; do
+    PUBLIC_URL="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG" 2>/dev/null | head -1 || true)"
+    [ -n "$PUBLIC_URL" ] && break
+    # If cloudflared died, stop waiting and fall through to LAN-only.
+    kill -0 "$TUNNEL_PID" 2>/dev/null || break
+    sleep 1
+    i=$((i + 1))
+  done
+
+  if [ -n "$PUBLIC_URL" ]; then
+    say "  ${G}✓${X} ${PUBLIC_URL}"
+    export PUBLIC_URL
+  else
+    say "  ${Y}!${X} tunnel did not come up, serving the LAN only ${D}(log: $LOG)${X}"
+    TUNNEL_PID=''
+  fi
+elif [ -n "$PUBLIC_URL" ]; then
+  say "${B}public url${X} ${PUBLIC_URL} ${D}(from .env)${X}"
+  export PUBLIC_URL
+fi
+
+# ---- serve ----------------------------------------------------------------
+say ""
+npm run --silent host
+
+cleanup

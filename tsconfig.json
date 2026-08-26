@@ -1,0 +1,22 @@
+{
+  // The root was never typechecked. `npm run host` goes through tsx, which
+  // strips types and never checks them, so `src/` had no compiler pass at all
+  // and three real defects sat in it unnoticed. `npm run typecheck` is that
+  // pass. strict is required: viem's generics collapse without it and produce
+  // MORE errors, not fewer.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": false,
+    "resolveJsonModule": true,
+    "isolatedModules": true
+  },
+  "include": ["src"]
+}

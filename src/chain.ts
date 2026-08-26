@@ -7,7 +7,12 @@ export const monadTestnet = defineChain({
   nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
   rpcUrls: { default: { http: ['https://testnet-rpc.monad.xyz'] } },
 });
-export const ADDR = process.env.DINNER_NODE_ADDRESS as `0x${string}`;
+// The deployed testnet registry. Defaulted rather than required: a node
+// operator has no way to know this value, and leaving it unset used to produce
+// an undefined address that failed deep inside viem rather than at startup.
+// Override only to point a node at a different deployment.
+export const DEFAULT_ADDR = '0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92' as const;
+export const ADDR = (process.env.DINNER_NODE_ADDRESS ?? DEFAULT_ADDR) as `0x${string}`;
 export const EXPLORER = 'https://testnet.monadvision.com';
 export const ABI = parseAbi([
   'function registerProvider(string model, string hw, uint256 ratePerMillion)',

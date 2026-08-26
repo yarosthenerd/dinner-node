@@ -5,12 +5,17 @@
     "viem": "^2.55.19"
   },
   "devDependencies": {
-    "tsx": "^4.23.12"
+    "@types/node": "^26.3.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
   },
   "type": "module",
   "scripts": {
     "host": "tsx src/host.ts",
     "rent": "tsx src/guest.ts",
-    "faucet": "tsx src/faucet.ts"
+    "faucet": "tsx src/faucet.ts",
+    "typecheck": "tsc --noEmit",
+    "setup": "tsx src/setup.ts",
+    "doctor": "tsx src/setup.ts --check"
   }
 }
