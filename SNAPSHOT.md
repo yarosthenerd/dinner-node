@@ -1,3 +1,249 @@
+# Session snapshot, 2026-08-26
+
+> Newest first. The 2026-08-25 snapshot follows below and is unchanged.
+> `TODO.md` remains the roadmap; this is the build and defect state.
+
+## 1. Headline
+
+Five deploys shipped. The live site now runs the current tree: legal pages with
+a named controller, a corrected on-chain rate, a reworked conversation UI, and a
+node-operator onboarding page replacing the fake hosting simulation. A node
+operator can go from `git clone` to a listening provider with one command.
+
+Two findings outrank all of it, because both invalidate numbers the pitch rests
+on:
+
+- **Settlement gas costs roughly 10x what the tokens earn.** Not electricity,
+  gas. See section 4.
+- **The reference GPU runs its model 56% on CPU.** A1's 25 tok/s is out by
+  roughly 6x on the machine the pitch describes. See section 5.
+
+## 2. Shipped and verified live
+
+All verified against the deployed bundle, not assumed from the source.
+
+| Change | Evidence |
+|---|---|
+| ToS and AUP name a controller and contacts | `/terms.html`, `/acceptable-use.html` 200, zero placeholders |
+| Rate 2e18 -> 2.67e19 | `/api/p/health` and the contract provider struct both read 26700000000000000000 |
+| Faucet 0.25 -> 0.15, floor 1 -> 0.5 | code defaults, not Vercel env, so a forgotten variable cannot revert them |
+| Per-job budget 0.01 -> 0.05 MON | job#31 settled 419 tok for 0.0111873 MON, exactly 419 x 2.67e19 / 1e6 |
+| Engram panel rework | `.engram-head`, `.engram-body` in deployed CSS |
+| Length-scaled stream watchdog | `6e4+Math.ceil(M/150)*1e3` in deployed JS |
+| Maximal sanitizer widened | `[NATIONALITY]` and the place gazetteer in deployed JS |
+| Conversation UI, sim removed | `transcript` present; `your kitchen (sim)` and `start hosting` absent |
+| `/hosting.html` | 200, contains "Run a node" |
+
+Contract is unchanged: still V1 at `0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92`.
+DinnerNodeV2.sol remains a draft and is still not deployed.
+
+## 3. Defects found and fixed
+
+Each was found by measurement or by replaying a real artifact, not by reading.
+
+**The rate raise was a no-op in production.** `health.js` gated re-registration
+on `!p.active`. The provider was already active, so `registerProvider` was never
+called again and the contract billed 2e18 indefinitely. The gate now also fires
+on rate drift. Note for future work: V1 `settle` reads the provider's rate at
+settle time (`DinnerNode.sol:66`) and `openJob` stores no rate, so there is no
+snapshot and one re-registration corrects billing for open jobs too.
+
+**Every job was being killed by the client, not the engine.** Jobs logged
+`engine error: This operation was aborted`. `host.ts:184` aborts the ollama
+fetch when the response closes, so the browser was hanging up. The watchdog
+keyed off raw bytes, and the host heartbeats `": hb"` every second: the first
+heartbeat at t=1s flipped `streaming` true and collapsed the 60s cold grace to
+20s before any token could exist, while also refreshing the deadline and
+defeating the wedge detection it exists for. Now keyed to real tokens, with a
+cold budget of `60s + promptTokens/150` seconds.
+
+**Long prompts were silently truncated.** `num_ctx` was never sent. Ollama does
+not use a model's architectural context length; it applies the server default
+unless the Modelfile or request sets `num_ctx`, and the served tag carries none.
+The stack advertised a 30720 token budget while ollama truncated past 4096 and
+answered confidently about text it had not seen. Now sent from `CONTEXT_TOKENS`
+on both the serving and warm paths. **Verified: a 19,153 token prompt recalls a
+marker at position 0.** A 40,528 token prompt correctly fails, truncated from
+the front, which is why the host's 30720 guard is load-bearing.
+
+**The engram panel had never worked.** Selecting a template called `storeEngram`
+immediately, which threw `No active job binding` every time, because the binding
+is only set after `openJob` lands and the only sensible moment to pick a
+template is before ordering. The upload path parsed, promised storage, and
+stored nothing. Selection is now staged and applied once the binding exists.
+
+**The prompt box was collapsed to a few pixels.** `EngramSelector` was a flex
+sibling of the textarea inside `.rowline` and took the row's width.
+
+**Maximal privacy leaked five of ten realistic prompts.** Replayed from
+`.context/feedback/RecipeMaxPrivacy.md`, an answer that opened "Since you're in
+Belgrade" under maximal strictness. Demonyms were not covered at all, the
+location cue was only `in|at|from`, and no rule caught a lone capitalised word.
+Added a gazetteer of places and nationalities ranked above the name rule, so
+places stop being labelled `[PERSON]`.
+
+**An address false positive at the DEFAULT level.** From
+`.context/feedback/BalancedNone.md`: `"write me a 1000 word essay"` became
+`"write me a [ADDRESS] essay"`. The pattern used `/i` with no leading `\b`
+before its street-type alternation, so `Rd` matched the tail of **word**. Every
+length-specified prompt was losing its word count at balanced.
+
+**`applyPattern` reported detections that never happened.** `hit` was set before
+the replacer decided, so a declining replacer still claimed a redaction.
+
+**`maxFeePerGas` over-reserves 20x.** Monad reserves `maxFee x gasLimit`. At the
+hardcoded 2000 gwei a `closeJob` costing 0.006 MON reserves 0.114, so the wallet
+reports insufficient balance long before it is actually empty.
+
+## 4. The economics finding
+
+`src/host.ts:127` settles **every 3 seconds per active job**. The reference
+model generates ~4 tok/s, so each settle covers ~12 tokens.
+
+| per settle | |
+|---|---|
+| gas (28.8k warm +20%, 102 gwei, Monad charges the limit) | ~0.0035 MON |
+| revenue (12 tok x 2.67e19 / 1e6) | ~0.0003 MON |
+
+**Gas is roughly 10x revenue.** Observed burn is consistent: the provider wallet
+went from 0.972 MON to 0.0017 in about 25 minutes across ~1,300 settled tokens.
+A 1,000 token answer costs ~0.29 MON in gas and earns ~0.027.
+
+This is worse than the pricing gap closed this morning. Raising the rate 13x
+closed a 5x gap against electricity; this is a 10x gap against gas alone, and it
+worsens as the model gets slower, because fewer tokens fall inside each
+3-second window.
+
+Widening the interval, or settling per N tokens instead of per interval, fixes
+it directly. Not changed, because "settling every second" is currently the
+tagline in the site header and that is a positioning decision. `TODO.md` already
+says not to lead with per-second settlement.
+
+**Consequence observed twice today:** a provider that runs dry mid-job strands
+the guest's escrow and loses its own unsettled work. Job#32 died this way with
+0.0256 MON locked; it was closed manually. Nothing retries `closeJob`, and
+nothing watches the balance during a run.
+
+## 5. Hardware reality on the reference machine
+
+RTX 5070 Ti Laptop, **12,227 MiB VRAM**.
+
+- `qwen3.8:27b` is ~19 GB. Only 8.4 GB is resident, so **56% runs on CPU.**
+- Measured output is ~4 tok/s. **A1 in REFRAME assumes 25 tok/s: out by ~6x.**
+- Prompt evaluation measured at ~158 tok/s. A 17,042 token prompt took ~110s
+  before its first token; a full 30,720 token prompt needs ~195s.
+- Cold load of a 27B is ~48s, which is why `keep_alive` now holds it resident.
+- A 22.6 GB model (`qwen3.6:35b-a3b`) loads anyway and spills 58% to CPU. Two
+  models cannot coexist in 12 GB, so loading one evicts the other.
+
+A1 and A2 remain formally unmeasured, but A1 is now known to be wrong in the
+optimistic direction. A model that fits entirely in VRAM would be dramatically
+faster and is probably the single cheapest performance win available.
+
+## 6. Plan as a job: first code exists
+
+Previously a documented destination with no implementation. `commitPlan`,
+`revisePlan`, `planHash`, `PlanStep` and `planner` had zero occurrences anywhere
+in the codebase.
+
+Now built, pure and chain-free, with 21 passing tests:
+
+- **`src/plan.ts`** — `Plan`/`PlanStep` types, canonical serialization,
+  `planHash` (keccak of the canonical form, shaped to match a future
+  `commitPlan(bytes32)`), `planCostWei`, the dumb validator, `readySteps`, and
+  `canLazyApprove`.
+- **`src/planner.ts`** — planner prompt carrying the caps, brace-balanced JSON
+  extraction from model prose, and a single validated retry that feeds the
+  validator's own issues back.
+
+Caps enforced: 12 steps, 4096 tokens per step, 32768 total, depth 6, plus cycle
+and dangling-dependency rejection and an optional budget ceiling.
+
+Three invariants are encoded deliberately: executors never sequence (a step
+carries a prompt and a ceiling, nothing else); the waste bound is one step; the
+validator is arithmetic and graph checks only, never a model.
+
+**Verified against the live 27B.** Goal: a 1500 word researched briefing.
+Accepted on the first attempt in **501 seconds**:
+
+```
+6 steps, up to 16000 tokens, ceiling 0.4272 MON
+planHash 0x89547cbe2d4e9e7f82d46f6be92f57c781752efd202dbf4d992842e85b84180a
+  research_gpu_specs           2500 tok  deps=[]
+  research_power_costs         2000 tok  deps=[]
+  research_inference_pricing   2500 tok  deps=[]
+  research_utilization_demand  2500 tok  deps=[]
+  profitability_analysis       3000 tok  deps=[the four above]
+  draft_briefing               3500 tok  deps=[profitability_analysis]
+wave 1: 4 parallelisable steps
+```
+
+A proper diamond DAG whose first wave is four independent steps that could run
+on four providers at once, which is the case that makes a marketplace worth more
+than a single host. It is also the first workload today whose committed value
+(0.43 MON) would genuinely justify mid-answer migration.
+
+**Not built:** contract primitives, the plan review UI with hand-editing and
+per-step abort, the replan flow, and any execution loop. Nothing is committed on
+chain.
+
+**Open question the run raises:** 8.4 minutes to produce a plan is too slow, on
+a model that is 56% on CPU. Planning wants a small fast model, not the serving
+model.
+
+## 7. Node operator setup: works, with three defects
+
+`./dinnernode` plus `src/setup.ts` replace what was previously a hand-written
+`.env` with no template and no validation, where a missing `PROVIDER_PK` crashed
+inside `privateKeyToAccount` at import time.
+
+**Tested by cloning the repo into a sandbox and running the one command with no
+manual intervention.** The clone was clean: no `.env` came along and the
+executable bit survived. It installed, generated a wallet at 0600, wrote a
+`.env`, warmed the model in 15.1s and listened on the chosen port. So the happy
+path genuinely works.
+
+Three defects the test exposed:
+
+1. **The model default is naive.** It offers `models[0]`, which on this machine
+   is a 22 GB model against 12 GB of VRAM. An operator taking the default gets a
+   node spilling to CPU. It should prefer a model that fits and warn otherwise.
+2. **It registered before it had gas.** `register failed: Signer had
+   insufficient balance`. The host started before faucet funds landed, so the
+   node came up listening and unregistered. No guest can open a job against it,
+   and it looks like it worked.
+3. **Setup did not gate the handoff.** Neither the `ready` nor `not ready` line
+   printed, yet `./dinnernode` still ran `npm run host`. On non-interactive
+   stdin the wizard exits 0 without completing, so `npm run setup || exit 1`
+   never fires.
+
+Defect 2 is the one that matters: it is the difference between a working node
+and one that silently earns nothing.
+
+## 8. Repository state
+
+Branch `session/2026-08-26-hardening-and-node-setup`, five commits, ahead of
+`main` at `09c6579`. `main` has not moved.
+
+**Production has been deployed five times from an uncommitted or unmerged
+working tree.** The deployed site matches the branch, not `main`.
+
+## 9. Still open, unchanged by this session
+
+- Cloud kitchen is still a fixed passage. `web/api/p/job.js` destructures
+  `{ jobId, prompt }` and ignores `resume` entirely, so mid-answer migration
+  still cannot be demonstrated from a browser. This is TODO "Now" item 5 and it
+  gates the migration demo, which in turn gates plan-as-a-job execution.
+- `HOUSE_PK` is still both faucet and cloud-kitchen provider key, so every usage
+  figure is house-to-house flow.
+- The five same-day legal edits from the 2026-08-26 review are not applied.
+  Terms 2.7 still says "none of it is transmitted to us", which
+  `web/api/p/job.js` and `web/api/topup.js` both contradict.
+- `web/api/topup.js` still exists and must be deleted before mainnet.
+- V2 defects in `TODO.md` P1 are untouched.
+
+---
+
 # Session snapshot, 2026-08-25
 
 > Second pass, same day: the P0 items in section 7 have been worked. See
