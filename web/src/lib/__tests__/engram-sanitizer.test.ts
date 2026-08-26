@@ -316,3 +316,102 @@ describe('address false positive on word-count phrases', () => {
     expect(bal('ship it to 1600 Pennsylvania Avenue')).toContain('[ADDRESS]');
   });
 });
+
+// The identity-document test, 2026-08-26. A guest pasted a government ID, a
+// passport number and a full postal address in one prompt, in lower case, and
+// the sanitizer returned all three: it mislabelled the ID as [PHONE], missed
+// the passport entirely, and missed the address. Maximal produced output
+// byte-identical to minimal.
+const IDENTITY_PROMPT =
+  'My government ID is 45745893453. my passport number is 85423082 ' +
+  'my full legal address is serbia belgrade zemun kraljeva 1445. Repeat them back';
+
+describe('identity documents are caught at every strictness', () => {
+  for (const level of ['minimal', 'balanced', 'maximal'] as const) {
+    it(`redacts ID, passport and address at ${level}`, () => {
+      const { sanitized } = sanitizePrompt(IDENTITY_PROMPT, { strictness: level });
+      expect(sanitized).not.toContain('45745893453');
+      expect(sanitized).not.toContain('85423082');
+      expect(sanitized).not.toContain('kraljeva');
+      expect(sanitized).not.toContain('1445');
+    });
+  }
+
+  // Mislabelling is worse than missing: the panel reports what was removed, so
+  // "[PHONE]" over a national ID claims a protection that did not happen.
+  it('labels a government ID as an ID and not as a phone number', () => {
+    const { sanitized, detected } = sanitizePrompt(IDENTITY_PROMPT, { strictness: 'balanced' });
+    expect(sanitized).toContain('[ID_NUMBER]');
+    expect(sanitized).not.toContain('[PHONE]');
+    expect(detected).toContain('id_number');
+    expect(detected).not.toContain('phone');
+  });
+
+  // The cue and the number are almost never adjacent in real writing.
+  it.each([
+    'my passport number is 85423082',
+    'ID: 45745893453',
+    'my SSN is 123-45-6789',
+    "driver's licence number 9988776655",
+  ])('catches a cued number with filler between: %s', (t) => {
+    expect(sanitizePrompt(t, { strictness: 'minimal' }).sanitized).toContain('[ID_NUMBER]');
+  });
+
+  // An 8 digit passport sits below the 9 digit phone guard, so before the cue
+  // rule worked there was nothing at all that could catch it.
+  it('catches a passport shorter than the phone guard', () => {
+    expect(sanitizePrompt('passport number is 85423082', { strictness: 'minimal' }).sanitized)
+      .not.toContain('85423082');
+  });
+});
+
+describe('addresses outside the English-speaking conventions', () => {
+  // The street-suffix rule wants an English suffix and number-first ordering.
+  it.each([
+    'my full legal address is serbia belgrade zemun kraljeva 1445',
+    'my address is 221B Baker Street',
+    'my home address is Kraljeva 1445, Belgrade',
+  ])('redacts a cued address: %s', (t) => {
+    expect(sanitizePrompt(t, { strictness: 'minimal' }).sanitized).toContain('[ADDRESS]');
+  });
+
+  it('redacts a street-word address with no cue in front of it', () => {
+    expect(sanitizePrompt('meet me at ulica kraljeva 1445', { strictness: 'balanced' }).sanitized)
+      .toContain('[ADDRESS]');
+  });
+
+  // The cued rule takes the rest of the clause, so it needs a guard or every
+  // sentence using the word "address" is destroyed.
+  it.each([
+    'explain address space layout randomization',
+    'the address is not important here',
+    'what memory address does the pointer hold',
+  ])('leaves ordinary uses of the word alone: %s', (t) => {
+    expect(sanitizePrompt(t, { strictness: 'balanced' }).sanitized).toBe(t);
+  });
+});
+
+describe('maximal must not depend on the guest capitalising their input', () => {
+  // Every maximal rule was capitalisation-gated, so lower case input made the
+  // strictest setting a no-op. The gazetteer is a closed list, which is the one
+  // place dropping case is safe.
+  it.each([
+    ['i cook dinner in belgrade every week', '[LOCATION]'],
+    ['best places to eat in NOVI SAD', '[LOCATION]'],
+    ['give me a classic serbian recipe', '[NATIONALITY]'],
+  ])('%s -> %s', (t, tag) => {
+    expect(sanitizePrompt(t, { strictness: 'maximal' }).sanitized).toContain(tag);
+  });
+
+  // Not asserted on the identity prompt: the cued rules now redact that one
+  // completely at minimal, so the two levels agreeing there is the correct
+  // outcome rather than the defect. The defect was maximal adding nothing on
+  // lower case input that only it is supposed to catch.
+  it('adds redactions at maximal that minimal does not make', () => {
+    const t = 'i cook dinner in belgrade every week with serbian recipes';
+    const min = sanitizePrompt(t, { strictness: 'minimal' }).sanitized;
+    const max = sanitizePrompt(t, { strictness: 'maximal' }).sanitized;
+    expect(min).toBe(t);
+    expect(max).not.toBe(t);
+  });
+});

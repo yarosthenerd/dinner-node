@@ -121,13 +121,30 @@ const byLengthDesc = (a: string, b: string) => b.length - a.length;
 
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** One alternation of every known place name, multi-word entries first. */
+/**
+ * One alternation of every known place name, multi-word entries first.
+ *
+ * Case-insensitive, and that is the point. Both of these were /g, so
+ * "serbia belgrade" matched nothing while "Serbia Belgrade" matched both. Every
+ * other rule at maximal strictness is also capitalisation-gated - `name`,
+ * `proper_noun` and `location_generic` all require [A-Z][a-z]+ - so a prompt
+ * typed in lower case, which is how a great many people type, made maximal
+ * produce byte-identical output to minimal. The strictest setting silently did
+ * nothing.
+ *
+ * A closed list is the one place this is safe to fix by dropping case: the
+ * alternation only ever matches names that are on it. It does cost some false
+ * positives on words that are also common nouns - "turkey", "chile", "china" -
+ * which at maximal is the correct direction to fail. The shape heuristics are
+ * deliberately NOT made case-insensitive: /[a-z]+ [a-z]+/i would match nearly
+ * every pair of words in the language.
+ */
 export const PLACE_PATTERN = new RegExp(
   `\\b(?:${[...MULTIWORD_PLACES, ...COUNTRIES, ...CITIES].sort(byLengthDesc).map(escape).join('|')})\\b`,
-  'g'
+  'gi'
 );
 
 export const DEMONYM_PATTERN = new RegExp(
   `\\b(?:${[...DEMONYMS].sort(byLengthDesc).map(escape).join('|')})\\b`,
-  'g'
+  'gi'
 );

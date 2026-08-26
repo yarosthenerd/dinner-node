@@ -72,9 +72,58 @@ const PII_PATTERNS: PiiPattern[] = [
     replacement: '[CREDIT_CARD]',
     guard: luhnValid },
 
-  { type: 'id_number', priority: 12, minLevel: 'balanced',
-    pattern: /\b(?:ID|SSN|Passport|License)[:\s]?\s*[\d-]{8,}\b/gi,
-    replacement: '[ID_NUMBER]' },
+  // The cue and the number are almost never adjacent. This pattern was
+  // /(?:ID|SSN|Passport|License)[:\s]?\s*[\d-]{8,}/, which requires the digits
+  // to follow the cue immediately, so it never fired on how anyone actually
+  // writes: "my government ID is 45745893453", "my passport number is
+  // 85423082". Both fell through to `phone`, and an 11 digit national ID was
+  // redacted as [PHONE] while an 8 digit passport went through untouched,
+  // because it is below the nine digit phone guard.
+  //
+  // Mislabelling is the worse half of that. The panel tells the guest what it
+  // removed, so "[PHONE]" over a government ID reports a protection that did
+  // not happen and hides one that did.
+  //
+  // Filler between cue and value is now allowed, and the value is redacted on
+  // its own so the sentence still reads. Priority is above `phone` so a cued
+  // number is claimed here first and can never be relabelled.
+  //
+  // At `minimal`, alongside the other cued high-confidence rules. A number the
+  // guest has themselves labelled as an ID is not a judgement call, and
+  // leaving it to `balanced` meant the least strict setting kept reporting
+  // government IDs as phone numbers.
+  { type: 'id_number', priority: 12, minLevel: 'minimal',
+    pattern: /\b((?:government|national|personal|social\s+security|tax|driver'?s?|drivers)\s+)?(?:ID|IDs|identity|identification|SSN|JMBG|OIB|NIN|passport|licen[cs]e)(?:\s+(?:number|no\.?|num|code|#))?\s*(?:is|are|:|=|#)?\s*([A-Za-z]{0,2}\d[\d\s-]{4,}\d)/gi,
+    replacement: '[ID_NUMBER]',
+    // Six digits minimum. The cue itself carries none, so counting over the
+    // whole match is counting the value.
+    guard: (m) => digitCount(m) >= 6,
+    replacer: (m, _lead, value: string) => m.slice(0, m.length - value.length) + '[ID_NUMBER]' },
+
+  // An explicit address cue, redacted to the end of the clause.
+  //
+  // The pattern below this one needs an English street suffix and US ordering
+  // (number, then street name). "serbia belgrade zemun kraljeva 1445" is the
+  // European shape - street name then number - in a language whose street
+  // words are not in any list, so nothing matched a full postal address the
+  // guest had explicitly labelled as one.
+  //
+  // Taking the rest of the clause is deliberate. An address is the one field
+  // where the guest has already told us the remainder is sensitive, and no
+  // amount of per-country street vocabulary generalises. Shares priority 12
+  // with id_number, which is safe: one requires an address cue and the other
+  // an identity cue, so they cannot claim the same text.
+  { type: 'address', priority: 12, minLevel: 'minimal',
+    pattern: /\b((?:my\s+)?(?:full\s+)?(?:legal\s+|home\s+|postal\s+|mailing\s+|current\s+|permanent\s+|billing\s+|shipping\s+)?address(?:es)?\s*(?:is|are|:|=)\s*)([^.!?\n]+)/gi,
+    replacement: '[ADDRESS]',
+    // Without this, "the address is not important here" was redacted whole.
+    // A postal address carries a number or a comma essentially always, and
+    // an English sentence that merely uses the word "address" usually carries
+    // neither. The trade is deliberate and falls the safe way: a rare benign
+    // clause with a comma in it is over-redacted, rather than a real address
+    // without a house number being sent in the clear.
+    guard: (m) => /\d/.test(m) || m.includes(','),
+    replacer: (m, cue: string, _rest: string) => cue + '[ADDRESS]' },
 
   { type: 'email', priority: 11, minLevel: 'minimal',
     pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
@@ -119,8 +168,13 @@ const PII_PATTERNS: PiiPattern[] = [
   // so "write me a 1000 word essay" became "write me a [ADDRESS] essay" at the
   // default strictness. Any "<number> word" phrase was affected, which is one
   // of the most common shapes a prompt takes.
+  // Street-suffix addresses with no cue in front of them. Two orderings,
+  // because number-first is an English-speaking convention and most of Europe
+  // writes the number last. The non-English street words are the ones that
+  // appear in the region this node actually serves; the list raises the floor
+  // and is not a substitute for the cued rule above.
   { type: 'address', priority: 7, minLevel: 'balanced',
-    pattern: /\b\d+\s+[A-Za-z\s]+\b(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln)\b/gi,
+    pattern: /\b(?:\d+\s+[A-Za-z\s]+\b(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Drive|Dr|Lane|Ln)|(?:ulica|ul|bulevar|bul|trg|put|aleja|strasse|stra\u00dfe|str|via|rue|calle|plaza|plac)\.?\s+[A-Za-z\u00c0-\u024f]+\s+\d{1,4}[a-z]?|[A-Za-z\u00c0-\u024f]+\s+(?:ulica|bulevar|trg|strasse|stra\u00dfe|via|rue|calle)\s*\d{1,4}[a-z]?)\b/gi,
     replacement: '[ADDRESS]' },
 
   // Known places, by name. Ranked above location_generic and name so a real
