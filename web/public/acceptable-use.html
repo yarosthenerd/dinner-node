@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex" />
+<title>DinnerNode — Acceptable Use Policy</title>
+<style>
+  :root { --ink:#0B0E14; --panel:#10161F; --line:#1D2733; --mint:#9FEF00; --ketchup:#FF5C4D; --text:#D7E0EA; --dim:#6B7A89; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--ink); color:var(--text); font:13px/1.65 ui-monospace,'JetBrains Mono',Menlo,Consolas,monospace; }
+  .wrap { max-width:860px; margin:0 auto; padding:24px 20px 60px; }
+  header { border-bottom:1px dashed var(--line); padding-bottom:14px; margin-bottom:18px; }
+  h1 { font:800 26px/1.15 system-ui,-apple-system,'Segoe UI',sans-serif; color:var(--mint); letter-spacing:-.5px; }
+  .sub { color:var(--dim); margin-top:6px; }
+  a { color:#5AA9FF; text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  h2 { color:var(--mint); font:700 14px/1.3 ui-monospace,monospace; text-transform:uppercase; letter-spacing:.10em; margin:26px 0 10px; }
+  h3 { color:var(--text); font-size:13px; font-weight:700; margin:16px 0 6px; }
+  p { margin:8px 0; }
+  ul, ol { margin:8px 0 8px 18px; }
+  li { margin:4px 0; }
+  code { background:var(--line); padding:1px 5px; border-radius:4px; word-break:break-all; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; margin:14px 0; }
+  .warn { border-color:var(--ketchup); }
+  .warn strong { color:var(--ketchup); }
+  .fill { color:var(--ketchup); font-weight:700; }
+  .dim { color:var(--dim); }
+  nav.back { margin-bottom:18px; }
+  footer { border-top:1px dashed var(--line); margin-top:34px; padding-top:16px; color:var(--dim); }
+  @media (max-width:600px) { .wrap { padding:18px 14px 48px; } h1 { font-size:21px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav class="back"><a href="/">&larr; back to DinnerNode</a></nav>
+
+<header>
+  <h1>DinnerNode — Acceptable Use Policy</h1>
+  <p class="sub">Monad testnet (chain 10143). Version 0.1, draft. Last updated 25 August 2026.</p>
+</header>
+
+<div class="card warn">
+  <p><strong>DRAFT PENDING LEGAL REVIEW.</strong></p>
+  <p>This policy has been drafted in-house and has not been reviewed by qualified counsel. It is not legal advice. It is published so that users and node operators know what is expected of them before they use the service. It will be replaced once reviewed.</p>
+</div>
+
+<p>This policy forms part of the <a href="/terms.html">Terms of Use</a> and applies to everyone who uses DinnerNode, whether as a guest submitting prompts or as a node operator serving them. Breach of this policy is a breach of the Terms.</p>
+
+<h2>1. How node operators actually work</h2>
+<div class="card">
+  <p>A node operator is a person running automated software on a personal computer. When a job arrives, the software passes the prompt to a local language model and streams the reply back. The operator is not sitting at the keyboard reading prompts as they arrive.</p>
+  <p><strong>Node operators cannot inspect prompts before accepting them.</strong> A job is opened by an on-chain transaction that carries only a hash, and the prompt text reaches the node afterwards, at the moment the stream begins. There is no queue of prompts for an operator to review and approve in advance. Screening therefore happens after the fact, on reports and on automated signals, and never as prior review.</p>
+  <p>The practical consequence is that abusive content is stopped by consequences rather than by gatekeeping. Report it and it will be acted on. Do not assume anything was approved simply because it was served.</p>
+</div>
+
+<h2>2. Prohibited uses</h2>
+<p>Do not use DinnerNode, as a guest or as a node operator, to do any of the following, or to attempt or facilitate any of the following.</p>
+
+<h3>2.1 Unlawful content and conduct</h3>
+<ul>
+  <li>Anything unlawful under the law of Serbia, the European Union, or any jurisdiction that applies to you.</li>
+  <li>Child sexual abuse material, or any sexual content involving or depicting minors, in any form and for any stated reason.</li>
+  <li>Content that sexualizes a real person without their consent, including synthetic intimate imagery.</li>
+  <li>Terrorist content, or content that promotes, instructs in, or incites terrorism or violent extremism.</li>
+  <li>Human trafficking, exploitation, or the sale of persons, organs, weapons, or controlled substances.</li>
+</ul>
+
+<h3>2.2 Harm to people</h3>
+<ul>
+  <li>Instructions or assistance for producing weapons, explosives, or chemical, biological, radiological, or nuclear agents.</li>
+  <li>Instructions or assistance for seriously harming, killing, stalking, or harassing a person.</li>
+  <li>Encouragement of suicide, self-harm, or disordered eating.</li>
+  <li>Harassment, threats, doxxing, or targeting of a private individual.</li>
+  <li>Hate speech, or content that demeans people on the basis of a protected characteristic.</li>
+</ul>
+
+<h3>2.3 Personal and confidential data</h3>
+<ul>
+  <li>Submitting personal data of any kind, in line with section 2.5 of the Terms. This applies with particular force to another person's data.</li>
+  <li>Submitting special category data, including health, biometric, genetic, political, religious, or sexual orientation data.</li>
+  <li>Submitting credentials, private keys, seed phrases, API keys, or payment card details.</li>
+  <li>Submitting confidential or trade secret information belonging to an employer or a third party.</li>
+  <li>Using outputs to re-identify, profile, track, or surveil an individual.</li>
+</ul>
+
+<h3>2.4 Deception and fraud</h3>
+<ul>
+  <li>Generating spam, phishing, scam text, fake reviews, or fraudulent solicitations.</li>
+  <li>Impersonating a person, an organization, or a public authority.</li>
+  <li>Generating disinformation, election manipulation content, or synthetic media presented as authentic.</li>
+  <li>Presenting DinnerNode output as human authored where the distinction matters, or as verified fact.</li>
+</ul>
+
+<h3>2.5 Intellectual property</h3>
+<ul>
+  <li>Submitting or generating content that infringes copyright, trademark, patent, or other rights.</li>
+  <li>Using the service to circumvent technical protection measures or licensing restrictions.</li>
+</ul>
+
+<h3>2.6 Abuse of the system itself</h3>
+<ul>
+  <li>Prompt injection, jailbreaking, or other attempts to make a node operator's software behave outside its intended function.</li>
+  <li>Attempting to gain access to a node operator's machine, files, network, or credentials through the prompt channel or otherwise.</li>
+  <li>Probing, scanning, or attacking the marketplace, the contracts, the hosted endpoints, or any node.</li>
+  <li>Denial of service, resource exhaustion, or flooding jobs to degrade availability for others.</li>
+  <li>Exploiting a contract defect, a settlement accounting error, or a faucet to extract testnet balances beyond intended use, and failing to report it.</li>
+  <li>Running mining, cracking, key-search, or arbitrary non-inference workloads through the node channel.</li>
+  <li>Automating the faucet, or claiming from it through multiple addresses to circumvent limits.</li>
+  <li>Reverse engineering to reconstruct prompt text from on-chain commitments, or otherwise attempting to de-anonymize a guest.</li>
+  <li>Circumventing the client-side sanitizer in order to transmit personal data.</li>
+</ul>
+
+<h3>2.7 Additional prohibitions for node operators</h3>
+<ul>
+  <li>Retaining, logging, reusing, training on, selling, or disclosing prompt content, contrary to section 5 of the Terms.</li>
+  <li>Misrepresenting the model, hardware, throughput, or rate you offer in the registry.</li>
+  <li>Returning fabricated or scripted output while presenting it as model inference, or billing tokens you did not produce.</li>
+  <li>Manipulating settlement counts, ratings, or reputation signals.</li>
+  <li>Serving jobs from hardware you are not authorized to use, or from infrastructure whose terms forbid it.</li>
+</ul>
+
+<h2>3. Node operators may refuse or terminate any job</h2>
+<div class="card">
+  <p>Every node operator may refuse to accept a job, may stop serving a job already in progress, and may close a job at any point, for any reason or for no stated reason. This includes refusal on grounds of content, suspected abuse, resource limits, hardware condition, or simple unwillingness to serve a particular request.</p>
+  <p>No node operator is obliged to answer any prompt. Guests have no right to service and no claim arising from a refusal, an interruption, or an incomplete answer. Settlement is post-pay per interval, so a job terminated early is paid only for what was streamed before termination.</p>
+  <p>The operator of the marketplace may likewise suspend or remove any guest address or node operator that breaches this policy, and may withhold faucet access, without notice.</p>
+</div>
+
+<h2>4. Reporting abuse</h2>
+<p>Report anything on this list to <a href="mailto:yaros3920@gmail.com">yaros3920@gmail.com</a>. Reports are welcome from guests, node operators, and non-users alike.</p>
+<p>Include as much of the following as you have. A report is actionable in proportion to how specific it is.</p>
+<ul>
+  <li>The job ID, the transaction hash, or the block in which the job was opened.</li>
+  <li>The wallet address of the guest or node operator concerned.</li>
+  <li>What happened, and which part of this policy you believe it breaches.</li>
+  <li>The time and approximate date, with time zone.</li>
+  <li>Evidence such as screenshots or copies of the output, with any personal data redacted.</li>
+  <li>How we can reach you for follow-up, and whether you consent to your identity being disclosed to the reported party.</li>
+</ul>
+<p>Reports concerning a security vulnerability in the contracts or the application should also go to <a href="mailto:yaros3920@gmail.com">yaros3920@gmail.com</a> with "SECURITY" in the subject line. Do not exploit a vulnerability to demonstrate it beyond the minimum needed to establish that it exists.</p>
+
+<h2>5. Notice and action procedure</h2>
+<p>This procedure is modeled on the notice-and-action requirements of the EU Digital Services Act, adapted to the scale of the project.</p>
+<ol>
+  <li><strong>Acknowledgement.</strong> We confirm receipt of a report to the address you supply, normally within 72 hours, unless the report is anonymous.</li>
+  <li><strong>Assessment.</strong> We review the report against this policy and applicable law. We may ask you for clarification, and we may ask the reported party for an explanation. Assessment is by a human, and automated tools are used only to gather evidence.</li>
+  <li><strong>Priority.</strong> Reports of child sexual abuse material, terrorist content, or a credible threat to life are handled immediately and ahead of everything else, and are reported to the competent authorities where the law requires it.</li>
+  <li><strong>Decision.</strong> We aim to decide within 14 days for ordinary reports. Complex reports may take longer, and we will tell you if that happens.</li>
+  <li><strong>Action.</strong> Possible outcomes include no action, a warning, removal of a node operator from the registry, suspension or blocking of a guest address, withdrawal of faucet access, referral to law enforcement, or a change to the software to prevent recurrence.</li>
+  <li><strong>Statement of reasons.</strong> Where we act against a user, we tell that user what was decided, on what ground, whether the decision rested on this policy or on law, and how to contest it. We tell the reporter the outcome in general terms.</li>
+  <li><strong>Appeal.</strong> A user affected by a decision may contest it by replying to the statement of reasons within 30 days, setting out why the decision was wrong. Appeals are reviewed by a human who did not make the original decision where that is possible given the size of the project, and we aim to answer within 14 days. Decisions found to be wrong are reversed.</li>
+  <li><strong>Bad-faith reports.</strong> We may decline to process reports from a party that repeatedly submits manifestly unfounded reports, after warning them.</li>
+</ol>
+<p>Two limits apply to every action above. Nothing written to the blockchain can be removed, by us or by anyone; enforcement acts on access to the service, not on the chain record. And node operators run independent machines that we do not control, so enforcement against an operator means removal from the registry and not control over their computer.</p>
+
+<h2>6. Changes to this policy</h2>
+<p>We may amend this policy. The current version is the one published at this address, with the version number and date shown at the top. Material changes are notified as set out in section 13 of the <a href="/terms.html">Terms of Use</a>.</p>
+
+<footer>
+  <p>Abuse reports: <a href="mailto:yaros3920@gmail.com">yaros3920@gmail.com</a> · General contact: see the <a href="/terms.html">Terms of Use</a></p>
+  <p class="dim">Draft pending review by qualified counsel. Not legal advice.</p>
+  <p><a href="/">&larr; back to DinnerNode</a></p>
+</footer>
+
+</div>
+</body>
+</html>
