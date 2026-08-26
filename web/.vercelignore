@@ -1,0 +1,5 @@
+# `vercel env pull` writes .envtmp and it is NOT covered by Vercel's default
+# .env ignore rule. It has carried a live VERCEL_OIDC_TOKEN before. Never
+# upload it.
+.envtmp
+.env*
