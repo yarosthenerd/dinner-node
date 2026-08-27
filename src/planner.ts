@@ -62,8 +62,12 @@ Rules, all enforced after you reply:
 - Every id must match [a-z0-9_-] and be AT MOST ${PLAN_LIMITS.maxIdChars} CHARACTERS.
   Count them. "gpu_costs" is good; "determine-break-even-and-conclude" is too long.
 - At most ${PLAN_LIMITS.maxSteps} steps. Fewer is better. Do not pad.
-- maxTokens at most ${PLAN_LIMITS.maxTokensPerStep} per step, ${PLAN_LIMITS.maxTotalTokens} in total.
-  Estimate honestly: unused tokens are not charged, but the ceiling is what gets escrowed.
+- maxTokens between ${PLAN_LIMITS.minTokensPerStep} and ${PLAN_LIMITS.maxTokensPerStep} per step, ${PLAN_LIMITS.maxTotalTokens} in total.
+  This ceiling counts YOUR REASONING as well as your answer, and reasoning comes
+  first. A step whose ceiling is smaller than the thinking it needs produces
+  nothing at all. Budget roughly four times the visible output you expect, and
+  never less than ${PLAN_LIMITS.minTokensPerStep}.
+  Unused tokens are not charged, but the ceiling is what gets escrowed.
 - dependsOn lists only steps that must finish first. Use [] when a step can start immediately.
   Independent steps run in parallel on different machines, so do not chain steps that need not be chained.
 - No cycles. Dependency chains at most ${PLAN_LIMITS.maxDepth} deep.
@@ -117,6 +121,21 @@ export function extractJson(raw: string): string | null {
  * graph's shape. A dangling dependency stays dangling and the validator still
  * rejects it.
  */
+export function normalizeTokens(parsed: any): string[] {
+  const repairs: string[] = [];
+  if (!parsed || !Array.isArray(parsed.steps)) return repairs;
+  for (const s of parsed.steps) {
+    const n = Number(s?.maxTokens);
+    if (!Number.isFinite(n)) continue;
+    const clamped = Math.min(PLAN_LIMITS.maxTokensPerStep, Math.max(PLAN_LIMITS.minTokensPerStep, Math.floor(n)));
+    if (clamped !== n) {
+      repairs.push(`${s.id ?? '(step)'} maxTokens ${n} -> ${clamped}`);
+      s.maxTokens = clamped;
+    }
+  }
+  return repairs;
+}
+
 export function normalizeIds(parsed: any): string[] {
   const repairs: string[] = [];
   if (!parsed || !Array.isArray(parsed.steps)) return repairs;
@@ -171,7 +190,7 @@ export function parsePlan(
   } catch (e: any) {
     return { issues: [{ code: 'bad_json', message: `JSON did not parse: ${e?.message ?? e}` }] };
   }
-  const repairs = normalizeIds(parsed);
+  const repairs = [...normalizeIds(parsed), ...normalizeTokens(parsed)];
   const { ok, issues } = validatePlan(parsed, opts);
   return ok ? { plan: parsed as Plan, issues: [], repairs } : { issues, repairs };
 }

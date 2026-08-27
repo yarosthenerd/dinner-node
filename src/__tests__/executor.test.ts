@@ -90,16 +90,36 @@ describe('executePlan', () => {
   });
 
   it('enforces the ceiling on billed tokens, reasoning included', async () => {
+    // Reasoning counts against the ceiling because maxTokens is what
+    // planCostWei escrows. Counting only visible output would let a
+    // reasoning-heavy step bill several times what the guest approved.
     const d: Dispatch = async function* () {
       for (let i = 0; i < 10; i++) yield { th: 'x' } as any;
       yield { t: 'never reached' } as any;
     };
     const events = await drain(executePlan(plan([step('a', [], { maxTokens: 3 })]), d));
+    const failed = kinds(events, 'step_failed')[0] as any;
+    // Cut off at exactly the ceiling, and reported as a failure rather than a
+    // success, because it never reached an answer. See the ceiling_before_output
+    // block below.
+    expect(failed.code).toBe('ceiling_before_output');
+    expect(failed.message).toContain('all 3 tokens');
+  });
+
+  it('counts reasoning against the ceiling even when an answer does arrive', async () => {
+    const d: Dispatch = async function* () {
+      yield { th: 'thinking' } as any;
+      yield { t: 'A' } as any;
+      yield { t: 'B' } as any;
+      yield { t: 'C' } as any;
+    };
+    const events = await drain(executePlan(plan([step('a', [], { maxTokens: 3 })]), d));
     const done = kinds(events, 'step_done')[0] as any;
     expect(done.tokens).toBe(3);
+    // One reasoning token consumed a third of the ceiling, so only two visible
+    // tokens fit under it.
+    expect(done.visible).toBe(2);
     expect(done.truncated).toBe(true);
-    // A step cut off at its ceiling completed; it did not fail.
-    expect((kinds(events, 'plan_done')[0] as any).ok).toBe(true);
   });
 
   it('fails a step whose composed prompt exceeds the node budget, before dispatching', async () => {
@@ -199,5 +219,46 @@ describe('collect', () => {
     const p = plan([step('a'), step('b'), step('c')]);
     const out = collect(p, new Map([['c', 'CCC'], ['a', 'AAA']]));
     expect(out).toBe('## a\n\nAAA\n\n## c\n\nCCC');
+  });
+});
+
+// The failure a live run produced and the executor called a success.
+describe('a ceiling spent before any answer', () => {
+  it('fails the step instead of reporting an empty success', async () => {
+    // Every frame is reasoning, so the ceiling is reached with nothing visible.
+    const d: Dispatch = async function* () {
+      for (;;) yield { th: 'x' } as any;
+    };
+    const events = await drain(executePlan(plan([step('a', [], { maxTokens: 8 })]), d));
+    const failed = kinds(events, 'step_failed')[0] as any;
+    expect(failed.code).toBe('ceiling_before_output');
+    expect(failed.message).toContain('raise this step');
+    const done = kinds(events, 'plan_done')[0] as any;
+    expect(done.ok).toBe(false);
+  });
+
+  it('strands the dependent steps rather than feeding them nothing', async () => {
+    // The compounding version of the same defect: without this, wave 2 ran
+    // against empty dependency output and produced its own empty result.
+    const started: string[] = [];
+    const d: Dispatch = async function* (s) {
+      started.push(s.id);
+      for (;;) yield { th: 'x' } as any;
+    };
+    const p = plan([step('a', [], { maxTokens: 4 }), step('b', ['a'], { maxTokens: 4 })]);
+    await drain(executePlan(p, d));
+    expect(started).toEqual(['a']);
+  });
+
+  it('still accepts a truncated step that produced an answer', async () => {
+    const d: Dispatch = async function* () {
+      yield { t: 'here is the answer' } as any;
+      for (;;) yield { th: 'x' } as any;
+    };
+    const events = await drain(executePlan(plan([step('a', [], { maxTokens: 5 })]), d));
+    const done = kinds(events, 'step_done')[0] as any;
+    expect(done.truncated).toBe(true);
+    expect(done.visible).toBe(1);
+    expect((kinds(events, 'plan_done')[0] as any).ok).toBe(true);
   });
 });

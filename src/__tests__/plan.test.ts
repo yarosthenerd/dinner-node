@@ -15,7 +15,7 @@ import {
   type Plan,
   type PlanStep,
 } from '../plan.js';
-import { normalizeIds } from '../planner.js';
+import { normalizeIds, normalizeTokens } from '../planner.js';
 
 const step = (id: string, over: Partial<PlanStep> = {}): PlanStep => ({
   id, title: `step ${id}`, prompt: `do ${id}`, maxTokens: 500, dependsOn: [], ...over,
@@ -249,5 +249,38 @@ describe('normalizeIds', () => {
     // Repair rewrites references to ids it changed. It must not invent a step.
     const { p } = parse({ steps: [{ id: 'a', dependsOn: ['nope'] }] });
     expect(p.steps[0].dependsOn).toEqual(['nope']);
+  });
+});
+
+describe('normalizeTokens', () => {
+  const parse = (o: any) => { const p = JSON.parse(JSON.stringify(o)); return { repairs: normalizeTokens(p), p }; };
+
+  it('raises a ceiling too small for a reasoning model to answer under', () => {
+    const { repairs, p } = parse({ steps: [{ id: 'a', maxTokens: 1024 }] });
+    expect(p.steps[0].maxTokens).toBe(PLAN_LIMITS.minTokensPerStep);
+    expect(repairs[0]).toContain('1024');
+  });
+
+  it('caps a ceiling above the per-step maximum', () => {
+    const { p } = parse({ steps: [{ id: 'a', maxTokens: 999999 }] });
+    expect(p.steps[0].maxTokens).toBe(PLAN_LIMITS.maxTokensPerStep);
+  });
+
+  it('leaves a sensible ceiling alone', () => {
+    const { repairs, p } = parse({ steps: [{ id: 'a', maxTokens: 3000 }] });
+    expect(p.steps[0].maxTokens).toBe(3000);
+    expect(repairs).toEqual([]);
+  });
+
+  it('ignores a non-numeric ceiling, which the validator rejects on its own', () => {
+    const { p } = parse({ steps: [{ id: 'a', maxTokens: 'lots' }] });
+    expect(p.steps[0].maxTokens).toBe('lots');
+  });
+
+  it('clamps upward, so the guest approves the ceiling that will actually apply', () => {
+    // The cost shown in the review is computed from the repaired plan, not the
+    // one the model wrote, or the escrow would not cover the run.
+    const { p } = parse({ steps: [{ id: 'a', maxTokens: 10 }, { id: 'b', maxTokens: 20 }] });
+    expect(planCostWei(p as any, 1_000_000n)).toBe(BigInt(PLAN_LIMITS.minTokensPerStep * 2));
   });
 });

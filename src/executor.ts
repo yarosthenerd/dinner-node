@@ -107,6 +107,30 @@ async function runStep(
   let tokens = 0;
   let visible = 0;
   let truncated = false;
+
+  /**
+   * A step that spent its whole ceiling and produced no visible output has
+   * FAILED, however calmly it stopped.
+   *
+   * Measured on a live run: six steps at a 1,024 ceiling each burned the lot
+   * on reasoning, emitted nothing, and the run reported ok=true with six of
+   * six completed. The guest paid 0.312 MON for an empty answer that looked
+   * like a success, which is worse than an error, because nothing downstream
+   * had any reason to complain: the dependent steps then ran against empty
+   * dependency output and produced their own empty results.
+   */
+  const finish = (): StepOutcome => {
+    if (truncated && visible === 0) {
+      return {
+        id: step.id, text, tokens, visible, ok: false, truncated,
+        code: 'ceiling_before_output',
+        error: `spent all ${tokens} tokens of its ceiling on reasoning without producing an answer; `
+          + `raise this step's maxTokens above ${tokens}`,
+      };
+    }
+    return { id: step.id, text, tokens, visible, ok: true, truncated };
+  };
+
   try {
     for await (const c of dispatch(step, prompt, ac.signal)) {
       if (c.th !== undefined) {
@@ -133,11 +157,11 @@ async function runStep(
         break;
       }
     }
-    return { id: step.id, text, tokens, visible, ok: true, truncated };
+    return finish();
   } catch (e: any) {
     // A ceiling abort surfaces here as an AbortError on some engines, and it
     // is a completed step rather than a failed one.
-    if (truncated) return { id: step.id, text, tokens, visible, ok: true, truncated };
+    if (truncated) return finish();
     return {
       id: step.id, text, tokens, visible, ok: false,
       code: 'engine_error', error: String(e?.message ?? e),

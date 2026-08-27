@@ -42,6 +42,20 @@ export const PLAN_LIMITS = {
   maxSteps: 12,
   /** Per-step token ceiling, so the waste bound is one step. */
   maxTokensPerStep: 4096,
+  /**
+   * Floor on the same number, and it is not a style preference.
+   *
+   * The ceiling is enforced on BILLED tokens, reasoning included, because that
+   * is what the guest escrowed. On a reasoning model the reasoning arrives
+   * first, so a ceiling smaller than the model's thinking budget is spent
+   * entirely before a single visible token is produced.
+   *
+   * Measured on this node 2026-08-27: a plan cost 2,472 reasoning tokens
+   * against 723 visible, and a six step plan at a 1,024 ceiling produced
+   * 6,144 billed tokens and ZERO visible output while reporting success.
+   * 2,048 is the smallest ceiling any step in that run would have cleared.
+   */
+  minTokensPerStep: 2048,
   /** Total across every step, independent of the per-step ceilings. */
   maxTotalTokens: 32768,
   /** A step prompt still has to fit a context window with room to answer. */
