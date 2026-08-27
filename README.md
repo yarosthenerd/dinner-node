@@ -66,21 +66,36 @@ non-Latin text and short number sequences are still in it. There is no server-si
 The accurate one-liner: **the chain sees a salted hash and the payer's address; the provider
 sees the prompt; your browser keeps the history.**
 
-### ZK: roadmap, not load-bearing
-`DinnerZK.sol` is deployed at `0x1D6f…c8A0` for anonymous paid-guest ratings, and the
-Semaphore packages are in `web/package.json`, but nothing in the shipped app calls either.
-No ZK proof is generated, submitted, or relied on in the current build, and the ZK layer
-provides no anonymity today. Roadmap: Semaphore group membership wired to the ratings
-contract, on-chain verifier, Brevis ZK coprocessor, Phala TEE confidential inference,
-zkML proof-of-inference.
+### ZK: verified on chain, and anonymous only once the group is large
+`DinnerRatings.sol` is deployed at `0xeb0d…d87f`. Semaphore proofs are verified **on
+chain** by the deployed verifier, not in the browser, so a rating that does not carry a
+valid membership proof is not recorded. `join(jobId, commitment)` requires a closed job
+belonging to the caller with `paid > 0`, and burns that job, so a rating is backed by
+work actually paid for.
+
+Two limits, stated because they are real. `join` is sent by the guest's own wallet, so
+the chain links that wallet to its commitment: anonymity comes from group size and
+nothing else, and the group currently has **zero members**. And `rate` is deliberately
+relayable, which moves trust to the relayer rather than removing it.
+
+**`DinnerZK.sol` is retired.** An instance is still deployed at `0x1D6f…c8A0` and cannot
+be removed, because it has no owner and no selfdestruct. Nothing calls it and nothing
+should: it took a `proofHash` and trusted it, so any address could record any rating
+under any nullifier, and its `join` was open to anyone. The source has been deleted from
+this repo so it cannot be wired up by mistake. Treat that address as abandoned.
+
+Still roadmap, not built: Brevis ZK coprocessor, Phala TEE confidential inference, zkML
+proof-of-inference.
 
 ## Real vs. demo
 Real: the registry, escrow, and settlements; laptop inference via ollama; prompt commitments;
-cloud failover; engram sanitization. Discovery is off-chain.
+engram sanitization; mid-answer migration between two real nodes, verified on chain.
+Discovery is off-chain.
 
-Demo: the hosted cloud kitchen at `web/api/p/job.js` does not run a model. It streams a fixed
-pre-written passage word by word, echoing the first 50 characters of the prompt. Its
-settlements are genuinely on-chain, so the payment rail is real while the inference behind
-that one endpoint is not. The simulated hosting card is labeled as such in the UI.
+Removed: the hosted cloud kitchen. It streamed a fixed pre-written passage while settling
+real testnet MON, so the payment rail was real and the inference behind that one endpoint
+was not. Deleting it costs the site its failover target until discovery serves reachable
+peers, which is the honest trade: an order against a dead node now fails and returns its
+escrow instead of charging for text no model produced.
 
 Built with monskills on Monad testnet. *Every token is a tip.*

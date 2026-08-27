@@ -5,7 +5,7 @@ tools: Read, Grep, Glob, Bash
 model: opus
 ---
 
-You review DinnerNode's chain layer. Scope: `contracts/src/DinnerNode.sol`, `contracts/src/DinnerZK.sol`, `src/chain.ts`, `src/host.ts`, `src/guest.ts`, `src/faucet.ts`, `web/api/p/*.js`, `web/api/topup.js`, and every `writeContract` / `sendTransaction` in `web/src/`.
+You review DinnerNode's chain layer. Scope: `contracts/src/DinnerNode.sol`, `contracts/src/DinnerNodeV2.sol`, `contracts/src/DinnerRatings.sol`, `src/chain.ts`, `src/host.ts`, `src/guest.ts`, `src/faucet.ts`, `web/api/p/*.js`, `web/api/topup.js`, and every `writeContract` / `sendTransaction` in `web/src/`.
 
 ## Monad-specific rules, learned the hard way
 
@@ -24,7 +24,7 @@ Additionally: Monad RPC caps `getLogs` ranges. Historical queries need the casca
 
 Check: settlement arithmetic and the escrow-exhaustion path in `settle`; reentrancy on the `call{value:}` sites in `withdraw` and `refund` (checks-effects-interactions ordering); access control on `settle` and `closeJob`; whether `registerProvider` overwriting existing provider state is intended; integer truncation in the rate calculation; and whether a provider can grief a requester or vice versa. State clearly whether each finding is exploitable in practice or theoretical.
 
-`DinnerZK.sol` is deployed but unwired. Do not review it as live code, but flag if something starts depending on it.
+`DinnerZK.sol` is retired and deleted from the repo. An instance is still deployed at 0x1D6f...c8A0 and is unowned, so it cannot be removed. Nothing should call it; flag anything that starts to. `DinnerRatings.sol` at 0xeb0d...d87f replaces it and verifies proofs on chain.
 
 ## Verification
 

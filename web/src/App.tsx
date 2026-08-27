@@ -168,7 +168,12 @@ export default function App() {
     () => DOMPurify.sanitize(marked.parse(stream || '') as string),
     [stream],
   );
-  const canned = url.endsWith('/api/p');
+  // The hosted cloud kitchen is gone. It settled real MON for a fixed passage
+  // of text, which was the one thing on this site that took payment for
+  // nothing, and a network built on idle consumer GPUs falling back to a
+  // serverless function undermined its own premise. Failover now goes to
+  // another real node or nowhere. See SNAPSHOT 2026-08-27 (evening).
+  const canned = false;
 
   // Provider discovery. The listener is primary; the on-chain read of the
   // known list is the fallback. Note that scanning ProviderRegistered logs is
@@ -478,7 +483,13 @@ export default function App() {
       // Try the selected host first, then the hosted kitchen. Each attempt
       // gets its own job, and any job that does not finish is closed so its
       // escrow comes back.
-      const targets = [url, window.location.origin + '/api/p'].filter((v, i, a) => a.indexOf(v) === i);
+      // One target until discovery serves reachable peers. The second entry
+      // used to be the hosted kitchen, which answered every failure with a
+      // canned passage and a real settlement, so a guest whose node died paid
+      // for text no model produced. Failing honestly is better than that.
+      // Restoring failover is a matter of putting a peer URL in here, which is
+      // what discovery exists to provide.
+      const targets = [url];
       let finalJobId: bigint | null = null;
 
       for (const u of targets) {
@@ -802,7 +813,7 @@ export default function App() {
           <div className="note">You are interacting with an AI system. Responses are machine generated and may be inaccurate.</div>
           <div className="rowline">
             <input value={url} onChange={e => setUrl(e.target.value)} />
-            <button onClick={() => setUrl(window.location.origin + '/api/p')}>☁ cloud</button>
+
           </div>
           {canned && <div className="note">Note: the hosted kitchen returns a fixed demo passage, not model inference. Its on-chain settlements are real.</div>}
           {hostEngine?.engine === 'mock' && (
