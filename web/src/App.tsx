@@ -106,6 +106,10 @@ export default function App() {
   const [pulse, setPulse] = useState(0);
   const [sentPrompt, setSentPrompt] = useState('');
   const [budgetTokens, setBudgetTokens] = useState(30720);
+  // What the selected host actually runs. /health has always carried `engine`
+  // and nothing in the browser read it, so a guest could not tell a node
+  // serving a real model from one serving canned text while settling real MON.
+  const [hostEngine, setHostEngine] = useState<{ engine?: string; model?: string } | null>(null);
   const [sessions, setSessions] = useState<Session[]>(loadSessions);
   // The provider this browser has actually paid. Ratings are gated on a paid
   // job by the contract, so there is nothing to show before the first one.
@@ -291,6 +295,7 @@ export default function App() {
       try {
         const h = await (await fetch(url + '/health', { headers: TUNNEL_HEADERS, signal: AbortSignal.timeout(6000) })).json();
         if (!dead && h?.promptBudget) setBudgetTokens(Number(h.promptBudget));
+        if (!dead) setHostEngine({ engine: h?.engine, model: h?.model });
         // Plus five seconds for the settle transaction itself to land.
         if (!dead && h?.settleMaxMs) settleGraceRef.current = Number(h.settleMaxMs) + 5000;
       } catch {}
@@ -790,6 +795,15 @@ export default function App() {
             <button onClick={() => setUrl(window.location.origin + '/api/p')}>☁ cloud</button>
           </div>
           {canned && <div className="note">Note: the hosted kitchen returns a fixed demo passage, not model inference. Its on-chain settlements are real.</div>}
+          {hostEngine?.engine === 'mock' && (
+            <div className="note">
+              Note: this host reports engine "mock". It returns canned text rather than model
+              output, and its settlements are still real MON. Pick another host.
+            </div>
+          )}
+          {hostEngine?.engine && hostEngine.engine !== 'mock' && (
+            <div className="dim">host runs {hostEngine.model} via {hostEngine.engine}</div>
+          )}
           {/* The selector used to sit inside the .rowline flex row alongside the
               textarea. It is a full panel, so it took the row's width and the
               textarea's flex:1 collapsed it to a few pixels. It is its own block

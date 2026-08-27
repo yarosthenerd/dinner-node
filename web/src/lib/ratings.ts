@@ -11,6 +11,14 @@ import { Identity } from '@semaphore-protocol/identity';
 import { generateProof } from '@semaphore-protocol/proof';
 import { parseAbi } from 'viem';
 
+/// Monad's base fee spikes to thousands of gwei and the chain charges
+/// gas_limit rather than gas_used, so an uncapped write during a spike can
+/// commit several MON. Every other browser write already carried this cap;
+/// these two did not, and they are the ones the guest now pays from their own
+/// wallet rather than from a burner the house funded. Same value as MAX_FEE in
+/// web/src/App.tsx and the daemons.
+const MAX_FEE = 2000000000000n;
+
 export const RATINGS_ABI = parseAbi([
   'function join(uint256 jobId, uint256 identityCommitment)',
   'function rate(address provider, uint256 rating, (uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)',
@@ -77,7 +85,7 @@ export async function readGroup(pub: any, commitment: bigint): Promise<GroupStat
 export async function joinWithJob(wallet: any, jobId: bigint, identity: Identity) {
   return wallet.writeContract({
     address: RATINGS_ADDRESS!, abi: RATINGS_ABI, functionName: 'join',
-    args: [jobId, identity.commitment], gas: 400000n,
+    args: [jobId, identity.commitment], gas: 400000n, maxFeePerGas: MAX_FEE,
   });
 }
 
@@ -109,7 +117,7 @@ export async function rateProvider(
       scope: BigInt(proof.scope),
       points: proof.points.map((p: string | bigint) => BigInt(p)) as unknown as readonly [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint],
     }],
-    gas: 800000n,
+    gas: 800000n, maxFeePerGas: MAX_FEE,
   });
 }
 
