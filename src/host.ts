@@ -286,6 +286,18 @@ setInterval(() => {
 // The listener re-checks providers(me) on chain before it trusts any of this.
 const DISCOVERY = process.env.DISCOVERY_URL ?? '';
 const PUBLIC_URL = process.env.PUBLIC_URL ?? '';
+// The listener expires an announced URL after DISCOVERY_TTL_MS, ten minutes by
+// default, and reverts that provider to url: null. announce() ran exactly once
+// at startup, so every node vanished from discovery's URL list ten minutes
+// after it booted and stayed missing until someone restarted it. Discovery
+// still knew the address from the chain; it just no longer knew where to reach
+// it, which is the one thing it exists to know.
+//
+// Re-announcing on a timer well inside that window is the fix. Four minutes
+// gives two chances to land before the TTL runs out, so a single failed
+// announce is not enough to drop a live node.
+const ANNOUNCE_EVERY_MS = Number(process.env.ANNOUNCE_INTERVAL_MS ?? 240_000);
+let announced = false;
 async function announce() {
   if (!DISCOVERY || !PUBLIC_URL) return;
   try {
@@ -294,8 +306,14 @@ async function announce() {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ address: me, url: PUBLIC_URL, model: e.model }),
     });
-    console.log(`[announce] ${r.status} ${(await r.text()).slice(0, 120)}`);
+    const body = (await r.text()).slice(0, 120);
+    // Only the first announce and any failure are worth a line. A success
+    // every four minutes for the life of the process is noise that hides the
+    // failures underneath it.
+    if (!announced || !r.ok) console.log(`[announce] ${r.status} ${body}`);
+    announced = r.ok;
   } catch (e: any) {
+    announced = false;
     console.log('[announce] failed (non-fatal):', e?.message ?? e);
   }
 }
@@ -1013,5 +1031,8 @@ http.createServer(async (req, res) => {
     measureFirstToken(e.model);
   }
   announce();
+  // Unref'd: a re-announce timer should never be the reason this process stays
+  // alive.
+  if (DISCOVERY && PUBLIC_URL) setInterval(announce, ANNOUNCE_EVERY_MS).unref?.();
   setInterval(announce, 4 * 60 * 1000).unref();
 });

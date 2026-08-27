@@ -1,0 +1,23 @@
+[Unit]
+Description=DinnerNode discovery listener
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/yaros/monad-synapse
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# Not 4174, which is node 2. The default in src/discovery.ts is 4174 and it
+# predates there being a second node, so the port is set explicitly here rather
+# than inherited.
+Environment=DISCOVERY_PORT=4175
+# Both providers, so a cold start with no cache file still knows who to verify
+# against the registry. Every address is confirmed with a providers(addr) read
+# before it is served, so seeding cannot invent a node.
+Environment=DISCOVERY_SEED=0x055a2e24f4588915aB133Cb85753b0E4BBBC326A,0x1978602dF1865eD61EA0754030817fD8F6A694d3
+ExecStart=/usr/local/bin/npx tsx src/discovery.ts
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

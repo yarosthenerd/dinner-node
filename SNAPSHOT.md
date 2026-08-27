@@ -407,6 +407,46 @@ human has run it.
 To try it: `cd web && npm run dev`, pick a host that advertises plans, and
 switch to "plan a job".
 
+### Discovery is running, and announce was broken
+
+`dinnernode-discovery.service` on port 4175, enabled at boot, seeded with both
+providers. It verifies every address with a `providers(addr)` read before
+serving it, so an announce is a claim about a URL and never a claim about being
+a provider.
+
+```
+0x055a2e24  qwen3.6:35b-a3b   https://litter-unfunded-improvise.ngrok-free.dev
+0x1978602d  llama3.2:1b       http://192.168.3.8:4174
+```
+
+**The defect wiring it up exposed:** `announce()` ran exactly once, at startup,
+and the listener expires an announced URL after `DISCOVERY_TTL_MS`, ten minutes
+by default, reverting that provider to `url: null`. So every node disappeared
+from discovery's URL list ten minutes after booting and stayed missing until
+someone restarted it. Discovery still knew the address from the chain; it just
+no longer knew where to reach it, which is the one thing it exists to know.
+
+Nodes now re-announce every 240 s, well inside the 600 s TTL, so a single
+failed announce is not enough to drop a live node. The repeat is not logged,
+because a success every four minutes forever hides the failures underneath it.
+Verified by dropping the interval to 15 s on node 2: `lastSeen` held at 7 s and
+then 10 s across an 18 s gap, which it cannot do unless the timer fires.
+
+**Not yet usable from the deployed site, and this is the honest state:**
+
+- The listener is on localhost. A browser on `web-opal-sigma-55.vercel.app`
+  cannot reach it, so `VITE_DISCOVERY_URL` is deliberately still unset and the
+  app keeps using the `KNOWN_PROVIDERS` fallback.
+- Node 2's announced URL is this machine's LAN address, because ngrok free
+  gives one tunnel and node 1 has it. It is reachable from the same wifi and
+  from nowhere else.
+
+Both gaps are the same gap: two more public endpoints. Worth deciding
+alongside the domain, since a subdomain per node is the tidy answer and the
+domain is being bought anyway. Until then discovery is correct, boot-durable
+and LAN-useful, and browser failover between two real nodes stays blocked on
+addressing rather than on code.
+
 ### Node 2 under systemd
 
 `dinnernode2.service`, enabled, so it survives a reboot. Linger is already set
