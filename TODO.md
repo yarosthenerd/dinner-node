@@ -102,18 +102,68 @@ same day.
 Put a dated mainnet line in the pitch. Ask a mentor directly, since that is
 cheap information and Delta V's own criteria page could not be read.
 
-## Pricing, corrected
+## Pricing, measured
 
-`.context/REFRAME.md` section 3 benchmarks $0.80 per million against Groq's
-$0.79, but that is a 70B input price and `RATE_PER_MILLION` bills output tokens
-only on a 27B model. The live output band for Qwen 27B across seven providers is
-$2.00 to $3.60. So $0.80 is a 60 to 78 percent discount to market, not "inside
-the band", and the headroom is roughly $1.20.
+Rewritten 2026-08-27. The previous version of this section claimed a 60 to 78
+percent discount to market, benchmarked against a 70B input band for a model
+this node has never served. Both halves of that were wrong, and it flattered us
+in one direction and understated the competition in the other.
 
-- [x] Set the rate to 2.67e19 now, as above. Done 2026-08-26.
-- [ ] Correct REFRAME section 3, which currently understates our own position.
-- [ ] Record what the discount buys: 25 tok/s against DeepInfra's 51, and no SLA.
-      That is a defensible discount rather than a giveaway.
+The rate is no longer a constant. `src/pricing.ts` resolves it at startup from
+the OpenRouter endpoints listing for the exact weights being served, at a
+position in that band times a discount, and publishes the whole derivation in
+`/health`. See `SNAPSHOT.md` 2026-08-27 (evening) section 8.
+
+**The real band, measured 2026-08-27, for `qwen/qwen3.6-35b-a3b`, the model
+this node actually runs. Ten providers.**
+
+| provider | output $/M | input $/M |
+|---|---|---|
+| Darkbloom | 0.700 | 0.070 |
+| AkashML | 0.900 | 0.100 |
+| DeepInfra | 0.950 | 0.100 |
+| Venice | 1.000 | 0.100 |
+| Parasail | 1.000 | 0.150 |
+| **DinnerNode** | **1.002** | **0** |
+| AtlasCloud | 1.114 | 0.186 |
+| Io Net | 1.190 | 0.190 |
+| CoreWeave | 1.250 | 0.250 |
+| Phala | 1.270 | 0.200 |
+| SiliconFlow | 1.600 | 0.200 |
+
+So the position is: **1.44x the cheapest provider, below the ten provider
+median of $1.114, and free on input.** Not a deep discount, and not a giveaway.
+
+**Darkbloom is on this list.** Eigen Labs' network is already an OpenRouter
+provider for the same weights, at the bottom of the band. Any pricing claim we
+make is checkable against the same listing a buyer would read, which is the
+reason the derivation is published rather than asserted.
+
+**Input is the part an output column hides.** `settle()` charges tokensDelta,
+which counts tokens the node GENERATED, so a prompt is free here however long
+it is. Every provider above bills input. Stated as an output-only figure, a
+rival's true price for a job is `outUsd + ratio * inUsd` for a prompt `ratio`
+times the length of the answer:
+
+- cheaper than 5 of 10 on output alone
+- cheaper than 8 of 10 at a 1:1 prompt-to-answer ratio
+- cheaper than all 10 at 5:1
+- cheaper than Darkbloom once a prompt is 4.3x the answer
+
+That is the defensible form of the claim, and it is the one to use in a pitch:
+it is a specific number, it moves with the workload, and anyone can check it.
+
+- [x] Rate resolved from the market rather than set by hand. Done 2026-08-27.
+- [x] Input-side comparison modelled and published in `/health`. Done 2026-08-27.
+- [ ] Correct `.context/REFRAME.md` section 3, which still carries the Groq
+      comparison and the $0.80 figure.
+- [ ] Decide the band position. `PRICE_POLICY` and `PRICE_DISCOUNT` in `.env`
+      are the levers; today `median x 0.9`. Undercutting Darkbloom on output
+      alone is roughly `median x 0.62` and moves break-even from 309 tokens to
+      about 500 per settle. The input-side argument above says it may not be
+      necessary.
+- [ ] Record what the price buys against the band: measured throughput on this
+      node, and no SLA. That is a defensible position rather than a giveaway.
 
 ## The thesis problem
 

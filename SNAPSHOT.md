@@ -367,6 +367,28 @@ B can begin unattended; A and C cannot.
 3. **Whether to add a 24 GB catalog entry on an unmeasured guess.** Section 9.
    The alternative is waiting for an operator with a 3090 or 4090.
 
+### Done in the last ten minutes of the session
+
+Three certain items off list B, plus two drafts.
+
+- **Ratings writes capped.** `joinWithJob` and `rateProvider` now carry
+  `maxFeePerGas`, so no browser write is uncapped during a base fee spike.
+- **The `engine` field is surfaced.** The composer says which model and engine
+  the selected host runs, and warns plainly when a host reports `mock`. This
+  closes an item carried since 2026-08-27 morning.
+- **`TODO.md` pricing section rewritten** around the measured band. The old
+  version claimed a 60 to 78 percent discount against a 70B input price for a
+  model this node has never served.
+- **`terms.html` corrected on the prompt commitment.** It now says one
+  commitment per job rather than per message, that later turns of a
+  conversation are not committed at all, and that the on-chain record is not a
+  per-message log. This was the item with a legal edge.
+- **Two drafts in `.context/drafts/`**, untracked like everything in
+  `.context`: `x-post.md` carries two options, a four item gate that must be
+  true before posting, and the sourcing for every number in it;
+  `competitor-darkbloom.md` is the mentor-facing brief, including a section on
+  what we deliberately do not claim.
+
 ### Where the state lives
 
 - `scripts/plan-e2e.mjs` opens a real job, plans, runs, and reports what the

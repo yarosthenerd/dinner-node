@@ -71,13 +71,14 @@
 <h3>2.1 What is written to the blockchain, permanently</h3>
 <p>When you open a job, exactly two items of data about you are recorded on the Monad testnet:</p>
 <ul>
-  <li><strong>A salted keccak256 hash commitment of your sanitized prompt.</strong> The browser generates a fresh random 32-byte salt for each job, prepends it to the sanitized prompt text, and hashes the result. The hash is passed to the contract as the <code>promptTag</code> field of <code>openJob</code> and emitted in the <code>JobOpened</code> event.</li>
+  <li><strong>A salted keccak256 hash commitment of the sanitized prompt that opened the job.</strong> The browser generates a fresh random 32-byte salt for each job, prepends it to the sanitized prompt text, and hashes the result. The hash is passed to the contract as the <code>promptTag</code> field of <code>openJob</code> and emitted in the <code>JobOpened</code> event.
+    <br><strong>One commitment per job, not per message.</strong> A conversation reuses one job across turns, and <code>promptTag</code> is computed once, when that job is opened. Later messages in the same conversation are sent to the node and answered, but nothing about them is written to the chain: no hash of them exists on chain, and the commitment recorded at <code>openJob</code> describes only the first message. The contract has no way to add a commitment to a job that is already open. Do not read the on-chain record as a per-message log; it is not one.</li>
   <li><strong>Your guest wallet address.</strong> It is the transaction sender, and it is also recorded as an indexed topic on the <code>JobOpened</code> event and on refunds and deposits.</li>
 </ul>
 <p>Both are public forever. Anyone in the world can read them, at any time, without your permission and without notifying you. Blockchain records cannot be edited or removed by us or by anyone else.</p>
 
 <h3>2.2 What is not written to the blockchain</h3>
-<p>The text of your prompt is never written to the chain, and neither is the model's reply. Only the hash commitment described above is written.</p>
+<p>The text of your prompt is never written to the chain, and neither is the model's reply. Only the hash commitment described above is written, and only for the message that opened the job.</p>
 
 <h3>2.3 The node operator does see your prompt</h3>
 <p>The sanitized prompt is transmitted in plaintext to the node operator selected to serve your job, because a language model cannot answer a prompt it cannot read. The accurate description of the privacy position is this: the chain sees a hash and your wallet address, and the node operator sees the prompt.</p>
@@ -112,7 +113,7 @@
   <tr><td><code>dn_engram_*</code>, <code>dn_job_binding</code>, <code>dn_session_nonce</code></td><td>sessionStorage</td><td>Any behaviour engrams you selected, and their binding to the current job. Their instruction text is also sent to the node with your prompt; see above.</td><td>On job close, on tab close, and on a 30 minute expiry</td></tr>
 </table>
 <p><strong>Read <code>dn_sessions</code> carefully.</strong> It persists across browser restarts and is not cleared when a job ends. Anyone with access to this browser profile can read your past prompts and replies. It stores the sanitized prompt rather than what you originally typed, so whatever the sanitizer caught is not in there either, subject to the limits described in section 2.4. Clear it with the "clear history" control at any time.</p>
-<p>The per-job salt is deliberately absent from this table, because it is never stored at all. See section 2.6.</p>
+<p>The per-job salt is deliberately absent from this table, because it is never stored at all. See section 2.6. The salt exists once per job rather than once per message, for the reason given in section 2.3: the commitment is made when the job opens.</p>
 <p>Node operators are instructed not to retain prompt content; see section 5. Hosting and serverless infrastructure providers may keep short-lived technical logs, such as request timestamps and IP addresses, for operational and security purposes.</p>
 
 <h3>2.8 Your rights</h3>
