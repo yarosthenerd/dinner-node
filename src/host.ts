@@ -10,6 +10,7 @@ import { describeHardware, probeHardware } from './hardware';
 import { PLAN_LIMITS, planCostWei, planHash, validatePlan, type Plan } from './plan';
 import { describePlan, makePlan } from './planner';
 import { executePlan, type Dispatch } from './executor';
+import { bill, flush, hold, newLedger, writeOff, type Ledger } from './billing';
 import { DEFAULT_MON_USD, breakEvenTokens, cheaperThanCount, crossoverRatio, describeFreeInput, describeRate, resolveRate, usdPerMillion, type Policy, type Resolved } from './pricing';
 
 const w = wallet(process.env.PROVIDER_PK!);
@@ -154,7 +155,11 @@ async function pickEngine(): Promise<Engine> {
 }
 const engineP = pickEngine();
 
-const active = new Map<bigint, { delta: number; since: number }>();
+// Two counters per job, not one. See src/billing.ts for the policy: `delta` is
+// output the guest received and is the only thing the settle ticker charges
+// for; `hold` is work whose deliverability is not decided yet, and failed work
+// is written off from it rather than invoiced.
+const active = new Map<bigint, Ledger>();
 // gate() runs two awaited round trips before serveJob populates `active`, so
 // concurrent requests all saw size 0 and the concurrency ceiling never bound.
 // Count in-flight requests from the moment the gate admits one instead.
@@ -276,9 +281,7 @@ setInterval(() => {
     const worthIt = settleValueWei(j.delta) >= threshold;
     const waitedLongEnough = now - j.since >= SETTLE_MAX_MS;
     if (!worthIt && !waitedLongEnough) continue;
-    settle(id, j.delta);
-    j.delta = 0;
-    j.since = now;
+    settle(id, flush(j, now));
   }
 }, 1000);
 
@@ -349,7 +352,7 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' });
   const e = await engineP;
   const hb = setInterval(() => { try { res.write(': hb\n\n'); } catch {} }, 1000);
-  active.set(jobId, { delta: 0, since: Date.now() });
+  active.set(jobId, newLedger());
 
   // On a resume the earlier text is replayed as context but is never charged
   // again: this node only settles the tokens it actually produces.
@@ -428,7 +431,7 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
     res.end();
   }
   const j = active.get(jobId);
-  if (j && j.delta > 0) { settle(jobId, j.delta); j.delta = 0; j.since = Date.now(); }
+  if (j && j.delta > 0) settle(jobId, flush(j));
 
   // A session job stays open across turns, so one conversation pays openJob and
   // closeJob once instead of once per turn. Measured over a real ten turn
@@ -450,7 +453,7 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
 // idle timer.
 function closeNow(jobId: bigint) {
   const j = active.get(jobId);
-  if (j && j.delta > 0) { settle(jobId, j.delta); j.delta = 0; j.since = Date.now(); }
+  if (j && j.delta > 0) settle(jobId, flush(j));
   const t = idleTimers.get(jobId);
   if (t) { clearTimeout(t); idleTimers.delete(jobId); }
   queue = queue.then(() => sendChecked('closeJob', 'closeJob', [jobId], 120000n)
@@ -851,7 +854,7 @@ http.createServer(async (req, res) => {
       const id = BigInt(jobId);
       const e = await engineP;
       const hb = setInterval(() => { try { res.write(': hb\n\n'); } catch {} }, 1000);
-      active.set(id, { delta: 0, since: Date.now() });
+      active.set(id, newLedger());
       const ac = new AbortController();
       res.on('close', () => ac.abort());
       console.log(`[job#${id}] planning ${estTokens(String(goal))} tok goal via ${e.kind}/${e.model}`);
@@ -862,7 +865,10 @@ http.createServer(async (req, res) => {
       // serving canned text while settling real MON.
       const billed = async function* (prompt: string) {
         for await (const c of e.gen(prompt, ac.signal)) {
-          active.get(id)!.delta++;
+          // Held, not billed. Planning is atomic: the guest either gets a valid
+          // plan or gets nothing, so nothing is invoiced until makePlan returns
+          // ok. Job#75 charged 0.2736 MON for planning that produced no plan.
+          hold(active.get(id)!);
           if (c.th !== undefined) res.write(`data: ${JSON.stringify({ th: c.th })}\n\n`);
           else res.write(`data: ${JSON.stringify({ t: c.t })}\n\n`);
           yield c.th !== undefined ? '' : c.t;
@@ -885,8 +891,17 @@ http.createServer(async (req, res) => {
         res.write('data: [DONE]\n\n');
         res.end();
       }
-      const jp = active.get(id);
-      if (jp && jp.delta > 0) { settle(id, jp.delta); jp.delta = 0; jp.since = Date.now(); }
+      // Planning is atomic: a valid plan or nothing. Only a plan the guest can
+      // actually run is invoiced, so a planner that burned its budget and
+      // produced nothing costs this node the compute rather than the guest the
+      // MON. This is the case job#75 got wrong.
+      const jp = active.get(id)!;
+      if (attempt.ok) bill(jp);
+      else {
+        const n = writeOff(jp);
+        if (n > 0) console.log(`[job#${id}] planning produced no valid plan, ${n} tok written off unbilled`);
+      }
+      if (jp.delta > 0) settle(id, flush(jp));
       // Planning leaves the job OPEN by default. The guest's next call is
       // /plan/run against the same escrow, and closing here would make them
       // pay openJob twice to use the plan they just bought.
@@ -923,7 +938,7 @@ http.createServer(async (req, res) => {
       const id = BigInt(jobId);
       const e = await engineP;
       const hb = setInterval(() => { try { res.write(': hb\n\n'); } catch {} }, 1000);
-      active.set(id, { delta: 0, since: Date.now() });
+      active.set(id, newLedger());
       const ac = new AbortController();
       res.on('close', () => ac.abort());
 
@@ -957,7 +972,15 @@ http.createServer(async (req, res) => {
           if (res.writableEnded) break;
           // Billed exactly like serveJob: one frame is one token, reasoning
           // included, and the settle ticker does the rest.
-          if (ev.kind === 'token' || ev.kind === 'thought') active.get(id)!.delta++;
+          // Held per step, released per step. A step that completes delivered
+          // its output and is invoiced the moment it lands; a step that fails
+          // produced nothing usable and its tokens are dropped. Held tokens are
+          // exact regardless of wave parallelism: every step's tokens accrue to
+          // `hold`, step_done releases exactly that step's count, and whatever
+          // is left when the run ends belongs to steps that failed or never
+          // finished.
+          if (ev.kind === 'token' || ev.kind === 'thought') hold(active.get(id)!);
+          if (ev.kind === 'step_done') bill(active.get(id)!, ev.tokens);
           res.write(`data: ${JSON.stringify(ev)}\n\n`);
         }
       } catch (err: any) {
@@ -966,9 +989,13 @@ http.createServer(async (req, res) => {
       }
 
       clearInterval(hb);
+      // Anything still held belongs to a step that failed, was aborted, or was
+      // cut off by the engine error caught above. None of it reached the guest.
+      const jr = active.get(id)!;
+      const dropped = writeOff(jr);
+      if (dropped > 0) console.log(`[job#${id}] ${dropped} tok written off unbilled (failed or aborted steps)`);
       if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
-      const jr = active.get(id);
-      if (jr && jr.delta > 0) { settle(id, jr.delta); jr.delta = 0; jr.since = Date.now(); }
+      if (jr.delta > 0) settle(id, flush(jr));
       idleClose(id);
       return;
     }

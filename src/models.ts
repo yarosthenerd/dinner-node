@@ -66,6 +66,31 @@ export const CATALOG: Candidate[] = [
     note: 'general purpose, wants 12 GB to hold a full context' },
   { tag: 'qwen3:14b', weightsMB: 8850, kvPerTokenB: 163840, maxCtx: 40960,
     note: 'noticeably better answers, needs 16 GB' },
+  // The 24 GB entry, and the one row here whose sizing is measured but whose
+  // real-world speed is not. Every number below came from the published blob on
+  // 2026-08-27, the same way every row above it did: weights are the sum of the
+  // manifest layers (16,032 MiB model plus an 888 MiB vision projector, counted
+  // because ollama resides it), file_type Q4_K_M, and the KV geometry is
+  // qwen35.block_count 65 x head_count_kv 4 x (key_length 256 + value_length
+  // 256) x 2 = 266,240 B/token, read out of the GGUF metadata header.
+  //
+  // What is NOT measured is this model running well on a 24 GB card. The only
+  // observation this project has of it is on a 12 GB card, where it spilled 56%
+  // of its layers to CPU and served 4 tok/s. It is here on an operator
+  // decision, backed by a second-hand report that it runs fine on a 24 GB card,
+  // and it should be replaced with a real measurement when one exists.
+  //
+  // The KV figure is pessimistic by construction and probably by a lot:
+  // qwen35.full_attention_interval is 4, so only every fourth layer keeps a
+  // full cache, and kvPerTokenFromInfo does not model that. Being pessimistic
+  // costs context and never costs a spill to CPU, which is the trade the whole
+  // file is built on.
+  //
+  // At 90% of a 24 GB card it needs 17,520 MiB of weights and overhead against
+  // a 22,118 MiB budget, leaving about 17k of context. Below the 35B on a
+  // 32 GB card, so it takes nothing away from the tier above it.
+  { tag: 'qwen3.8:27b', weightsMB: 16920, kvPerTokenB: 266240, maxCtx: 262144,
+    note: 'dense 27B, the 24 GB pick; sizing measured, speed on 24 GB reported not measured' },
   // The top of the catalog. Without it a 32 GB card was told to serve a 14B,
   // which is a third of what it can hold. Measured 2026-08-27 from the local
   // registry manifest and the GGUF metadata header, the same way every row

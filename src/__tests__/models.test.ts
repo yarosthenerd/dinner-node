@@ -49,11 +49,26 @@ describe('recommend', () => {
     expect(recommend(hw(Math.floor(32768 * 0.9)), 16384).pick.tag).toBe('qwen3.6:35b-a3b');
   });
 
-  it('leaves a 24 GB card on 14B, because the MoE does not fit it', () => {
-    // 21,573 MiB of weights against a 22,118 MiB budget. Recording this as a
-    // test rather than a comment because it is the kind of thing a later
-    // catalog entry could silently break.
-    expect(recommend(hw(Math.floor(24576 * 0.9)), 16384).pick.tag).toBe('qwen3:14b');
+  it('gives a 24 GB card the dense 27B, not the MoE and not the 14B', () => {
+    // The MoE is 21,573 MiB of weights against a 22,118 MiB budget, so it does
+    // not fit here; the 27B does, at 17,520 MiB of weights and overhead. This
+    // tier used to fall all the way back to 14B. Recording it as a test rather
+    // than a comment because it is the kind of thing a later catalog entry
+    // could silently break in either direction.
+    const r = recommend(hw(Math.floor(24576 * 0.9)), 16384);
+    expect(r.pick.tag).toBe('qwen3.8:27b');
+    expect(r.fitsWhole).toBe(true);
+    // And it is a real context, not a token of headroom.
+    expect(r.fit.maxCtx).toBeGreaterThanOrEqual(16384);
+  });
+
+  it('does not let the 27B steal the 32 GB tier', () => {
+    // Both fit a 32 GB card; the MoE is last in the catalog and must win, since
+    // it holds 91k of context there against the dense model's 47k.
+    const r = recommend(hw(Math.floor(32768 * 0.9)), 16384);
+    expect(r.pick.tag).toBe('qwen3.6:35b-a3b');
+    expect(r.fit.maxCtx).toBeGreaterThan(
+      recommend(hw(Math.floor(24576 * 0.9)), 16384).fit.maxCtx);
   });
 
   it('still picks 14B on a 16 GB card', () => {
