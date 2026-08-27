@@ -1,3 +1,288 @@
+# Session snapshot, 2026-08-27 (evening)
+
+> Newest first. Earlier snapshots follow below, unchanged.
+> `TODO.md` remains the roadmap; this is the build and defect state.
+
+## 1. Headline
+
+Plan as a job runs end to end on the live node and settles on chain.
+Getting there took five defects, and **every one of them was found by running
+the thing, not by reading it.** Four had been invisible because the failing
+component reported success.
+
+- **A plan produced no output and reported `ok=true`.** Six steps, six
+  completions, zero visible tokens, 0.312 MON charged. See section 3.
+- **The node served 5,907 tokens and settled none of them**, because the
+  provider wallet was empty, while `/health` said `accepting: true`. See
+  section 5.
+- **The hosted kitchen has rejected every JSON request it has ever
+  received.** Not the missing resume path SNAPSHOT recorded; the resume path
+  was already there and nothing ever reached it. See section 6.
+- **The faucet was drained of about 9.6 MON during the session** by an
+  outside caller. Not fixed; blocked on a permission. See section 7.
+- A 153 second planning run was thrown away over a step id one character too
+  long. See section 3.
+
+Pricing is now derived from the market for the exact model served rather than
+from a hand-set constant, and it counts the input we do not charge for.
+
+## 2. Plan as a job: it works
+
+`src/executor.ts` walks a plan wave by wave, transport-free and chain-free the
+way `plan.ts` and `planner.ts` are. `Dispatch` takes a step, a composed prompt
+and a signal, which is this node's engine today and a peer's `/job` later with
+no change to the executor.
+
+Host endpoints: `/plan` produces a plan and bills the tokens that produced it,
+`/plan/run` executes one the guest has accepted. Both bill through the same
+`active` map `serveJob` uses, so the existing value-triggered settle ticker
+pays out mid-run with no second billing path. `/plan/run` re-validates against
+the escrow actually left on the job rather than trusting the wire. `/health`
+advertises `plans.supported` and the caps.
+
+**Final live run, job#79:**
+
+```
+7 steps, 4 waves, all completed with visible output
+planning       113.7 s, 1 attempt
+execution      355.4 s
+settled        0.4813070625 MON for 14,405 tokens
+```
+
+Wave 1 ran three independent steps, wave 2 two, then two single-step waves. A
+real diamond DAG, executed and paid for.
+
+**Planning is 153 s, not 8.4 minutes.** That was SNAPSHOT's open question. The
+8.4 figure was the 27B; on the MoE a plan lands in 56 to 114 seconds.
+
+## 3. Two defects that reported success
+
+**A 33 character step id.** A 153 second run returned a good six step plan
+whose fifth id was `determine-break-even-and-conclude`, one character over the
+32 cap. The retry produced the same class of id and the run was discarded. The
+guest was billed twice and got nothing. Two causes: the planner prompt never
+stated the limit, and the validator's answer to a one character overrun was to
+throw away a plan correct in every other respect. `normalizeIds` now repairs
+deterministically and rewrites every reference to a repaired id, and the 32 is
+`PLAN_LIMITS.maxIdChars`, read by the prompt, the validator and the repair.
+
+**A ceiling spent entirely on reasoning.** All six steps of job#76 burned their
+whole 1,024 token ceiling thinking, emitted nothing, and the run reported
+`ok=true` with six of six completed. 9,339 tokens, 0.3120393375 MON, empty
+answer. It compounded: wave 2 ran against empty dependency output and produced
+its own empty results, and nothing had reason to complain.
+
+The cause is the ceiling being enforced on BILLED tokens, which is correct and
+stays: `maxTokens` is what `planCostWei` escrows, and counting only visible
+output would let a reasoning-heavy step bill several times what the guest
+approved. On a reasoning model the reasoning arrives first, so a ceiling under
+the thinking budget is spent before a visible token exists.
+
+Three changes, none of which relax the cost guarantee: `minTokensPerStep` 2048,
+`normalizeTokens` clamping into range so the guest approves the ceiling that
+will actually apply, and the executor failing a step that hits its ceiling with
+nothing visible, naming the number to raise it above.
+
+## 4. Reasoning is 13x, and plan steps do not need it
+
+Raising the floor was not enough: job#77 failed three steps at a 3,072 ceiling
+the same way, and `maxTokensPerStep` caps at 4,096.
+
+Measured on `qwen3.6:35b-a3b`, one short prompt, identical otherwise:
+
+| | thinking frames | visible frames |
+|---|---|---|
+| `think: true` | 317 | 25 |
+| `think: false` | 0 | 32 |
+
+Reasoning is billed here, so a bounded sub-task that reasons costs about
+thirteen times what it needs to. `ollama()` takes `think`, sent only when
+disabling it because a model without a thinking mode rejects an unexpected
+parameter. `/plan/run` dispatches with it off.
+
+Left ON in two places deliberately. A guest's own prompt streams its reasoning,
+which is disclosed and part of what they are buying. And the planner reasons,
+because choosing the shape of the work is exactly the case reasoning earns its
+cost.
+
+## 5. A node that cannot pay to be paid
+
+The provider wallet reached 0.0007 MON mid-session. Every settle reverted with
+`Signer had insufficient balance`, `registerProvider` failed three times, and
+the node carried on answering. Job#78: four steps completed, 5,907 billed
+tokens, `paid 0 for 0 tokens` on chain. The guest got the work free, the
+operator paid the electricity, and `/health` advertised `accepting: true`
+throughout.
+
+`gate()` now refuses with 503 and a balance, checked BEFORE the pressure check
+because this is not a wait-and-retry: no amount of patience refills a wallet.
+`/health` reports balance, floor and settles covered. The floor is ten settles
+at the last observed gas price rather than a constant, so it moves with the
+base fee.
+
+## 6. The hosted kitchen has never accepted a browser request
+
+SNAPSHOT has said since 2026-08-26 that `web/api/p/job.js` "does not accept a
+resume payload at all". That is wrong. It destructures `resume`, bounds it at
+`MAX_RESUME_CHARS`, verifies the keccak checkpoint and refuses on a mismatch.
+All of that was already built.
+
+What is broken is one line above it. Vercel's Node runtime parses a JSON body
+into an OBJECT before the handler sees it; the handler called `JSON.parse`
+unconditionally, so `JSON.parse({...})` stringified to `"[object Object]"` and
+threw. Confirmed by hand against production:
+
+```
+content-type: application/json  -> 400 "bad body"
+content-type: text/plain        -> reaches the handler ("not my job")
+```
+
+The browser sends `application/json`. **Every failover the web app has ever
+attempted was rejected before it reached the resume path.** That, not a missing
+feature, is why mid-answer migration could not be reproduced from a browser.
+
+**Leg one of migration is verified.** Job#80: the node produced 128 visible
+tokens, published a checkpoint, the prefix hashed to it, and it settled
+0.0448061625 MON for 1,341 tokens. Leg two is untested, because the fix
+deployed but the alias still answered 400 on the check afterwards and that is
+not yet explained. `scripts/migrate-e2e.mjs` runs the whole thing and asserts
+two providers paid for disjoint ranges; it is ready to run once leg two
+responds.
+
+## 7. The faucet is being drained
+
+The house wallet fell from 15.055 to about 5.4 MON during the session, none of
+it from anything run here. Vercel logs show `/api/topup` hit repeatedly, 200s
+interleaved with 429s from the per-IP cooldown, over roughly eleven minutes.
+Each 200 is a 1.2 MON grant.
+
+This is the threat model `web/api/topup.js` documents in its own header:
+drainable by construction, because fresh addresses are free and the cooldown is
+per serverless instance. `HOUSE_FLOOR` has since stopped it, since 1.43 MON is
+below floor plus amount, so the endpoint now refuses. **It will drain again the
+moment the house is refilled.**
+
+**Not fixed.** Setting `TOPUP_DISABLED` was blocked by a permission prompt. The
+operator needs to run:
+
+```
+cd ~/monad-synapse/web && printf '1' | npx vercel env add TOPUP_DISABLED production --visibility config --no-sensitive && npx vercel --prod --yes
+```
+
+## 8. Pricing, from the market rather than by hand
+
+The rate was one constant for every model, hand set, justified in `TODO.md`
+against a price band for a model this node does not run. `src/pricing.ts`
+resolves it from the OpenRouter endpoints listing for the exact weights served.
+
+Measured 2026-08-27 for `qwen/qwen3.6-35b-a3b`, ten providers:
+
+| provider | output $/M | input $/M |
+|---|---|---|
+| **Darkbloom** | 0.700 | 0.070 |
+| AkashML | 0.900 | 0.100 |
+| DeepInfra | 0.950 | 0.100 |
+| Venice | 1.000 | 0.100 |
+| Parasail | 1.000 | 0.150 |
+| **DinnerNode** | **1.002** | **0** |
+| AtlasCloud | 1.114 | 0.186 |
+| Io Net | 1.190 | 0.190 |
+| CoreWeave | 1.250 | 0.250 |
+| Phala | 1.270 | 0.200 |
+| SiliconFlow | 1.600 | 0.200 |
+
+**Darkbloom is already an OpenRouter provider for the exact model this node
+serves.** An earlier note in this session that we were 6x more expensive than
+Darkbloom was wrong: it compared their Gemma 4 26B against our Qwen. Like for
+like we are 1.44x the cheapest and below the ten provider median of $1.114.
+
+Policy is a position in the band times a discount, defaulting to median. This
+node runs `median x 0.9` = $1.002/M, which holds the price it already
+advertised while making the number derived. An explicit `RATE_PER_MILLION`
+still wins; it is commented out in this node's `.env` so the market path runs.
+A failed lookup falls back to the pinned 2026-08-27 band, and the source is
+published either way.
+
+**Input is the part the output column hides.** `settle()` charges tokensDelta,
+which counts tokens this node GENERATED, so a prompt is free here however long
+it is. Every provider on that listing bills input. A rival's true price as an
+output-only figure is `outUsd + ratio * inUsd`:
+
+- cheaper than 5 of 10 on output alone
+- cheaper than 8 of 10 at a 1:1 prompt-to-answer ratio
+- cheaper than all 10 at 5:1
+- cheaper than Darkbloom once a prompt is **4.3x** the answer
+
+That is the honest form of "we do not charge for input": it is worth a specific
+amount and the amount is a ratio. Published in `/health` next to the band.
+
+## 9. Hardware breadth
+
+The catalog stopped at `qwen3:14b`, so every card above 16 GB got the same
+recommendation and a 5090 owner was told to serve a third of what their
+hardware holds. Added `qwen3.6:35b-a3b`, measured from the registry manifest
+and GGUF metadata header the way every other row was: 21,573 MiB weights,
+83,968 B/token KV, trained to 262,144.
+
+MoE rather than a dense model of similar size, and the KV geometry is the
+argument: 83,968 B/token against the dense 27B's 266,240, so on a 32 GB card it
+reaches 132k of context where the dense model stops at 59k.
+
+It is a 32 GB entry, not a 24 GB one. `probeHardware` allots 90% of VRAM, so a
+24 GB card offers 22,118 MiB against this model's 23,485 at 16k context. Both
+tiers are asserted as tests.
+
+**A real gap remains at 24 GB**, where nothing sits between 14B and this.
+`qwen3.8:27b` would fit at 16k, but every measurement this project has of it
+was taken on a card where it spilled to CPU, so it is not added on a guess.
+Closing it needs someone with a 3090 or 4090, which is also the first useful
+thing an early node operator could contribute.
+
+## 10. Live state
+
+```
+node        qwen3.6:35b-a3b, ollama, plans supported, gas gate active
+price       $1.002/M output, input free, live from OpenRouter, break-even 309 tok
+web         web-egmtyr14i deployed; /api/p/job still 400 at the alias, unexplained
+contract    V1 0xaF2c...3A92, jobCounter 82
+ratings     0xeb0d...d87f, group 0, zero members
+house       0xA91a...5CF4   1.4285 MON  <- faucet drained, refuses grants
+provider    0x055a...326A  26.9014 MON  <- refilled by the operator mid-session
+guest       0xCDd9...5411   1.3154 MON, plus 0.74654 on deposit
+tests       100 in the root suite, 104 in web
+```
+
+Eight commits: `883df75` catalog, `52a1c4f` and `e09ae94` pricing, `612c0ea`
+executor and plan endpoints, `02c6bd7` id repair, `9002cba` ceiling failure,
+`65b5090` reasoning off for steps, `ad51aa6` gas gate, `5389f15` cloud body.
+
+## 11. Open, in priority order
+
+1. **Disable the faucet.** Section 7 has the command. Everything else here is
+   cheaper than the money that leaves while it is enabled.
+2. **Finish the migration test.** `node scripts/migrate-e2e.mjs`. Leg one is
+   verified on chain; leg two needs `/api/p/job` to stop answering 400 at the
+   alias. Once it passes, this is the migration demo, recordable.
+3. **The cloud kitchen still returns canned text.** No inference API key exists
+   in any environment, so it cannot become a real second model without the
+   operator obtaining one. The chain mechanics around it are real; the words
+   are not.
+4. **Cap the fee on the two ratings writes** in `web/src/lib/ratings.ts`, which
+   are the only browser writes without `MAX_FEE`.
+5. **A failed plan still bills.** Job#75 charged 0.2736 MON for planning that
+   produced nothing. The node did the work, so this is a policy question rather
+   than a defect, but a guest will not read it that way.
+6. **Correct `terms.html` on the prompt commitment**, narrowed from per prompt
+   to per session opener. Still a live claim the code does not support.
+7. **Separate `HOUSE_PK`** into faucet and cloud-kitchen keys.
+8. **`TODO.md` pricing section is now wrong** in the other direction and should
+   be rewritten around section 8.
+9. Carried forward: surface the `engine` field in the browser, the gas comment
+   in `web/api/p/_lib.js`, node distribution and `src/discovery.ts`,
+   `web/api/topup.js` deletion before mainnet.
+
+---
+
 # Session snapshot, 2026-08-27 (afternoon)
 
 > Newest first. Earlier snapshots follow below, unchanged.
