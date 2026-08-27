@@ -26,6 +26,9 @@ component reported success.
 Pricing is now derived from the market for the exact model served rather than
 from a hand-set constant, and it counts the input we do not charge for.
 
+**Resuming work: read section 12 first.** It carries the next steps split into
+what needs the operator, what can start unattended, and what needs a decision.
+
 ## 2. Plan as a job: it works
 
 `src/executor.ts` walks a plan wave by wave, transport-free and chain-free the
@@ -280,6 +283,100 @@ executor and plan endpoints, `02c6bd7` id repair, `9002cba` ceiling failure,
 9. Carried forward: surface the `engine` field in the browser, the gas comment
    in `web/api/p/_lib.js`, node distribution and `src/discovery.ts`,
    `web/api/topup.js` deletion before mainnet.
+
+## 12. Next session, start here
+
+Written so work can resume without re-deriving any of the above. Everything in
+B can begin unattended; A and C cannot.
+
+### A. Needs the operator, before anything else
+
+1. **Disable the faucet.** Money leaves while this waits, and the endpoint
+   resumes granting the moment the house is refilled.
+
+   ```
+   cd ~/monad-synapse/web && printf '1' | npx vercel env add TOPUP_DISABLED production --visibility config --no-sensitive && npx vercel --prod --yes
+   ```
+
+2. **Refill the house wallet**, but only after step 1. It sits at 1.4285 MON
+   and is also the cloud-kitchen provider key, so at this level the hosted
+   kitchen has gas for roughly a dozen settlements and the faucet dispenses
+   nothing. 8 MON restores both.
+
+3. **An inference API key**, if the cloud kitchen is to serve real tokens.
+   None exists in any environment: not in `.env`, not in Vercel, not in the
+   shell. Without one, item B3 stops at "the chain mechanics are real, the
+   words are canned". Any OpenAI-compatible endpoint works; `src/engines.ts`
+   already has the client.
+
+4. **The domain**, when bought. It closes the MetaMask warning, the three
+   Gmail contact addresses in the legal pages, and `TODO.md` item 2 together.
+
+### B. Ready to start unattended, in order
+
+1. **Finish the migration test.** This is the differentiator and it is one
+   defect away from being recordable.
+
+   ```
+   node scripts/migrate-e2e.mjs
+   ```
+
+   Leg one is verified on chain: job#80 produced 128 tokens, published a
+   checkpoint, the prefix hashed to it, 0.0448061625 MON settled. Leg two
+   returns 400 from `/api/p/job` at the alias even after the body fix
+   deployed, and that is the thing to diagnose first. The likeliest causes,
+   in order: the alias still resolving to the previous deployment, or
+   `req.body` arriving as a Buffer rather than the object or string the fix
+   handles. Distinguish them by reading the 400's text, which the retry did
+   not capture: "bad body" is the parse, "bad jobId" is a Buffer falling
+   through to an undefined destructure.
+
+2. **Cap the fee on the two ratings writes.** `joinWithJob` and
+   `rateProvider` in `web/src/lib/ratings.ts` pass a gas limit and no
+   `maxFeePerGas`, the only browser writes without the `MAX_FEE` cap every
+   other one has. Small, and it is the guest's own wallet now.
+
+3. **Rewrite `TODO.md`'s pricing section** around section 8 above. It
+   currently claims a 60 to 78 percent discount to market, benchmarked
+   against a 70B input band for a model this node does not serve. The true
+   position is 1.44x the cheapest provider, below the ten provider median,
+   and free on input.
+
+4. **Correct `terms.html` on the prompt commitment.** Session jobs narrowed it
+   from per prompt to per session opener. A live claim the code does not
+   support, and the only item here with a legal edge.
+
+5. **Surface the `engine` field in the browser**, so a guest can tell a mock
+   provider from a real one. The hosted kitchen is a mock and says so in
+   `/health`; nothing in the UI reads it.
+
+### C. Needs a decision, not code
+
+1. **Should a failed plan bill?** Job#75 charged 0.2736 MON for planning that
+   produced nothing. The node did the work, so charging is defensible, and a
+   guest will not read it that way. Options: bill nothing on a failed plan,
+   bill at a reduced rate, or bill in full and say so before the run starts.
+
+2. **Where to sit in the price band.** `PRICE_POLICY` and `PRICE_DISCOUNT` in
+   `.env` are the levers and the node re-reads them on restart. Today
+   `median x 0.9`, which is $1.002/M. Undercutting Darkbloom's $0.700 on
+   output alone would mean roughly `median x 0.62`, and the break-even line
+   in the startup log moves from 309 tokens to about 500. Section 8 has the
+   input-side argument for not needing to.
+
+3. **Whether to add a 24 GB catalog entry on an unmeasured guess.** Section 9.
+   The alternative is waiting for an operator with a 3090 or 4090.
+
+### Where the state lives
+
+- `scripts/plan-e2e.mjs` opens a real job, plans, runs, and reports what the
+  chain says. `--budget` defaults to 1.5 MON and it tops up only the shortfall.
+- `scripts/migrate-e2e.mjs` runs both legs and asserts two providers were paid
+  for disjoint ranges.
+- The node re-reads pricing, model and gas floor on `systemctl --user restart
+  dinnernode.service`, and prints all three before it registers.
+- Guest deposit sits at 0.74654 MON on the contract, which is escrow already
+  paid in and reusable without another deposit.
 
 ---
 
