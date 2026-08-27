@@ -38,18 +38,21 @@ const chain = defineChain({
 });
 
 // Must lift a guest holding nothing to above the cost of one full order
-// (0.30 escrow + ~0.06 gas), or a grant arrives that still cannot buy anything.
-// Re-derived when the node began billing reasoning tokens, which tripled the
-// escrow a long job needs.
-const AMOUNT = parseEther(process.env.TOPUP_AMOUNT ?? '0.5');
-// Must sit ABOVE TOPUP_TRIGGER in web/src/App.tsx (0.4), and above
-// TOPUP_TRIGGER + AMOUNT (0.9) or a guest topped up from just under the
+// (1.00 escrow + ~0.06 gas), or a grant arrives that still cannot buy anything.
+// Re-derived twice: once when the node began billing reasoning tokens, and
+// again when session jobs raised the escrow to 1.00 so one conversation runs
+// start to finish without a top-up mid-answer.
+const AMOUNT = parseEther(process.env.TOPUP_AMOUNT ?? '1.2');
+// Must sit ABOVE TOPUP_TRIGGER in web/src/App.tsx (1.2), and above
+// TOPUP_TRIGGER + AMOUNT (2.4) or a guest topped up from just under the
 // trigger lands over the ceiling and is refused on their next order.
-const RECIPIENT_MAX = parseEther(process.env.TOPUP_RECIPIENT_MAX ?? '1.0');
-// Unchanged, but it now buys fewer guests: at 0.5 per grant a 2.5 MON house
-// balance dispenses about 4 grants above the floor rather than about 13.
-// Refilling the house wallet is the answer, not lowering the amount, because
-// an amount below one full order is a grant that cannot buy anything.
+const RECIPIENT_MAX = parseEther(process.env.TOPUP_RECIPIENT_MAX ?? '2.5');
+// Unchanged, and it now buys far fewer guests: at 1.2 per grant a 2.5 MON
+// house balance dispenses one grant above the floor. Session jobs made each
+// guest 2.4x more expensive to seed, so the house wallet needs refilling
+// rather than the amount lowering. An amount below one full order is a grant
+// that cannot buy anything, which is the failure this constant exists to
+// prevent.
 const HOUSE_FLOOR = parseEther(process.env.TOPUP_HOUSE_FLOOR ?? '0.5');
 const COOLDOWN_MS = 60_000;
 const REFUSAL_COOLDOWN_MS = 5_000;

@@ -26,7 +26,11 @@ const MAX_FEE = 2000000000000n;
 // trigger must clear the cost of one full order, or the app loops asking for a
 // top-up it has already been given, and it must sit below TOPUP_RECIPIENT_MAX
 // in web/api/topup.js, or the faucet refuses every request the app makes.
-const TOPUP_TRIGGER = parseEther('0.4');
+// Must clear the cost of one full order (1.00 escrow + ~0.06 gas) or a guest
+// is left holding a balance that cannot open a job. Moved with the escrow
+// raise that came with session jobs; see web/api/topup.js for the other two
+// constants in this invariant.
+const TOPUP_TRIGGER = parseEther('1.2');
 
 // How many jobs back the receipt walks. Each one is a sequential eth_call, so
 // this is a latency budget as much as a display choice, and it is the reason
@@ -278,6 +282,41 @@ export default function App() {
     throw e;
   }
 
+  // The job this conversation is running on, or null before the first order.
+  // Held in a ref rather than state because the order flow reads it inside
+  // closures that outlive a render.
+  const sessionRef = useRef<{ jobId: bigint; provider: string } | null>(null);
+
+  // Escrow that must remain before a session job is reused. One measured turn
+  // on this node bills between 788 and 4,508 tokens, so the floor is set above
+  // the largest of those: reusing a job that cannot fund the next answer just
+  // moves the failure from openJob to mid-sentence, which is the failure mode
+  // the escrow raise exists to remove.
+  const SESSION_MIN_REMAINING = parseEther('0.20');
+
+  /// Decide whether an existing job can carry another turn. Every condition is
+  /// read from the chain, because the provider, the cloud kitchen and settle()
+  /// can all have closed it since the last turn without telling the browser.
+  async function reusableJob(
+    session: { jobId: bigint; provider: string } | null,
+    provider: string,
+  ): Promise<bigint | null> {
+    if (!session) return null;
+    if (session.provider.toLowerCase() !== String(provider).toLowerCase()) return null;
+    try {
+      const j = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [session.jobId] }) as readonly any[];
+      const [requester, jobProvider, escrow, paid, , open] = j as unknown as [string, string, bigint, bigint, bigint, boolean];
+      if (!open) return null;
+      if (requester.toLowerCase() !== guestAddress.toLowerCase()) return null;
+      if (jobProvider.toLowerCase() !== String(provider).toLowerCase()) return null;
+      if (escrow - paid < SESSION_MIN_REMAINING) return null;
+      return session.jobId;
+    } catch {
+      // A read failure is not evidence the job is usable.
+      return null;
+    }
+  }
+
   // Any job we opened and did not finish still holds escrow. closeJob returns
   // the unspent remainder to the guest's deposit balance. Without this every
   // failover permanently stranded a job's budget on chain.
@@ -351,7 +390,13 @@ export default function App() {
       // order tops that back up to budget rather than depositing again. So
       // raising it costs the guest a larger one-time deposit and nothing per
       // order beyond the tokens actually produced.
-      const budget = parseEther('0.30');
+      // Raised from 0.30 to 1.00 with session jobs. A measured ten turn
+      // conversation on this node billed 19,604 tokens; 0.30 MON buys 8,947, so
+      // a session at the old ceiling needed two mid-conversation top-ups and
+      // every one of them is a moment the answer can stop mid-sentence.
+      // 1.00 MON is about 29,800 tokens, which carried the whole measured
+      // conversation with room over.
+      const budget = parseEther('1.00');
       setNote('opening job…');
       // The staged engrams go in here, not only into applyPendingEngrams below.
       // Storage cannot hold them until openJob has landed, and by then this
@@ -389,17 +434,31 @@ export default function App() {
             signal: AbortSignal.timeout(9000), headers: TUNNEL_HEADERS,
           })).json(), u === url ? 'warming the tunnel' : 'reaching the hosted kitchen');
 
-          const dep = await attempt(() => pub.readContract({ address: ADDR, abi: ABI, functionName: 'deposits', args: [guestAddress] }) as Promise<bigint>, 'checking your tab');
-          if (dep < budget) {
-            setNote(`depositing ${formatEther(budget)} MON…`);
-            const depHash = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: budget, gas: 200000n, maxFeePerGas: MAX_FEE });
-            await pub.waitForTransactionReceipt({ hash: depHash });
-          }
+          // One job per session rather than one per turn. Reuse is always
+          // decided by reading the chain, never by trusting local state: the
+          // provider closes a session job when it goes idle, the cloud kitchen
+          // closes every job it serves, and settle() closes a job the moment
+          // its escrow is exhausted. Any of those can have happened since the
+          // last turn, so a job is only reused when the chain says it is open,
+          // belongs to this guest and this provider, and still has headroom.
+          jobId = await reusableJob(sessionRef.current, health.provider);
 
-          const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [health.provider, budget, promptTag], gas: 300000n, maxFeePerGas: MAX_FEE });
-          const rc = await pub.waitForTransactionReceipt({ hash: h });
-          const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
-          jobId = log.args.jobId as bigint;
+          if (jobId === null) {
+            const dep = await attempt(() => pub.readContract({ address: ADDR, abi: ABI, functionName: 'deposits', args: [guestAddress] }) as Promise<bigint>, 'checking your tab');
+            if (dep < budget) {
+              setNote(`depositing ${formatEther(budget)} MON…`);
+              const depHash = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: budget, gas: 200000n, maxFeePerGas: MAX_FEE });
+              await pub.waitForTransactionReceipt({ hash: depHash });
+            }
+
+            const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [health.provider, budget, promptTag], gas: 300000n, maxFeePerGas: MAX_FEE });
+            const rc = await pub.waitForTransactionReceipt({ hash: h });
+            const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
+            jobId = log.args.jobId as bigint;
+            sessionRef.current = { jobId, provider: String(health.provider) };
+          } else {
+            setNote(`continuing job#${jobId} — this session's escrow is still open`);
+          }
           const jid = jobId; // stable binding: the closures below outlive the narrowing
           opened.push(jid);
           await onJobOpen(jid.toString());
@@ -480,7 +539,7 @@ export default function App() {
             // The checkpoint travels with the request. Only a checkpoint with
             // a real hash is sendable: the host verifies keccak(text) === h and
             // rejects the request outright on a mismatch.
-            body: JSON.stringify({ jobId: jid.toString(), prompt: cleanPrompt, resume: cp?.h ? { text: cp.text, n: cp.n, h: cp.h } : undefined }),
+            body: JSON.stringify({ jobId: jid.toString(), prompt: cleanPrompt, session: true, resume: cp?.h ? { text: cp.text, n: cp.n, h: cp.h } : undefined }),
           }), 'waking the GPU');
 
           if (!res.ok) { setNote(await res.text()); throw new Error('host refused'); }
@@ -586,11 +645,13 @@ export default function App() {
       // Belt and braces: close anything still open, including on a thrown
       // programmer error, so escrow is never left stranded.
       //
-      // The last opened job is normally skipped because the provider closes it
-      // itself. A {warn} frame is the provider telling us that its own settle
-      // or closeJob failed, so in that case the escrow is still sitting there
-      // and we are the only party left who can release it. Skipping it on a
-      // warn was exactly backwards.
+      // The last opened job is skipped on success. Under session jobs that is
+      // deliberate rather than incidental: the provider leaves it open for the
+      // next turn, and closes it itself once the session goes idle. A {warn}
+      // frame is the provider telling us that its own settle or closeJob
+      // failed, so in that case the escrow is still sitting there and we are
+      // the only party left who can release it. Skipping it on a warn was
+      // exactly backwards.
       const providerClosedIt = finished && !warned;
       for (const id of opened) if (!providerClosedIt || id !== opened[opened.length - 1]) await releaseJob(id);
       onJobClose();
