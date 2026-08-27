@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getAddress, isAddress } from 'viem';
 import { ABI, ADDR, pub } from './chain';
+import { readProvider } from './registry';
 
 const PORT = Number(process.env.DISCOVERY_PORT ?? 4174);
 const REFRESH_MS = Number(process.env.DISCOVERY_REFRESH_MS ?? 15000);
@@ -59,16 +60,16 @@ function saveCache() {
 
 async function verify(address: `0x${string}`) {
   try {
-    const p = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'providers', args: [address] }) as unknown as any[];
-    if (!p[6]) return null;
+    const p = await readProvider(address);
+    if (!p.active) return null;
     return {
       address,
-      model: String(p[0]),
-      hw: String(p[1]),
-      ratePerMillion: String(p[2]),
-      earned: String(p[3]),
-      tokensServed: String(p[4]),
-      jobsDone: String(p[5]),
+      model: p.model,
+      hw: p.hw,
+      ratePerMillion: String(p.ratePerMillion),
+      earned: String(p.earned),
+      tokensServed: String(p.tokensServed),
+      jobsDone: String(p.jobs),
       active: true as const,
     };
   } catch {

@@ -9,13 +9,33 @@ pragma solidity ^0.8.28;
 ///      it. v2 makes that promise true by bounding each settlement to the
 ///      tokens the provider could plausibly have produced since the previous
 ///      one, and by locking the rate at the moment the job opens.
+///
+///      Four bounds now stack, and it is worth being precise about which one
+///      does what, because each covers a case the others do not:
+///
+///        1. Throughput.  A settlement can never exceed elapsed wall time at
+///           the throughput the node declared and the job locked. Always on.
+///        2. Published progress.  A settlement can never take a job's paid
+///           token count past what the provider has published a checkpoint
+///           for. This is what stops a REPLACEMENT provider being paid for the
+///           prefix it inherited: `tokens` is cumulative across providers, so
+///           a newcomer's headroom is what it published minus what the job has
+///           already paid for, not the whole answer. Applies whenever a
+///           checkpoint exists, and `requireCheckpoints` makes it mandatory.
+///        3. Plan ceiling.  A committed plan caps total payment at the figure
+///           the guest signed for, whatever the escrow allows.
+///        4. Escrow.  Nothing is ever paid that was not deposited.
 contract DinnerNodeV2 {
     struct Provider {
         string model;
         string hw;
         uint256 ratePerMillion;
         uint256 maxTokensPerSecond; // throughput ceiling this node claims
+        /// Withdrawable balance, not a reputation figure: withdraw() zeroes it.
         uint256 earned;
+        /// Reputation. Both of these only ever count arm's-length work; see
+        /// the note on _isArmsLength.
+        uint256 lifetimeEarned;
         uint256 tokensServed;
         uint256 jobs;
         bool active;
@@ -26,12 +46,21 @@ contract DinnerNodeV2 {
         address provider;
         uint256 escrow;
         uint256 paid;
+        /// Cumulative BILLABLE tokens this job has paid for, across every
+        /// provider that has held it. Never reset by reassign, which is what
+        /// makes bound 2 above work.
         uint256 tokens;
         uint256 ratePerMillion;     // locked at open, immune to later re-registration
         uint256 maxTokensPerSecond; // locked at open, for the same reason
         uint64 openedAt;
         uint64 lastSettleAt;
         bool open;
+        /// Set by the requester at open. When true, settle() refuses to pay for
+        /// tokens the provider has not published a checkpoint for, which turns
+        /// bound 2 from something a provider opts into by publishing to
+        /// something it cannot avoid. A streaming answer should set it; a plan
+        /// run cannot, because a plan has no single growing prefix to hash.
+        bool requireCheckpoints;
     }
 
     /// @notice A plan the guest approved before any of its steps ran.
@@ -57,9 +86,31 @@ contract DinnerNodeV2 {
         uint64 committedAt;
     }
 
+    /// @notice The provider's published record of how far the answer has got.
+    /// @dev Two counts, because they cover different things and conflating them
+    ///      was going to break either billing or the failover claim.
+    ///
+    ///      `tokens` is VISIBLE tokens, and is what `prefixHash` hashes. It is
+    ///      the number a replacement provider needs: it is handed that much
+    ///      text and must reproduce the same hash before it continues.
+    ///
+    ///      `billed` is visible PLUS reasoning, and is the number settle()
+    ///      clamps against. Reasoning is streamed to the guest and charged for
+    ///      (terms 3.1) but is deliberately not part of the hash chain, because
+    ///      the chain has to cover exactly the text a replacement is given.
+    ///      Clamping payment against `tokens` would have made reasoning
+    ///      unbillable; clamping against `billed` keeps both properties.
     struct Checkpoint {
         bytes32 prefixHash;
         uint256 tokens;
+        uint256 billed;
+        /// Rolling hash over every checkpoint this job has ever had, including
+        /// which provider published it. A same-height rewrite is already
+        /// refused by the strict-advance rule in _checkpoint, and this makes
+        /// the whole sequence auditable rather than just its latest entry:
+        /// a verifier who kept the frames can recompute this and see that no
+        /// intermediate checkpoint was swapped.
+        bytes32 chainHash;
     }
 
     // A provider that declares an implausible throughput is still bounded, so
@@ -72,9 +123,11 @@ contract DinnerNodeV2 {
     event JobOpened(uint256 indexed jobId, address indexed requester, address indexed provider, string promptTag);
     event JobToppedUp(uint256 indexed jobId, uint256 added, uint256 escrow);
     event StreamSettled(uint256 indexed jobId, address indexed provider, uint256 tokensDelta, uint256 amount);
-    event CheckpointCommitted(uint256 indexed jobId, address indexed provider, bytes32 prefixHash, uint256 tokens);
+    event CheckpointCommitted(uint256 indexed jobId, address indexed provider, bytes32 prefixHash, uint256 tokens, uint256 billed, bytes32 chainHash);
     event PlanCommitted(uint256 indexed jobId, bytes32 indexed planHash, uint256 version, uint256 ceiling);
-    event JobReassigned(uint256 indexed jobId, address indexed from, address indexed to);
+    event JobReassigned(uint256 indexed jobId, address indexed from, address indexed to, uint256 settledOut);
+    /// @notice The escrow is spent. The job stays OPEN; see the note in settle.
+    event JobExhausted(uint256 indexed jobId, uint256 totalTokens, uint256 totalPaid);
     event JobClosed(uint256 indexed jobId, uint256 totalTokens, uint256 totalPaid);
     event Withdrawn(address indexed provider, uint256 amount);
     event Refunded(address indexed requester, uint256 amount);
@@ -85,6 +138,49 @@ contract DinnerNodeV2 {
     mapping(uint256 => Checkpoint) public checkpoints;
     mapping(uint256 => PlanCommitment) public plans;
     uint256 public jobCounter;
+
+    // ---- reads -------------------------------------------------------------
+    //
+    // The public mappings above return a positional tuple, and viem decodes it
+    // positionally whether or not the ABI names the outputs. That has already
+    // cost this project once: v2 moves `open` from index 5 to index 9, and a
+    // non-zero rate sitting at the old index reads as truthy, so every
+    // liveness check in a client written against v1 would silently pass on a
+    // closed job. A single struct return decodes to a NAMED object, which
+    // makes that class of drift impossible rather than merely unlikely.
+    // Clients should read through these two and never index a tuple.
+
+    function getJob(uint256 jobId) external view returns (Job memory) {
+        return jobs[jobId];
+    }
+
+    function getProvider(address provider) external view returns (Provider memory) {
+        return providers[provider];
+    }
+
+    function getCheckpoint(uint256 jobId) external view returns (Checkpoint memory) {
+        return checkpoints[jobId];
+    }
+
+    function getPlan(uint256 jobId) external view returns (PlanCommitment memory) {
+        return plans[jobId];
+    }
+
+    /// @notice What this job could still pay out right now, under every bound
+    ///         except throughput. Published so a client can show the guest a
+    ///         real number instead of recomputing the rules and drifting.
+    function remainingBudget(uint256 jobId) public view returns (uint256) {
+        Job storage j = jobs[jobId];
+        uint256 remaining = j.escrow - j.paid;
+        PlanCommitment storage pc = plans[jobId];
+        if (pc.planHash != bytes32(0)) {
+            uint256 planRemaining = pc.ceiling > j.paid ? pc.ceiling - j.paid : 0;
+            if (planRemaining < remaining) remaining = planRemaining;
+        }
+        return remaining;
+    }
+
+    // ---- registry ----------------------------------------------------------
 
     function registerProvider(string calldata model, string calldata hw, uint256 ratePerMillion, uint256 maxTokensPerSecond) external {
         require(ratePerMillion > 0, "rate");
@@ -108,7 +204,27 @@ contract DinnerNodeV2 {
         emit Deposited(msg.sender, msg.value);
     }
 
-    function openJob(address provider, uint256 budget, string calldata promptTag) external returns (uint256 jobId) {
+    /// @notice Is this job at arm's length, or is a provider paying itself?
+    /// @dev Reputation counters are the one thing here a provider can inflate
+    ///      for the price of gas: register, deposit, open a job against
+    ///      yourself, settle in a loop, and the MON goes round in a circle
+    ///      while `tokensServed` climbs. Discovery sorts on `tokensServed`, so
+    ///      that is a ranking attack, not a bookkeeping wart.
+    ///
+    ///      Excluding self-dealing closes the direct version and nothing more.
+    ///      A provider willing to run two wallets still inflates its numbers at
+    ///      the cost of gas, and no on-chain rule fixes that. Stated plainly
+    ///      because the honest claim is "harder and no longer free", not
+    ///      "prevented". Ranking on figures a stranger attested to is the real
+    ///      answer and it lives in DinnerRatings, not here.
+    function _isArmsLength(Job storage j) internal view returns (bool) {
+        return j.requester != j.provider;
+    }
+
+    function openJob(address provider, uint256 budget, string calldata promptTag, bool requireCheckpoints)
+        external
+        returns (uint256 jobId)
+    {
         Provider storage p = providers[provider];
         require(p.active, "inactive provider");
         require(budget > 0, "zero budget");
@@ -125,13 +241,20 @@ contract DinnerNodeV2 {
             maxTokensPerSecond: p.maxTokensPerSecond,
             openedAt: uint64(block.timestamp),
             lastSettleAt: uint64(block.timestamp),
-            open: true
+            open: true,
+            requireCheckpoints: requireCheckpoints
         });
-        p.jobs++;
+        if (msg.sender != provider) p.jobs++;
         emit JobOpened(jobId, msg.sender, provider, promptTag);
     }
 
     /// @notice Extend a live job's escrow so a long answer is not cut off.
+    /// @dev This is why settle() no longer closes a job when the escrow runs
+    ///      out. It used to, in the same transaction that spent the last of it,
+    ///      so a guest who wanted to continue could never win the race: by the
+    ///      time they saw the balance fall the job was closed and topUp
+    ///      reverted with "closed". The only recovery was a new job, which
+    ///      loses the checkpoint chain and pays openJob twice.
     function topUp(uint256 jobId, uint256 amount) external {
         Job storage j = jobs[jobId];
         require(j.open, "closed");
@@ -143,36 +266,70 @@ contract DinnerNodeV2 {
         emit JobToppedUp(jobId, amount, j.escrow);
     }
 
-    /// @notice Pay the provider for tokens delivered since the last settlement.
-    /// @dev The delta is clamped to what this node could have produced in the
-    ///      elapsed wall time at its declared throughput. That is what makes
-    ///      the guest's worst case one settlement interval rather than the
-    ///      whole escrow. Over-reporting is silently clamped rather than
-    ///      reverted, because a revert here would strand an in-flight stream.
-    function settle(uint256 jobId, uint256 tokensDelta) external {
+    // ---- checkpoints -------------------------------------------------------
+
+    /// @dev Strictly advancing, in both counts. The old guard used `>=` on a
+    ///      single count, which let a provider rewrite the hash at the same
+    ///      height as often as it liked: publish a checkpoint, then publish a
+    ///      different prefix hash for the same token count, and the record of
+    ///      what was actually produced becomes whatever was written last. A
+    ///      checkpoint is meant to be evidence, and evidence that can be
+    ///      overwritten in place is not evidence.
+    ///
+    ///      `billed` must advance at least as much as `tokens`, because every
+    ///      visible token is also a billed one. Reasoning is what makes the
+    ///      inequality strict in practice.
+    function _checkpoint(uint256 jobId, bytes32 prefixHash, uint256 tokens, uint256 billed) internal {
+        Checkpoint storage cp = checkpoints[jobId];
+        require(tokens > cp.tokens, "checkpoint must advance");
+        require(billed >= tokens, "billed below visible");
+        require(billed > cp.billed, "billed must advance");
+        bytes32 chainHash = keccak256(abi.encode(cp.chainHash, prefixHash, tokens, billed, msg.sender));
+        checkpoints[jobId] = Checkpoint(prefixHash, tokens, billed, chainHash);
+        emit CheckpointCommitted(jobId, msg.sender, prefixHash, tokens, billed, chainHash);
+    }
+
+    /// @notice Publish a hash of the answer produced so far.
+    /// @dev This is what makes lossless failover possible: a replacement
+    ///      provider proves it is continuing the same answer by matching this
+    ///      hash, instead of the guest paying twice for the same prefix.
+    ///      Available on its own, though a streaming node should prefer the
+    ///      checkpoint arguments on settle(), which do the same thing without
+    ///      a second transaction.
+    function commitCheckpoint(uint256 jobId, bytes32 prefixHash, uint256 tokens, uint256 billed) external {
+        Job storage j = jobs[jobId];
+        require(j.open, "closed");
+        require(msg.sender == j.provider, "not provider");
+        require(prefixHash != bytes32(0), "empty checkpoint");
+        _checkpoint(jobId, prefixHash, tokens, billed);
+    }
+
+    // ---- settlement --------------------------------------------------------
+
+    /// @notice Pay the provider for tokens delivered since the last settlement,
+    ///         optionally publishing the checkpoint that evidences them.
+    /// @dev Over-reporting is silently clamped rather than reverted, because a
+    ///      revert here would strand an in-flight stream. The one thing that
+    ///      does revert is a job that demanded checkpoints not getting one:
+    ///      that is a misconfigured provider, not a racing stream, and paying
+    ///      it anyway would quietly void the guarantee the guest asked for.
+    /// @param prefixHash Pass bytes32(0) to settle without publishing a
+    ///        checkpoint. A plan run does this: it has no single growing
+    ///        prefix, and its ceiling comes from commitPlan instead.
+    function settle(uint256 jobId, uint256 tokensDelta, bytes32 prefixHash, uint256 prefixTokens, uint256 billedTotal) public {
         Job storage j = jobs[jobId];
         require(j.open, "closed");
         require(msg.sender == j.provider, "not provider");
 
-        uint256 elapsed = block.timestamp - j.lastSettleAt;
-        // A settle in the same second still allows one second of work, so a
-        // fast stream is not punished for settling promptly.
-        if (elapsed == 0) elapsed = 1;
-        uint256 allowed = elapsed * j.maxTokensPerSecond;
-        uint256 counted = tokensDelta > allowed ? allowed : tokensDelta;
-
-        uint256 rawDue = (counted * j.ratePerMillion) / 1_000_000;
-        uint256 escrowRemaining = j.escrow - j.paid;
-        // A committed plan lowers the ceiling from the escrow to the figure
-        // the guest actually approved. This is the whole enforceable content
-        // of commitPlan: the guest cannot be charged past the number they
-        // signed for, even though the escrow would allow it.
-        uint256 remaining = escrowRemaining;
-        PlanCommitment storage pc = plans[jobId];
-        if (pc.planHash != bytes32(0)) {
-            uint256 planRemaining = pc.ceiling > j.paid ? pc.ceiling - j.paid : 0;
-            if (planRemaining < remaining) remaining = planRemaining;
+        if (prefixHash != bytes32(0)) {
+            _checkpoint(jobId, prefixHash, prefixTokens, billedTotal);
+        } else {
+            require(!j.requireCheckpoints, "checkpoint required");
         }
+
+        uint256 counted = _allowed(j, checkpoints[jobId], tokensDelta);
+        uint256 rawDue = (counted * j.ratePerMillion) / 1_000_000;
+        uint256 remaining = remainingBudget(jobId);
         uint256 due = rawDue > remaining ? remaining : rawDue;
 
         j.lastSettleAt = uint64(block.timestamp);
@@ -180,27 +337,55 @@ contract DinnerNodeV2 {
         if (due > 0) {
             j.paid += due;
             j.tokens += counted;
-            Provider storage p = providers[msg.sender];
-            p.earned += due;
-            p.tokensServed += counted;
+            _credit(j, msg.sender, due, counted);
             emit StreamSettled(jobId, msg.sender, counted, due);
         }
-        // Closed on the ESCROW being spent, never on the plan ceiling being
-        // reached. Closing at the ceiling would make an upward revision
-        // impossible: the guest would have to open a new job, losing the
-        // checkpoint chain and paying openJob again, exactly when they have
-        // just decided the work is worth more. Reaching the ceiling stops
-        // payment and leaves the job open for commitPlan to raise it.
-        //
-        // Tested against `paid` rather than against `rawDue`, which is what
-        // the provider CLAIMED rather than what the escrow actually gave up.
-        // Comparing rawDue closed a job whose escrow was untouched the moment
-        // a plan capped a large claim, which is the case this whole feature
-        // exists to create. Identical to the old behaviour when no plan is
-        // committed, because there `due` is capped only by the escrow.
-        if (j.paid >= j.escrow) {
-            j.open = false; // escrow exhausted
-            emit JobClosed(jobId, j.tokens, j.paid);
+
+        // Announced, not acted on. The job stays open so topUp can rescue it;
+        // see the note on topUp for what auto-closing here used to cost. A job
+        // whose escrow is spent pays nothing on every later settle, because
+        // remainingBudget is zero, so leaving it open is inert rather than
+        // risky. Closing it is the provider's call, and host.ts already does
+        // that at end of stream and on the session idle timer.
+        if (j.paid >= j.escrow) emit JobExhausted(jobId, j.tokens, j.paid);
+    }
+
+    /// @notice Settle without publishing a checkpoint.
+    /// @dev Convenience for plan runs. Reverts on a job that requires them.
+    function settle(uint256 jobId, uint256 tokensDelta) external {
+        settle(jobId, tokensDelta, bytes32(0), 0, 0);
+    }
+
+    /// @dev Bounds 1 and 2 from the contract header, in one place so settle and
+    ///      reassign cannot drift apart on what a provider is owed.
+    function _allowed(Job storage j, Checkpoint storage cp, uint256 tokensDelta) internal view returns (uint256) {
+        uint256 elapsed = block.timestamp - j.lastSettleAt;
+        // A settle in the same second still allows one second of work, so a
+        // fast stream is not punished for settling promptly.
+        if (elapsed == 0) elapsed = 1;
+        uint256 allowed = elapsed * j.maxTokensPerSecond;
+        uint256 counted = tokensDelta > allowed ? allowed : tokensDelta;
+
+        // Published progress. `j.tokens` is cumulative across every provider
+        // this job has had, so a replacement that publishes a checkpoint
+        // covering the whole answer still only has the unpaid tail as headroom.
+        // That is the double-payment this bound exists to stop.
+        if (cp.billed > 0) {
+            uint256 proven = cp.billed > j.tokens ? cp.billed - j.tokens : 0;
+            if (counted > proven) counted = proven;
+        }
+        return counted;
+    }
+
+    /// @dev `earned` is a balance and always accrues, or a provider could be
+    ///      robbed of real money by a guest opening a job against them. The
+    ///      reputation counters beside it are the ones self-dealing inflates.
+    function _credit(Job storage j, address provider, uint256 due, uint256 counted) internal {
+        Provider storage p = providers[provider];
+        p.earned += due;
+        if (_isArmsLength(j)) {
+            p.lifetimeEarned += due;
+            p.tokensServed += counted;
         }
     }
 
@@ -247,37 +432,74 @@ contract DinnerNodeV2 {
         emit PlanCommitted(jobId, planHash, version, ceiling);
     }
 
-    /// @notice Publish a hash of the answer produced so far.
-    /// @dev This is what makes lossless failover possible: a replacement
-    ///      provider proves it is continuing the same answer by matching this
-    ///      hash, instead of the guest paying twice for the same prefix.
-    function commitCheckpoint(uint256 jobId, bytes32 prefixHash, uint256 tokens) external {
-        Job storage j = jobs[jobId];
-        require(j.open, "closed");
-        require(msg.sender == j.provider, "not provider");
-        require(tokens >= checkpoints[jobId].tokens, "regressed");
-        checkpoints[jobId] = Checkpoint(prefixHash, tokens);
-        emit CheckpointCommitted(jobId, msg.sender, prefixHash, tokens);
-    }
+    // ---- failover ----------------------------------------------------------
 
     /// @notice Hand a live job to a different provider, keeping the escrow,
     ///         the locked rate and the checkpoint intact.
+    /// @dev The outgoing provider is PAID OUT first, up to what its published
+    ///      checkpoint evidences. Without that, reassign was the mirror of the
+    ///      defect this whole contract exists to fix: a requester could let a
+    ///      node stream for a full settlement interval and then reassign a
+    ///      moment before it settled, taking the work for nothing, repeatably
+    ///      and for the price of one transaction. A provider whose exposure is
+    ///      one settlement interval against a guest who can time that interval
+    ///      is a provider with no protection at all.
+    ///
+    ///      It is bounded by exactly the same rules a settle would have been,
+    ///      because it calls the same _allowed: nothing here lets an outgoing
+    ///      provider take more than it could have taken by settling normally,
+    ///      and a provider that published no checkpoint gets nothing, which is
+    ///      the incentive to publish them.
     function reassign(uint256 jobId, address newProvider) external {
         Job storage j = jobs[jobId];
         require(j.open, "closed");
         require(msg.sender == j.requester, "not requester");
         require(providers[newProvider].active, "inactive provider");
         require(newProvider != j.provider, "same provider");
+
         address from = j.provider;
+
+        // Settle out the outgoing provider against its own published progress.
+        //
+        // Guarded on a checkpoint EXISTING, not merely applied when one does.
+        // _allowed skips the published-progress bound on a job that has never
+        // checkpointed, which is right for settle -- a plan run has no prefix
+        // and its ceiling comes from commitPlan -- and wrong here: asking for
+        // the maximum would have paid a departing provider a full throughput
+        // allowance on no evidence at all, including on a job reassigned in
+        // the same second it opened. Nothing published, nothing owed, which is
+        // also the incentive to publish.
+        Checkpoint storage cp = checkpoints[jobId];
+        uint256 counted = cp.billed > 0 ? _allowed(j, cp, type(uint256).max) : 0;
+        uint256 settledOut = 0;
+        if (counted > 0) {
+            uint256 rawDue = (counted * j.ratePerMillion) / 1_000_000;
+            uint256 remaining = remainingBudget(jobId);
+            settledOut = rawDue > remaining ? remaining : rawDue;
+            if (settledOut > 0) {
+                j.paid += settledOut;
+                j.tokens += counted;
+                _credit(j, from, settledOut, counted);
+                emit StreamSettled(jobId, from, counted, settledOut);
+            }
+        }
+
         j.provider = newProvider;
         // The replacement is paid at its own rate from here on, but never more
         // than the ceiling the guest already agreed to.
         uint256 r = providers[newProvider].ratePerMillion;
         j.ratePerMillion = r < j.ratePerMillion ? r : j.ratePerMillion;
-        j.maxTokensPerSecond = providers[newProvider].maxTokensPerSecond;
+        // Throughput moves the same way, and for the same reason. Taking the
+        // replacement's figure outright let a reassign RAISE the ceiling that
+        // bound 1 enforces: swap to a node declaring 10,000 tok/s and every
+        // later settlement is allowed ten thousand tokens per elapsed second,
+        // on a job the guest opened against a node that claimed a hundred. The
+        // lock at openJob has to survive a handover or it is not a lock.
+        uint256 tps = providers[newProvider].maxTokensPerSecond;
+        j.maxTokensPerSecond = tps < j.maxTokensPerSecond ? tps : j.maxTokensPerSecond;
         j.lastSettleAt = uint64(block.timestamp);
-        providers[newProvider].jobs++;
-        emit JobReassigned(jobId, from, newProvider);
+        if (j.requester != newProvider) providers[newProvider].jobs++;
+        emit JobReassigned(jobId, from, newProvider, settledOut);
     }
 
     function closeJob(uint256 jobId) external {

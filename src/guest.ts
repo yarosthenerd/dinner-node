@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { randomBytes } from 'node:crypto';
 import { formatEther, keccak256, parseEther, stringToHex, toHex } from 'viem';
 import { ABI, ADDR, EXPLORER, jobIdFromReceipt, pub, wallet } from './chain';
+import { readJob } from './registry';
 
 const args = process.argv.slice(2);
 const flag = (n: string) => { const i = args.indexOf(n); return i === -1 ? undefined : args[i + 1]; };
@@ -68,5 +69,5 @@ for await (const line of res.body!.pipeThrough(new TextDecoderStream()) as any) 
   }
 }
 console.log(`\n--- session: ${tokens} tokens streamed from someone else's hardware`);
-const job = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [jobId] }) as unknown as any[];
-console.log(`--- paid: ${formatEther(job[3])} MON | provider earned it for doing what their PC was doing anyway: nothing`);
+const job = await readJob(jobId);
+console.log(`--- paid: ${formatEther(job.paid)} MON | provider earned it for doing what their PC was doing anyway: nothing`);

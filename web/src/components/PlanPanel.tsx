@@ -11,6 +11,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { formatEther, keccak256, parseEther, parseEventLogs, toHex } from 'viem';
 import { runPlan, requestPlan, waves, type ExecEvent, type PlanResult } from '../lib/plan-client';
+import { isOursAndOpen, readJob, remaining } from '../lib/registry';
 
 type Props = {
   pub: any;
@@ -60,9 +61,8 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
   const ensureJob = useCallback(async (): Promise<bigint> => {
     if (jobId !== null) {
       try {
-        const j = await pub.readContract({ address: nodeAddress, abi: nodeAbi, functionName: 'jobs', args: [jobId] }) as readonly any[];
-        const [requester, , escrow, paid, , isOpen] = j as unknown as [string, string, bigint, bigint, bigint, boolean];
-        if (isOpen && requester.toLowerCase() === guestAddress.toLowerCase() && escrow - paid > parseEther('0.2')) return jobId;
+        const j = await readJob(nodeAddress, jobId);
+        if (isOursAndOpen(j, guestAddress) && remaining(j) > parseEther('0.2')) return jobId;
       } catch { /* fall through and open a new one */ }
     }
     const dep = await pub.readContract({ address: nodeAddress, abi: nodeAbi, functionName: 'deposits', args: [guestAddress] }) as bigint;
@@ -166,10 +166,10 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
     try {
       const deadline = Date.now() + graceMs;
       for (;;) {
-        const cur = await pub.readContract({ address: nodeAddress, abi: nodeAbi, functionName: 'jobs', args: [jobId] }) as readonly any[];
+        const cur = await readJob(nodeAddress, jobId);
         // The node closes a plan job itself once it goes idle, so a job that is
         // already shut needs nothing from us.
-        if (!cur[5]) { setNote('the node closed it and settled. nothing left to release.'); setJobId(null); return; }
+        if (!cur.open) { setNote('the node closed it and settled. nothing left to release.'); setJobId(null); return; }
         if (Date.now() >= deadline) break;
         await new Promise(r => setTimeout(r, 1000));
       }

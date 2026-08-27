@@ -33,18 +33,22 @@ contract DinnerNodeV2PlanTest is Test {
     function _job(uint256 budget) internal returns (uint256 id) {
         vm.startPrank(guest);
         node.deposit{value: budget}();
-        id = node.openJob(prov, budget, "tag");
+        // requireCheckpoints false: a plan run has no single growing prefix
+        // to hash, so its ceiling comes from commitPlan rather than from
+        // published progress. That is the whole point of this file.
+        id = node.openJob(prov, budget, "tag", false);
         vm.stopPrank();
     }
 
+    // Read through getJob, never by indexing the tuple. This file used to do
+    // the latter and it is exactly the drift the struct getter exists to stop:
+    // adding one field to Job silently shifted `open` under the old form.
     function _paid(uint256 id) internal view returns (uint256) {
-        (,,, uint256 paid,,,,,,) = node.jobs(id);
-        return paid;
+        return node.getJob(id).paid;
     }
 
     function _open(uint256 id) internal view returns (bool) {
-        (,,,,,,,,, bool open) = node.jobs(id);
-        return open;
+        return node.getJob(id).open;
     }
 
     // ---- storage and access ------------------------------------------------
@@ -134,7 +138,12 @@ contract DinnerNodeV2PlanTest is Test {
         vm.prank(prov);
         node.settle(id, 1_000_000);
         assertEq(_paid(id), 1 ether);
-        assertFalse(_open(id)); // escrow exhausted closes it, as before
+        // An exhausted escrow announces itself and leaves the job OPEN. It used
+        // to close here, in the same transaction that spent the last of it,
+        // which meant topUp could never win the race and a guest who wanted to
+        // continue lost the checkpoint chain. Leaving it open is inert: every
+        // later settle pays zero, because remainingBudget is zero.
+        assertTrue(_open(id));
     }
 
     function test_raisingTheCeilingLetsTheRunContinue() public {
@@ -197,7 +206,7 @@ contract DinnerNodeV2PlanTest is Test {
         vm.prank(prov);
         node.settle(id, 1_000_000);
         assertEq(_paid(id), 0.4 ether);
-        assertFalse(_open(id));
+        assertTrue(_open(id)); // exhausted, not closed; see above
     }
 
     function test_planSurvivesManySettlesUnderTheCeiling() public {

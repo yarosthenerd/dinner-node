@@ -180,29 +180,53 @@ not true of the model we actually serve.
 
 ## P1: DinnerNodeV2, settle before deploying
 
-Do not deploy V2 until these are closed. Not on the critical path for the
-migration demo: checkpoint resume already works on V1.
+All seven closed 2026-08-27. `contracts/test/DinnerNodeV2Defects.t.sol` has one
+section per item, written as the attack rather than as the fix: each test does
+the thing a guest or a provider could actually do and asserts the money that
+changes hands. 48 contract tests pass. **Still not deployed.**
 
-- [ ] Clamp `settle` to `checkpoints[jobId].tokens - j.tokens`. One fix bounds
-      loss to one settlement for the first time and stops a replacement provider
-      being paid twice for the same prefix.
-- [ ] `reassign` lets the requester strand the outgoing provider's unpaid work,
-      free and repeatably. The mirror of the defect V2 exists to fix.
-- [ ] `reassign` raises `maxTokensPerSecond` without a clamp.
-- [ ] Checkpoint regression guard uses `>=`, permitting same-height hash
-      rewrites. No hash chaining on chain.
-- [ ] Reputation counters accumulate unclamped, and discovery sorts on
-      `tokensServed`.
-- [ ] `topUp(jobId)` cannot rescue an exhausted job, because `settle` auto-closes
-      in the same transaction. Load-bearing under the long-jobs reframe.
-- [ ] Centralise `jobs()` and `providers()` decoding in `src/host.ts` and
-      `web/src/App.tsx`, as already done in `web/api/p/_lib.js`. V2 moves `open`
-      from index 5 to 9 and `active` from 6 to 7, and a non-zero rate at the old
-      index reads as truthy, so every liveness check would silently pass.
-      **Note:** named ABI outputs do NOT fix this. viem returns a positional
-      array regardless. A single-struct return does decode to a named object, so
-      adding `getJob(uint256) returns (Job memory)` to V2 would make index drift
-      structurally impossible. That is the better fix if V2 is being edited.
+- [x] Clamp `settle` to published progress. The checkpoint now carries a
+      `billed` count beside the visible `tokens`, and settle refuses to take a
+      job's paid token count past it. Because `tokens` is cumulative across
+      every provider that has held the job, a replacement's headroom is what it
+      published minus what the job already paid for, which is what stops it
+      being paid for the prefix it inherited. `settle` takes the checkpoint in
+      the same transaction, so the bound costs no extra gas, and `openJob` takes
+      a `requireCheckpoints` flag so a guest can make it mandatory rather than
+      something a provider opts into by publishing.
+      **Why two counts:** reasoning is billed (terms 3.1) but is deliberately
+      not part of the hash chain, which has to cover exactly the text a
+      replacement is handed. Clamping against the visible count would have made
+      reasoning unbillable.
+- [x] `reassign` pays the outgoing provider out, up to what its own published
+      checkpoint evidences and bounded by the same rules a settle would have
+      been. A provider that published nothing is owed nothing, which is also
+      the incentive to publish. Before this, a requester could let a node stream
+      for a full settlement interval and reassign a moment before it settled,
+      taking the work for free, repeatably.
+- [x] `reassign` now moves `maxTokensPerSecond` down only, mirroring the rate.
+      Taking the replacement's figure outright let a handover RAISE the bound
+      the job locked at open.
+- [x] Checkpoints must strictly advance in both counts, so a same-height hash
+      rewrite is refused, and each one extends a `chainHash` over the whole
+      history including which provider published it.
+- [x] Reputation counters ignore self-dealing: `tokensServed` and a new
+      `lifetimeEarned` only count jobs where the requester is not the provider.
+      `earned` is a withdrawable balance and still always accrues.
+      **Honest limit:** two wallets still inflate the figures for the price of
+      gas. This makes it harder and no longer free; it does not prevent it.
+      Ranking on figures a stranger attested to is DinnerRatings' job.
+- [x] `settle` no longer auto-closes on an exhausted escrow. It emits
+      `JobExhausted` and leaves the job open, so `topUp` can rescue it instead
+      of the guest losing the checkpoint chain and paying `openJob` twice.
+      Leaving it open is inert: `remainingBudget` is zero, so every later
+      settle pays nothing. Closing is the provider's call, as it already was.
+- [x] Centralised the decoding. `getJob`, `getProvider`, `getCheckpoint` and
+      `getPlan` return named structs, and `remainingBudget(jobId)` publishes
+      the rule so a client does not reimplement it. Client-side, `src/registry.ts`
+      and `web/src/lib/registry.ts` are now the only two places that know a
+      field's position; all 13 call sites read through them. Switching to v2 is
+      an edit to those two files.
 
 ## P2: hardening still open
 

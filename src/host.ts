@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { formatEther, keccak256, parseEther, parseEventLogs, stringToHex, toHex } from 'viem';
 import { ABI, ADDR, EXPLORER, pub, wallet } from './chain';
+import { isMine, readJob, readProvider, remaining } from './registry';
 import { mock, ollama, openai, SYSTEM_PROMPT, type Chunk } from './engines';
 import { describeHardware, probeHardware } from './hardware';
 import { PLAN_LIMITS, planCostWei, planHash, validatePlan, type Plan } from './plan';
@@ -612,9 +613,8 @@ async function register(e: Engine): Promise<void> {
   // says. A node that is not active here earns nothing, however healthy it
   // looks locally.
   try {
-    const p = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'providers', args: [me] });
-    const [model, , rate, , , , active] = p as unknown as [string, string, bigint, bigint, bigint, bigint, boolean];
-    if (active) console.log(`registry: active as ${model} at ${rate} wei per million tokens`);
+    const p = await readProvider(me);
+    if (p.active) console.log(`registry: active as ${p.model} at ${p.ratePerMillion} wei per million tokens`);
     else console.log('\n  !  NOT REGISTERED — this node is invisible to guests and will earn nothing.\n' +
                      `     fund ${me} with testnet MON and restart.\n`);
   } catch {
@@ -814,8 +814,8 @@ http.createServer(async (req, res) => {
       const { jobId, prompt, resume, session } = JSON.parse(body);
       if (!gate(res, String(prompt ?? ''), String(resume?.text ?? ''))) return;
       admitted = true;
-      const job = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [BigInt(jobId)] }) as unknown as any[];
-      if (String(job[1]).toLowerCase() !== me.toLowerCase() || !job[5]) { res.statusCode = 400; return res.end('job not mine / closed'); }
+      const job = await readJob(BigInt(jobId));
+      if (!isMine(job, me)) { res.statusCode = 400; return res.end('job not mine / closed'); }
 
       // A resume is only honoured if the claimed prefix hashes to the
       // checkpoint the previous provider published. Otherwise a client could
@@ -847,8 +847,8 @@ http.createServer(async (req, res) => {
       const { jobId, goal } = JSON.parse(body);
       if (!gate(res, String(goal ?? ''))) return;
       admitted = true;
-      const job = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [BigInt(jobId)] }) as unknown as any[];
-      if (String(job[1]).toLowerCase() !== me.toLowerCase() || !job[5]) { res.statusCode = 400; return res.end('job not mine / closed'); }
+      const job = await readJob(BigInt(jobId));
+      if (!isMine(job, me)) { res.statusCode = 400; return res.end('job not mine / closed'); }
 
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' });
       const id = BigInt(jobId);
@@ -875,7 +875,7 @@ http.createServer(async (req, res) => {
         }
       };
 
-      const budgetWei = (job[2] as bigint) - (job[3] as bigint);
+      const budgetWei = remaining(job);
       const attempt = await makePlan(String(goal), billed, { budgetWei, ratePerMillion: RATE });
       clearInterval(hb);
       if (!res.writableEnded) {
@@ -920,18 +920,18 @@ http.createServer(async (req, res) => {
       if (!gate(res, 'x'.repeat(biggest))) return;
       admitted = true;
 
-      const job = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [BigInt(jobId)] }) as unknown as any[];
-      if (String(job[1]).toLowerCase() !== me.toLowerCase() || !job[5]) { res.statusCode = 400; return res.end('job not mine / closed'); }
+      const job = await readJob(BigInt(jobId));
+      if (!isMine(job, me)) { res.statusCode = 400; return res.end('job not mine / closed'); }
 
       // Re-validated here rather than trusted from the caller. The plan
       // arrives over the wire and nothing proves it is the one this node
       // produced, so the caps are enforced again against the escrow that is
       // actually left on this job.
-      const remaining = (job[2] as bigint) - (job[3] as bigint);
-      const v = validatePlan(plan, { budgetWei: remaining, ratePerMillion: RATE });
+      const left = remaining(job);
+      const v = validatePlan(plan, { budgetWei: left, ratePerMillion: RATE });
       if (!v.ok) {
         res.statusCode = 400;
-        return res.end(JSON.stringify({ error: 'plan rejected', issues: v.issues, remainingWei: String(remaining) }));
+        return res.end(JSON.stringify({ error: 'plan rejected', issues: v.issues, remainingWei: String(left) }));
       }
 
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' });

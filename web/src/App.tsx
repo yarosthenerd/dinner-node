@@ -2,6 +2,7 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { formatEther, keccak256, parseEther, parseEventLogs, toHex } from 'viem';
 import { ABI, ADDR, EXPLORER, pub, faucet, fmt } from './lib';
 import { useWallet, connect, disconnect, switchChain } from './lib/wallet';
+import { isOursAndOpen, readJob, readProvider } from './lib/registry';
 import { DISCOVERY, KNOWN_PROVIDERS } from './config';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -205,9 +206,9 @@ export default function App() {
     }
     const rows = await Promise.all(KNOWN_PROVIDERS.map(async a => {
       try {
-        const [model, hw, , earned, tokensServed, jobsDone, active] =
-          await pub.readContract({ address: ADDR, abi: ABI, functionName: 'providers', args: [a] }) as readonly any[];
-        return { p: a, model, hw, url: null, earned, tokensServed, jobsDone, active };
+        const pr = await readProvider(ADDR, a);
+        return { p: a, model: pr.model, hw: pr.hw, url: null, earned: pr.earned,
+                 tokensServed: pr.tokensServed, jobsDone: pr.jobs, active: pr.active };
       } catch { return null; }
     }));
     setProviders(rows.filter((x: any) => x && x.model && x.active));
@@ -267,10 +268,8 @@ export default function App() {
         // that had actually completed - was read from the chain and discarded.
         for (let id = n2; id > floor; id--) {
           try {
-            const j = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [id] }) as readonly any[];
-            const open = j[5] as boolean;
-            const paid = j[3] as bigint;
-            const tokens = j[4] as bigint;
+            const j = await readJob(ADDR, id);
+            const { open, paid, tokens } = j;
             if (paid === 0n && tokens === 0n && !open) continue; // opened and refunded, nothing to show
             tot += paid;
             rows.push({ jobId: id, tokens, amount: paid, open });
@@ -352,11 +351,9 @@ export default function App() {
     if (!session) return null;
     if (session.provider.toLowerCase() !== String(provider).toLowerCase()) return null;
     try {
-      const j = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [session.jobId] }) as readonly any[];
-      const [requester, jobProvider, escrow, paid, , open] = j as unknown as [string, string, bigint, bigint, bigint, boolean];
-      if (!open) return null;
-      if (requester.toLowerCase() !== guestAddress.toLowerCase()) return null;
-      if (jobProvider.toLowerCase() !== String(provider).toLowerCase()) return null;
+      const j = await readJob(ADDR, session.jobId);
+      if (!isOursAndOpen(j, guestAddress, String(provider))) return null;
+      const { escrow, paid } = j;
       if (escrow - paid < SESSION_MIN_REMAINING) return null;
       return session.jobId;
     } catch {
@@ -380,13 +377,13 @@ export default function App() {
       // own window, polling so the common case still returns in about a second.
       const deadline = Date.now() + graceMs;
       for (;;) {
-        const cur = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [jobId] }) as readonly any[];
-        if (!cur[5]) return;
+        const cur = await readJob(ADDR, jobId);
+        if (!cur.open) return;
         if (Date.now() >= deadline) break;
         await new Promise(r => setTimeout(r, 1000));
       }
-      const j = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [jobId] }) as readonly any[];
-      if (!j[5]) return;
+      const j = await readJob(ADDR, jobId);
+      if (!j.open) return;
       const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'closeJob', args: [jobId], gas: 150000n, maxFeePerGas: MAX_FEE });
       await pub.waitForTransactionReceipt({ hash: h });
     } catch (e) {
@@ -681,8 +678,8 @@ export default function App() {
         throw new Error('no provider finished the order');
       }
 
-      const job = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [finalJobId] }) as readonly any[];
-      const cost = job[3] as bigint;
+      const job = await readJob(ADDR, finalJobId);
+      const cost = job.paid;
       setSessionCost(c => c + cost);
       setNote(warned
         ? 'order delivered, but the provider reported a settlement problem. Releasing any unspent escrow.'
@@ -956,7 +953,6 @@ export default function App() {
               pub={pub}
               wallet={guestWallet}
               provider={ratedProvider}
-              nodeAbi={ABI}
               nodeAddress={ADDR}
               guestAddress={guestAddress}
               jobIds={sessions.map(x => BigInt(x.jobId))}

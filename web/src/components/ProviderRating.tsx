@@ -13,18 +13,18 @@ import {
   MIN_ANONYMITY_SET, RATINGS_ABI, RATINGS_ADDRESS,
   joinWithJob, loadIdentity, rateProvider, readAverage, readGroup,
 } from '../lib/ratings';
+import { readJob } from '../lib/registry';
 
 type Props = {
   pub: any;
   wallet: any;
   provider: `0x${string}`;
-  nodeAbi: any;
   nodeAddress: `0x${string}`;
   jobIds: bigint[];
   guestAddress: `0x${string}`;
 };
 
-export default function ProviderRating({ pub, wallet, provider, nodeAbi, nodeAddress, jobIds, guestAddress }: Props) {
+export default function ProviderRating({ pub, wallet, provider, nodeAddress, jobIds, guestAddress }: Props) {
   const [identity] = useState(() => loadIdentity());
   const [members, setMembers] = useState<number | null>(null);
   const [joined, setJoined] = useState(false);
@@ -39,12 +39,12 @@ export default function ProviderRating({ pub, wallet, provider, nodeAbi, nodeAdd
   const findEligible = useCallback(async () => {
     for (const id of jobIds) {
       try {
-        const j = await pub.readContract({ address: nodeAddress, abi: nodeAbi, functionName: 'jobs', args: [id] }) as readonly any[];
-        const [requester, jobProvider, , paid, , open] = j as unknown as [string, string, bigint, bigint, bigint, boolean];
+        const j = await readJob(nodeAddress, id);
+        const { paid, open } = j;
         if (open) continue;
         if (paid === 0n) continue;
-        if (requester.toLowerCase() !== guestAddress.toLowerCase()) continue;
-        if (jobProvider.toLowerCase() !== provider.toLowerCase()) continue;
+        if (j.requester.toLowerCase() !== guestAddress.toLowerCase()) continue;
+        if (j.provider.toLowerCase() !== provider.toLowerCase()) continue;
         const used = await pub.readContract({ address: RATINGS_ADDRESS!, abi: RATINGS_ABI, functionName: 'joinedWithJob', args: [id] }) as boolean;
         if (!used) return id;
       } catch {
@@ -52,7 +52,7 @@ export default function ProviderRating({ pub, wallet, provider, nodeAbi, nodeAdd
       }
     }
     return null;
-  }, [pub, nodeAbi, nodeAddress, jobIds, guestAddress, provider]);
+  }, [pub, nodeAddress, jobIds, guestAddress, provider]);
 
   const refresh = useCallback(async () => {
     try {
