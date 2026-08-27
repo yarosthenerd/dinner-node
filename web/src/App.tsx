@@ -9,6 +9,9 @@ import DOMPurify from 'dompurify';
 // who actually rates ever needs it, so importing it eagerly would put that
 // weight on every first paint for a feature most sessions never touch.
 const ProviderRating = lazy(() => import('./components/ProviderRating'));
+// Lazy for the same reason: a guest who only wants one answer should not pay
+// for the plan UI in their first paint.
+const PlanPanel = lazy(() => import('./components/PlanPanel'));
 // Read straight from the environment rather than through lib/ratings, or the
 // check itself would pull the module it is trying to defer.
 const RATINGS_ON = !!import.meta.env.VITE_RATINGS_ADDRESS;
@@ -110,6 +113,11 @@ export default function App() {
   // and nothing in the browser read it, so a guest could not tell a node
   // serving a real model from one serving canned text while settling real MON.
   const [hostEngine, setHostEngine] = useState<{ engine?: string; model?: string } | null>(null);
+  // Whether the selected host executes plans, read from /health rather than
+  // discovered from a 404 after a job is already open and paid for.
+  const [hostPlans, setHostPlans] = useState(false);
+  const [hostProvider, setHostProvider] = useState<`0x${string}` | null>(null);
+  const [mode, setMode] = useState<'answer' | 'plan'>('answer');
   const [sessions, setSessions] = useState<Session[]>(loadSessions);
   // The provider this browser has actually paid. Ratings are gated on a paid
   // job by the contract, so there is nothing to show before the first one.
@@ -296,6 +304,8 @@ export default function App() {
         const h = await (await fetch(url + '/health', { headers: TUNNEL_HEADERS, signal: AbortSignal.timeout(6000) })).json();
         if (!dead && h?.promptBudget) setBudgetTokens(Number(h.promptBudget));
         if (!dead) setHostEngine({ engine: h?.engine, model: h?.model });
+        if (!dead) setHostPlans(!!h?.plans?.supported);
+        if (!dead && h?.provider) setHostProvider(h.provider as `0x${string}`);
         // Plus five seconds for the settle transaction itself to land.
         if (!dead && h?.settleMaxMs) settleGraceRef.current = Number(h.settleMaxMs) + 5000;
       } catch {}
@@ -801,6 +811,13 @@ export default function App() {
               output, and its settlements are still real MON. Pick another host.
             </div>
           )}
+          {hostPlans && (
+            <div className="rowline">
+              <button className={mode === 'answer' ? 'order' : ''} onClick={() => setMode('answer')}>one answer</button>
+              <button className={mode === 'plan' ? 'order' : ''} onClick={() => setMode('plan')}>plan a job</button>
+              <span className="dim">this host executes plans</span>
+            </div>
+          )}
           {hostEngine?.engine && hostEngine.engine !== 'mock' && (
             <div className="dim">host runs {hostEngine.model} via {hostEngine.engine}</div>
           )}
@@ -808,13 +825,29 @@ export default function App() {
               textarea. It is a full panel, so it took the row's width and the
               textarea's flex:1 collapsed it to a few pixels. It is its own block
               now and the row holds only the prompt and its controls. */}
+          {mode === 'plan' && hostPlans && hostProvider && (
+            <Suspense fallback={<div className="dim">loading the plan panel…</div>}>
+              <PlanPanel
+                pub={pub}
+                wallet={guestWallet}
+                guestAddress={guestAddress}
+                nodeAddress={ADDR}
+                nodeAbi={ABI}
+                host={url}
+                provider={hostProvider}
+                maxFee={MAX_FEE}
+                explorer={EXPLORER}
+              />
+            </Suspense>
+          )}
+
           <EngramSelector onSanitizationChange={setSanitization} onPendingChange={setPendingEngrams} />
 
           {/* Transcript above, composer below, which is the shape every reader
               already knows from a chat client. The answer used to sit in a
               180px box under the controls, so the most valuable thing on the
               page was also the smallest. */}
-          <div className="chat">
+          <div className="chat" style={{ display: mode === 'plan' ? 'none' : undefined }}>
             <div className="transcript" ref={streamRef}>
               {!sentPrompt && !stream && (
                 <div className="empty">

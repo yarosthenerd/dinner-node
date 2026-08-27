@@ -389,6 +389,34 @@ Three certain items off list B, plus two drafts.
   `competitor-darkbloom.md` is the mentor-facing brief, including a section on
   what we deliberately do not claim.
 
+### Plan front end, first cut
+
+Built 2026-08-27 evening, after the steps above were written. Not yet clicked
+through in a browser: it typechecks, lints, builds and the wire format is the
+one `scripts/plan-e2e.mjs` already exercised against the live node, but no
+human has run it.
+
+- `web/src/lib/plan-client.ts` is transport only: SSE reading, `requestPlan`,
+  `runPlan`, and a `waves()` that mirrors `readySteps` so the UI can draw the
+  wave structure before anything runs. The event shapes are duplicated from
+  `src/executor.ts` rather than imported, because the browser and the daemon
+  are separate builds; that file is where to look when the node's frames change
+  and the UI stops understanding them.
+- `web/src/components/PlanPanel.tsx` has three phases, and the middle one is
+  the whole point: the guest sees the plan, its waves and its committed ceiling
+  BEFORE any step runs, and nothing executes until they approve. A plan that
+  ran on approval would be an agent; a plan the guest approves is a quote.
+- The panel opens the job itself, because planning is billed and the escrow
+  funds both halves. `PLAN_BUDGET` is 1.5 MON, sized from the measured seven
+  step run that billed 14,405 tokens end to end.
+- Lazy loaded, so a guest who only wants one answer does not pay for it:
+  `PlanPanel-*.js` is 8.51 kB and first paint moved 593.8 to 595.3 kB.
+- The mode toggle only appears when `/health` reports `plans.supported`, so a
+  guest is never offered a feature the selected host will 404.
+
+To try it: `cd web && npm run dev`, pick a host that advertises plans, and
+switch to "plan a job".
+
 ### Where the state lives
 
 - `scripts/plan-e2e.mjs` opens a real job, plans, runs, and reports what the
