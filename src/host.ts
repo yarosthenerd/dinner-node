@@ -7,6 +7,9 @@ import { formatEther, keccak256, parseEther, parseEventLogs, stringToHex, toHex 
 import { ABI, ADDR, EXPLORER, pub, wallet } from './chain';
 import { mock, ollama, openai, SYSTEM_PROMPT, type Chunk } from './engines';
 import { describeHardware, probeHardware } from './hardware';
+import { PLAN_LIMITS, planCostWei, planHash, validatePlan, type Plan } from './plan';
+import { describePlan, makePlan } from './planner';
+import { executePlan, type Dispatch } from './executor';
 
 const w = wallet(process.env.PROVIDER_PK!);
 const me = w.account.address;
@@ -616,6 +619,10 @@ http.createServer(async (req, res) => {
       // constant that silently stopped matching when the cadence changed.
       settleMaxMs: SETTLE_MAX_MS, settleGasMultiple: Number(SETTLE_GAS_MULTIPLE),
       settleGasUnits: Number(settleGasUnits),
+      // Advertised so a client can tell a node that executes plans from one
+      // that only serves single prompts, rather than discovering it from a
+      // 404 after opening a job.
+      plans: { supported: true, limits: PLAN_LIMITS },
       priority: PRIORITY, pressure: Number(pressure().toFixed(2)),
       // null until the startup measurement lands, a few seconds in.
       firstTokenMs, gpuFraction, hardware: describeHardware(HW),
@@ -690,6 +697,145 @@ http.createServer(async (req, res) => {
         r = { text: String(resume.text), n: Number(resume.n ?? 0) };
       }
       return serveJob(BigInt(jobId), prompt, res, r, session === true);
+    }
+
+    // ---- plan as a job ---------------------------------------------------
+    //
+    // Two endpoints, deliberately separate. /plan produces a plan and charges
+    // for the tokens that produced it; /plan/run executes one the guest has
+    // seen and accepted. Splitting them is the whole point of the shape: the
+    // guest approves a committed ceiling BEFORE any step runs, and the plan
+    // that was approved is identified by its hash rather than by trust.
+    //
+    // Both bill through the same `active` map serveJob uses, so the existing
+    // value-triggered settle ticker pays this node out mid-run without any
+    // second billing path to keep in sync.
+
+    if (req.url === '/plan') {
+      const { jobId, goal } = JSON.parse(body);
+      if (!gate(res, String(goal ?? ''))) return;
+      admitted = true;
+      const job = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [BigInt(jobId)] }) as unknown as any[];
+      if (String(job[1]).toLowerCase() !== me.toLowerCase() || !job[5]) { res.statusCode = 400; return res.end('job not mine / closed'); }
+
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' });
+      const id = BigInt(jobId);
+      const e = await engineP;
+      const hb = setInterval(() => { try { res.write(': hb\n\n'); } catch {} }, 1000);
+      active.set(id, { delta: 0, since: Date.now() });
+      const ac = new AbortController();
+      res.on('close', () => ac.abort());
+      console.log(`[job#${id}] planning ${estTokens(String(goal))} tok goal via ${e.kind}/${e.model}`);
+
+      // Planning IS generation and is billed as such. A plan for a real goal
+      // measured 8.4 minutes on this node, which is not compute to give away,
+      // and an unbilled planner would be the same defect as the cloud kitchen
+      // serving canned text while settling real MON.
+      const billed = async function* (prompt: string) {
+        for await (const c of e.gen(prompt, ac.signal)) {
+          active.get(id)!.delta++;
+          if (c.th !== undefined) res.write(`data: ${JSON.stringify({ th: c.th })}\n\n`);
+          else res.write(`data: ${JSON.stringify({ t: c.t })}\n\n`);
+          yield c.th !== undefined ? '' : c.t;
+        }
+      };
+
+      const budgetWei = (job[2] as bigint) - (job[3] as bigint);
+      const attempt = await makePlan(String(goal), billed, { budgetWei, ratePerMillion: RATE });
+      clearInterval(hb);
+      if (!res.writableEnded) {
+        res.write(attempt.ok
+          ? `data: ${JSON.stringify({
+              plan: attempt.plan,
+              planHash: planHash(attempt.plan!),
+              costWei: String(planCostWei(attempt.plan!, RATE)),
+              summary: describePlan(attempt.plan!, RATE),
+              attempts: attempt.attempts,
+            })}\n\n`
+          : `data: ${JSON.stringify({ err: 'planner did not produce a valid plan', issues: attempt.issues, attempts: attempt.attempts })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      }
+      const jp = active.get(id);
+      if (jp && jp.delta > 0) { settle(id, jp.delta); jp.delta = 0; jp.since = Date.now(); }
+      // Planning leaves the job OPEN by default. The guest's next call is
+      // /plan/run against the same escrow, and closing here would make them
+      // pay openJob twice to use the plan they just bought.
+      idleClose(id);
+      return;
+    }
+
+    if (req.url === '/plan/run') {
+      const { jobId, plan } = JSON.parse(body);
+      // Gated on the largest single step rather than on the whole plan: steps
+      // are sent to the engine one prompt at a time, so the plan total is not
+      // what has to fit a context window.
+      const biggest = Array.isArray(plan?.steps)
+        ? plan.steps.reduce((n: number, st: any) => Math.max(n, String(st?.prompt ?? '').length), 0)
+        : 0;
+      if (!gate(res, 'x'.repeat(biggest))) return;
+      admitted = true;
+
+      const job = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [BigInt(jobId)] }) as unknown as any[];
+      if (String(job[1]).toLowerCase() !== me.toLowerCase() || !job[5]) { res.statusCode = 400; return res.end('job not mine / closed'); }
+
+      // Re-validated here rather than trusted from the caller. The plan
+      // arrives over the wire and nothing proves it is the one this node
+      // produced, so the caps are enforced again against the escrow that is
+      // actually left on this job.
+      const remaining = (job[2] as bigint) - (job[3] as bigint);
+      const v = validatePlan(plan, { budgetWei: remaining, ratePerMillion: RATE });
+      if (!v.ok) {
+        res.statusCode = 400;
+        return res.end(JSON.stringify({ error: 'plan rejected', issues: v.issues, remainingWei: String(remaining) }));
+      }
+
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' });
+      const id = BigInt(jobId);
+      const e = await engineP;
+      const hb = setInterval(() => { try { res.write(': hb\n\n'); } catch {} }, 1000);
+      active.set(id, { delta: 0, since: Date.now() });
+      const ac = new AbortController();
+      res.on('close', () => ac.abort());
+
+      const p = plan as Plan;
+      // The hash is echoed so the guest can check that what ran is what they
+      // approved. It is not yet checked against a chain commitment, because
+      // DinnerNodeV2 has no commitPlan; see TODO.md P1.
+      res.write(`data: ${JSON.stringify({ run: { planHash: planHash(p), steps: p.steps.length, costWei: String(planCostWei(p, RATE)) } })}\n\n`);
+      console.log(`[job#${id}] running plan ${planHash(p)} (${p.steps.length} steps) via ${e.kind}/${e.model}`);
+
+      // v1 dispatches every step to this node's own engine. The signature is
+      // the seam a peer's /job plugs into later without touching the executor.
+      const dispatch: Dispatch = (_step, prompt, signal) => e.gen(prompt, signal);
+
+      try {
+        for await (const ev of executePlan(p, dispatch, {
+          promptBudget: PROMPT_BUDGET,
+          estTokens,
+          signal: ac.signal,
+          // One at a time. This node serves one model, so a wave of four would
+          // contend for the same GPU rather than finish sooner. Parallelism is
+          // what the wave shape buys once steps go to different providers.
+          maxParallel: 1,
+        })) {
+          if (res.writableEnded) break;
+          // Billed exactly like serveJob: one frame is one token, reasoning
+          // included, and the settle ticker does the rest.
+          if (ev.kind === 'token' || ev.kind === 'thought') active.get(id)!.delta++;
+          res.write(`data: ${JSON.stringify(ev)}\n\n`);
+        }
+      } catch (err: any) {
+        console.log(`[job#${id}] plan run error:`, err?.message ?? err);
+        if (!res.writableEnded) res.write(`data: ${JSON.stringify({ err: String(err?.message ?? err) })}\n\n`);
+      }
+
+      clearInterval(hb);
+      if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+      const jr = active.get(id);
+      if (jr && jr.delta > 0) { settle(id, jr.delta); jr.delta = 0; jr.since = Date.now(); }
+      idleClose(id);
+      return;
     }
 
     res.statusCode = 404; res.end();
