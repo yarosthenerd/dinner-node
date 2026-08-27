@@ -1,5 +1,8 @@
 node_modules
 .env
+# Every per-node env, not just the default one. `.env` alone does not match
+# `.env.node2`, which carries a provider private key.
+.env.*
 out
 cache
 dist

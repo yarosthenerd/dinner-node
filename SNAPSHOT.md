@@ -417,6 +417,46 @@ human has run it.
 To try it: `cd web && npm run dev`, pick a host that advertises plans, and
 switch to "plan a job".
 
+### Two models, two providers, two prices
+
+Done 2026-08-27 evening. The network had one provider and one price for every
+model, which is one machine with a price list rather than a marketplace.
+
+A second node runs on this laptop with its own key, its own model and its own
+market-derived rate. On chain now:
+
+| provider | model | rate | break-even |
+|---|---|---|---|
+| `0x055a...326A` | qwen3.6:35b-a3b | 33.41 MON/M, $1.002 | 309 tok |
+| `0x1978...94d3` | llama3.2:1b | 6.70 MON/M, $0.201 | 1,538 tok |
+
+Both prices are resolved live from each model's own OpenRouter listing, which
+is `src/pricing.ts` doing the thing it was built for rather than being
+exercised by one model.
+
+The small model is deliberate: 1.3 GB, 100% on GPU, warm in 3.1 s, first token
+in 0.0 s, and it runs on CPU well enough that it coexists with the 35B MoE
+instead of evicting it. It is the configuration an old laptop or a cheap VPS
+would actually run, which makes it the "runs on anything" claim rather than a
+statement about it.
+
+**Verified by serving a real job.** Job#83 on the small node: 65 visible tokens
+in 0.3 s at 196.4 tok/s, settled 0.0004355 MON on chain.
+
+**And it lost money doing it, which is worth stating plainly.** 65 tokens
+against a 1,538 token break-even means the settle cost about 0.0103 MON to
+collect 0.0004. A small-model node is for demo integrity, network truth and
+proving the long tail. It is not a revenue node, and any figure taken from it
+should say so.
+
+`scripts/node2.sh` starts it; config is `.env.node2`, gitignored. It runs under
+nohup rather than systemd, so **it does not survive a reboot**. Both addresses
+are in `web/src/config.ts` so the UI lists them.
+
+One security fix came out of this: `.gitignore` had `.env`, which does not
+match `.env.node2`, and that file holds a provider private key. The rule is now
+`.env.*`.
+
 ### Where the state lives
 
 - `scripts/plan-e2e.mjs` opens a real job, plans, runs, and reports what the

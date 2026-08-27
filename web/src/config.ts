@@ -14,5 +14,11 @@ export const DISCOVERY = (import.meta as any).env?.VITE_DISCOVERY_URL ?? '';
 // are retired per HANDOFF section 3 and were the reason this list described
 // nobody who was actually serving.
 export const KNOWN_PROVIDERS = [
+  // The GPU node: qwen3.6:35b-a3b, priced from its own ten provider band.
   '0x055a2e24f4588915aB133Cb85753b0E4BBBC326A',
+  // The small node: llama3.2:1b, its own key, its own model, and about a fifth
+  // of the rate. Two models at two prices is what makes this a marketplace
+  // rather than one machine with a price list, and the chain shows two
+  // providers rather than one wearing two hats.
+  '0x1978602dF1865eD61EA0754030817fD8F6A694d3',
 ] as `0x${string}`[];
