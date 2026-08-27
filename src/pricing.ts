@@ -38,13 +38,47 @@ export const MARKET_ID: Record<string, string> = {
  * live figure: `resolveRate` prefers the live band every time it can get one.
  */
 export const PINNED: Record<string, Band> = {
-  // All ten endpoints as listed on 2026-08-27, input price included. Every one
-  // of them bills input; this node bills none, which is the comparison the
-  // output column hides.
+  'meta-llama/llama-3.2-1b-instruct': {
+    min: 0.201, median: 0.201, max: 0.201, providers: 1, measured: '2026-08-27',
+    endpoints: [
+      { name: 'Cloudflare', inUsd: 0.027, outUsd: 0.201 },
+    ],
+  },
+  'qwen/qwen3-8b': {
+    min: 0.455, median: 0.455, max: 0.455, providers: 1, measured: '2026-08-27',
+    endpoints: [
+      { name: 'Alibaba', inUsd: 0.117, outUsd: 0.455 },
+    ],
+  },
+  'qwen/qwen3-14b': {
+    min: 0.220, median: 0.240, max: 0.910, providers: 3, measured: '2026-08-27',
+    endpoints: [
+      { name: 'NextBit', inUsd: 0.100, outUsd: 0.220 },
+      { name: 'DeepInfra', inUsd: 0.120, outUsd: 0.240 },
+      { name: 'Alibaba', inUsd: 0.227, outUsd: 0.910 },
+    ],
+  },
+  'qwen/qwen3.8-27b': {
+    min: 2.400, median: 3.000, max: 3.400, providers: 12, measured: '2026-08-27',
+    endpoints: [
+      { name: 'Morph', inUsd: 0.289, outUsd: 2.400 },
+      { name: 'AkashML', inUsd: 0.400, outUsd: 2.550 },
+      { name: 'Alibaba', inUsd: 0.425, outUsd: 2.550 },
+      { name: 'Chutes', inUsd: 0.350, outUsd: 2.750 },
+      { name: 'Phala', inUsd: 0.400, outUsd: 3.000 },
+      { name: 'CoreWeave', inUsd: 0.400, outUsd: 3.000 },
+      { name: 'Novita', inUsd: 0.500, outUsd: 3.000 },
+      { name: 'Cloudflare', inUsd: 0.450, outUsd: 3.200 },
+      { name: 'Reka', inUsd: 0.450, outUsd: 3.200 },
+      { name: 'Venice', inUsd: 0.450, outUsd: 3.200 },
+      { name: 'Parasail', inUsd: 0.450, outUsd: 3.200 },
+      { name: 'Io Net', inUsd: 0.480, outUsd: 3.400 },
+    ],
+  },
   'qwen/qwen3.6-35b-a3b': {
     min: 0.700, median: 1.114, max: 1.600, providers: 10, measured: '2026-08-27',
     endpoints: [
-      { name: 'Darkbloom', inUsd: 0.070, outUsd: 0.700 },
+      { name: 'Darkbloom', inUsd: 0.050, outUsd: 0.700 },
       { name: 'AkashML', inUsd: 0.100, outUsd: 0.900 },
       { name: 'DeepInfra', inUsd: 0.100, outUsd: 0.950 },
       { name: 'Venice', inUsd: 0.100, outUsd: 1.000 },
@@ -56,10 +90,12 @@ export const PINNED: Record<string, Band> = {
       { name: 'SiliconFlow', inUsd: 0.200, outUsd: 1.600 },
     ],
   },
-  'qwen/qwen3-8b': { min: 0.455, median: 0.455, max: 0.455, providers: 1, measured: '2026-08-27' },
-  'qwen/qwen3-14b': { min: 0.240, median: 0.240, max: 0.240, providers: 1, measured: '2026-08-27' },
-  'meta-llama/llama-3.2-1b-instruct': { min: 0.201, median: 0.201, max: 0.201, providers: 1, measured: '2026-08-27' },
-  'qwen/qwen3.8-27b': { min: 2.550, median: 2.550, max: 2.550, providers: 1, measured: '2026-08-27' },
+  // Deliberately absent: qwen3:1.7b, qwen2.5:3b and qwen3:4b. All three were
+  // queried on 2026-08-27 and NONE of them has an OpenRouter listing, because
+  // nobody sells a model that small as an API. That is a fact worth keeping
+  // rather than papering over with a made-up price: a node serving one of them
+  // has no market to price against, and anything that quotes an income for it
+  // is quoting a number with no referent.
 };
 
 export type Endpoint = {

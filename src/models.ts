@@ -40,6 +40,21 @@ export type Candidate = {
   kvPerTokenB: number;
   /** Context the weights were trained for. Asking for more degrades quality. */
   maxCtx: number;
+  /**
+   * Weights actually read to decode ONE token, MiB. Equal to `weightsMB` for a
+   * dense model, which is why it is omitted on every dense row.
+   *
+   * It exists for mixture-of-experts models, where the two numbers are an
+   * order of magnitude apart and confusing them predicts the wrong throughput
+   * by that much. Decode speed is bandwidth over bytes-read-per-token, so a
+   * 35B model that activates 3B of itself decodes at roughly the speed of a 3B
+   * model while needing the VRAM of a 35B one. That is the whole reason to
+   * prefer an MoE at the top of this catalog, and it is only visible if the
+   * two figures are kept apart.
+   *
+   * DERIVED, not measured, and the arithmetic is in the row that sets it.
+   */
+  activeMB?: number;
   note: string;
 };
 
@@ -106,7 +121,13 @@ export const CATALOG: Candidate[] = [
   // dense 27B's 266,240, so on a 32 GB card it reaches 132k of context where
   // the dense model stops at 59k, and it activates 3B parameters per token, so
   // it answers at small-model speed while giving large-model answers.
-  { tag: 'qwen3.6:35b-a3b', weightsMB: 21573, kvPerTokenB: 83968, maxCtx: 262144,
+  // activeMB: 3B active parameters at Q4_K_M. The quant averages about 4.5
+  // bits per weight, so 3e9 x 4.5 / 8 = 1,688 MiB, and the always-resident
+  // attention and embedding tensors are on top of that; 1,900 is the round
+  // figure used here. DERIVED, not measured. It is the one input to the
+  // throughput estimate that no measurement in this repo pins down, because
+  // the only machine that has run this model cannot hold it.
+  { tag: 'qwen3.6:35b-a3b', weightsMB: 21573, kvPerTokenB: 83968, maxCtx: 262144, activeMB: 1900,
     note: 'MoE, 35B stored and 3B active: big-model answers at small-model speed, wants 32 GB' },
 ];
 

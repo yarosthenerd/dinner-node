@@ -187,14 +187,20 @@ describe('free input', () => {
   });
 
   it('counts more of the listing undercut as prompts get longer', () => {
+    // Deliberately free of literal market numbers. This assertion used to say
+    // "at five to one we are cheapest of all ten", which was true when it was
+    // written and stopped being true the day Darkbloom cut its input price
+    // from $0.070 to $0.050 and pushed the crossover from 4.3x to 6.0x. The
+    // property is monotonicity plus a crossover the band itself defines; the
+    // exact ratio is the market's business, not the test's.
     const band = PINNED['qwen/qwen3.6-35b-a3b'];
-    const atZero = cheaperThanCount(band, 1.002, 0);
-    const atOne = cheaperThanCount(band, 1.002, 1);
-    const atFive = cheaperThanCount(band, 1.002, 5);
-    expect(atZero).toBeLessThan(atOne);
-    expect(atOne).toBeLessThan(atFive);
-    // At five to one we are the cheapest of the ten listed for this model.
-    expect(atFive).toBe(band.endpoints!.length);
+    const ours = 1.002;
+    expect(cheaperThanCount(band, ours, 0)).toBeLessThan(cheaperThanCount(band, ours, 1));
+    expect(cheaperThanCount(band, ours, 1)).toBeLessThan(cheaperThanCount(band, ours, 5));
+    // Past the worst crossover in the band, free input beats every listing.
+    const worst = Math.max(...band.endpoints!.map(e => crossoverRatio(e, ours)));
+    expect(Number.isFinite(worst)).toBe(true);
+    expect(cheaperThanCount(band, ours, worst + 0.01)).toBe(band.endpoints!.length);
   });
 
   it('keeps the input price when reading a live listing', async () => {
@@ -215,13 +221,27 @@ describe('free input', () => {
     const boom = vi.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch;
     const r = await resolveRate({ model: 'qwen3.6:35b-a3b', policy: 'median', discount: 0.9, fetchImpl: boom });
     const line = describeFreeInput(r)!;
-    expect(line).toContain('Darkbloom');
-    expect(line).toMatch(/once a prompt is 4\.\d x the answer|once a prompt is 4\.\d+x the answer/);
+    const cheapest = r.band!.endpoints![0];
+    expect(line).toContain(cheapest.name);
+    // The ratio is read back out of the band rather than pinned to a literal,
+    // for the same reason as the test above: it moves whenever a rival
+    // repriced. What must hold is that the sentence quotes the number the
+    // arithmetic actually produces.
+    const x = crossoverRatio(cheapest, r.usdPerMillion);
+    expect(line).toContain(`once a prompt is ${x.toFixed(1)}x the answer`);
   });
 
-  it('says nothing when the band carries no endpoint detail', async () => {
-    const boom = vi.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch;
-    const r = await resolveRate({ model: 'qwen3:8b', fetchImpl: boom });
-    expect(describeFreeInput(r)).toBeNull();
+  it('says nothing when the band carries no endpoint detail', () => {
+    // Built here rather than borrowed from PINNED. It used to read qwen3:8b,
+    // whose pinned band happened to have no endpoints; refreshing the table
+    // gave it some and the test started asserting the opposite of its name.
+    // A test for "no endpoints" should construct a band with no endpoints.
+    const bandless = {
+      ratePerMillionWei: 0n, usdPerMillion: 1,
+      band: { min: 1, median: 1, max: 1, providers: 1, measured: '2026-08-27' },
+      source: 'pinned', orId: 'qwen/x', policy: 'median' as const, discount: 0.9,
+    };
+    expect(describeFreeInput(bandless)).toBeNull();
+    expect(describeFreeInput({ ...bandless, band: null })).toBeNull();
   });
 });

@@ -33,6 +33,20 @@
   .ok { color:var(--mint); }
   nav.back { margin-bottom:18px; }
   footer { border-top:1px dashed var(--line); margin-top:34px; padding-top:16px; color:var(--dim); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; }
+  .grid label { display:flex; flex-direction:column; gap:5px; font-weight:700; color:var(--mint);
+    font-size:11px; text-transform:uppercase; letter-spacing:.07em; }
+  .grid input, .grid select { background:var(--ink); color:var(--text); border:1px solid var(--line);
+    border-radius:6px; padding:7px 8px; font:inherit; width:100%; }
+  .grid input[type=range] { padding:0; accent-color:var(--mint); }
+  .grid output { color:var(--text); font-weight:700; text-transform:none; letter-spacing:0; }
+  .hint { color:var(--dim); font-weight:400; text-transform:none; letter-spacing:0; font-size:11px; line-height:1.45; }
+  .bad { color:var(--ketchup); }
+  .tag { font-size:10px; padding:1px 6px; border-radius:99px; border:1px solid var(--line); text-transform:uppercase; letter-spacing:.06em; }
+  .tag-ok { color:var(--mint); border-color:var(--mint); }
+  .tag-warn { color:var(--ketchup); border-color:var(--ketchup); }
+  #result table { margin-top:14px; }
+  #result th { width:32%; white-space:nowrap; }
   @media (max-width:600px) { .wrap { padding:18px 14px 48px; } h1 { font-size:21px; } }
 </style>
 </head>
@@ -82,6 +96,114 @@ missing and it never overwrites a key you already have.</p>
 
 <p>To check readiness without changing anything, run <code>npm run doctor</code>. It exits non-zero
 and prints what to fix if the node is not ready to serve.</p>
+
+<h2>What would I earn?</h2>
+
+<div class="card warn">
+  <p><strong>Read the two numbers that decide the answer before you read the answer.</strong></p>
+  <ol>
+    <li><strong>Utilisation.</strong> Not how fast your GPU is, but what fraction of the time it
+    actually has a job. Today, on this network, that number is close to zero: there are two nodes
+    and almost no demand. Everything below scales linearly with it, so a calculator that assumed
+    100% would be selling you something. The slider starts at 5%.</li>
+    <li><strong>MON has no monetary value.</strong> This is a testnet. Every dollar figure below is
+    what the same work would be worth <em>if</em> MON traded at the modelling constant this project
+    uses, and it does not trade at all. Your electricity bill is denominated in real money. Your
+    earnings are not.</li>
+  </ol>
+</div>
+
+<div class="card">
+  <div class="grid">
+    <label>GPU VRAM
+      <select id="vram">
+        <option value="6">6 GB</option>
+        <option value="8">8 GB</option>
+        <option value="10">10 GB</option>
+        <option value="12" selected>12 GB</option>
+        <option value="16">16 GB</option>
+        <option value="20">20 GB</option>
+        <option value="24">24 GB</option>
+        <option value="32">32 GB</option>
+        <option value="48">48 GB</option>
+      </select>
+      <span class="hint">90% of this is usable; the rest is your desktop.</span>
+    </label>
+    <label>Context you advertise
+      <select id="ctx">
+        <option value="4096">4,096</option>
+        <option value="8192">8,192</option>
+        <option value="16384" selected>16,384</option>
+        <option value="32768">32,768</option>
+      </select>
+      <span class="hint">The KV cache for this competes with the weights for VRAM.</span>
+    </label>
+    <label>Hours per day available <output id="hoursOut">12 h</output>
+      <input type="range" id="hours" min="1" max="24" step="1" value="12" />
+      <span class="hint">While you sleep, or whenever the machine is idle.</span>
+    </label>
+    <label>Utilisation <output id="utilOut">5%</output>
+      <input type="range" id="util" min="0" max="100" step="1" value="5" />
+      <span class="hint">Of those hours, how many carry a paying job. The honest answer today is low.</span>
+    </label>
+    <label>Watts while generating
+      <input type="number" id="watts" value="65" min="5" max="600" step="5" />
+      <span class="hint">A laptop 5070&nbsp;Ti peaked at 65&nbsp;W measured. A desktop 4090 is nearer 400.</span>
+    </label>
+    <label>Electricity, USD per kWh
+      <input type="number" id="kwh" value="0.15" min="0" max="1" step="0.01" />
+      <span class="hint">EU average is around 0.25; US around 0.15.</span>
+    </label>
+    <label>Your measured tok/s <span class="dim">(optional, best)</span>
+      <input type="number" id="tps" value="0" min="0" max="2000" step="1" />
+      <span class="hint">Leave 0 to estimate. To measure yours in ten seconds:
+      <code>ollama run &lt;model&gt; --verbose</code> and read <code>eval rate</code>.</span>
+    </label>
+  </div>
+
+  <div id="result"></div>
+</div>
+
+<h3>Where these numbers come from</h3>
+<p>Throughput is measured on one machine, and one machine is not a benchmark suite. Every row below
+was taken on 2026-08-27 with one model resident at a time, the model unloaded between runs, and the
+GPU/CPU split read from Ollama immediately afterwards. That last part matters: an earlier pass
+reported 27.7&nbsp;tok/s for <code>qwen3:8b</code> and it turned out to be contention with a model
+the node had kept alive, not the model's speed.</p>
+
+<table>
+  <tr><th>Model</th><th>Weights</th><th>tok/s</th><th>On GPU</th><th>What it tells you</th></tr>
+  <tr><td><code>llama3.2:1b</code></td><td>1.2 GB</td><td>215.5</td><td class="ok">100%</td><td>Fits easily. Fast, but see its price.</td></tr>
+  <tr><td><code>qwen3:8b</code></td><td>4.9 GB</td><td>49.5</td><td class="ok">100%</td><td>Fits. These two together give the bandwidth figure everything else is scaled from.</td></tr>
+  <tr><td><code>qwen3.8:27b</code></td><td>16.5 GB</td><td class="bad">4.3</td><td class="bad">49%</td><td>Does not fit 12&nbsp;GB. This is what spilling costs you.</td></tr>
+  <tr><td><code>qwen3.6:35b-a3b</code></td><td>21.1 GB</td><td>40.4</td><td class="bad">43%</td><td>Also spilling, and still <strong>9x faster than the dense 27B</strong>, because it activates 3B parameters per token instead of 27B.</td></tr>
+</table>
+
+<p>The two rows that fit agree to within 10% on <code>tok/s x weights</code>, which is the evidence
+that decoding is bandwidth-bound and that scaling by model size is legitimate <em>for models that
+fit</em>. It is not legitimate for a model that spills: the two spilled rows above sit 9x apart on
+identical hardware. That is why the calculator refuses to extrapolate a spilled figure and shows
+the measured floor instead.</p>
+
+<p>Prices are 90% of the median of every provider listing the same model on OpenRouter, read on
+2026-08-27, which is the same band the live nodes price themselves against. Three catalog models
+(<code>qwen3:1.7b</code>, <code>qwen2.5:3b</code>, <code>qwen3:4b</code>) have <strong>no listing at
+all</strong> — nobody sells a model that small as an API — so the calculator shows no income for
+them rather than inventing one.</p>
+
+<div class="card">
+  <h3>Two results worth knowing before you buy hardware</h3>
+  <p><strong>More VRAM is not monotonically more money.</strong> At 16&nbsp;GB the picker moves you
+  to <code>qwen3:14b</code>, which the market prices at roughly half what it pays for
+  <code>qwen3:8b</code> while running about three times slower. On these figures a 16&nbsp;GB card
+  earns <em>less</em> than a 12&nbsp;GB one. Check the calculator before assuming the bigger card
+  pays for itself.</p>
+  <p><strong>The mixture-of-experts model is the outlier.</strong> It needs 32&nbsp;GB to hold, and
+  in exchange it decodes at roughly the speed of a 3B model while being priced like a 35B one. It
+  is also the least certain figure on this page: its active-weight size is derived, not measured,
+  because no machine here can hold it. If you own a 32&nbsp;GB card, measuring it is the single most
+  useful thing you could contribute.</p>
+</div>
 
 <h2>What it costs you to run</h2>
 
@@ -168,5 +290,6 @@ request, and you can stop your node at any time with <code>Ctrl-C</code>.</p>
 </footer>
 
 </div>
+<script type="module" src="/hosting-calc.js"></script>
 </body>
 </html>
