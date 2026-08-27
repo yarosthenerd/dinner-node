@@ -15,6 +15,7 @@ import {
   type Plan,
   type PlanStep,
 } from '../plan.js';
+import { normalizeIds } from '../planner.js';
 
 const step = (id: string, over: Partial<PlanStep> = {}): PlanStep => ({
   id, title: `step ${id}`, prompt: `do ${id}`, maxTokens: 500, dependsOn: [], ...over,
@@ -189,5 +190,64 @@ describe('lazy approval (HANDOFF.md:205)', () => {
 
   it('refuses a revision that does not bump the version', () => {
     expect(canLazyApprove(before, plan([step('a', { maxTokens: 1000 })]), RATE)).toBe(false);
+  });
+});
+
+// Id repair. The case that produced this: a live 153 second planning run on
+// qwen3.6:35b-a3b returned a good six step plan whose fifth id was
+// "determine-break-even-and-conclude", 33 characters against a 32 cap, twice
+// in a row. The guest was billed for both attempts and got nothing.
+describe('normalizeIds', () => {
+  const parse = (o: any) => { const p = JSON.parse(JSON.stringify(o)); return { repairs: normalizeIds(p), p }; };
+
+  it('truncates an id that is one character too long', () => {
+    const { repairs, p } = parse({ steps: [{ id: 'determine-break-even-and-conclude' }] });
+    expect(p.steps[0].id).toBe('determine-break-even-and-conclud');
+    expect(p.steps[0].id.length).toBeLessThanOrEqual(PLAN_LIMITS.maxIdChars);
+    expect(repairs).toHaveLength(1);
+  });
+
+  it('rewrites every dependency that pointed at a repaired id', () => {
+    const { p } = parse({ steps: [
+      { id: 'determine-break-even-and-conclude', dependsOn: [] },
+      { id: 'draft', dependsOn: ['determine-break-even-and-conclude'] },
+    ] });
+    expect(p.steps[1].dependsOn).toEqual([p.steps[0].id]);
+  });
+
+  it('replaces characters the id rule does not allow', () => {
+    const { p } = parse({ steps: [{ id: 'Research GPU costs!' }] });
+    expect(p.steps[0].id).toBe('research_gpu_costs_');
+  });
+
+  it('names a step that arrived without an id', () => {
+    const { p } = parse({ steps: [{ title: 'x' }, {}] });
+    expect(p.steps[0].id).toBe('step_1');
+    expect(p.steps[1].id).toBe('step_2');
+  });
+
+  it('deduplicates without reintroducing an over-long id', () => {
+    const long = 'a'.repeat(40);
+    const { p } = parse({ steps: [{ id: long }, { id: long }, { id: long }] });
+    const ids = p.steps.map((s: any) => s.id);
+    expect(new Set(ids).size).toBe(3);
+    for (const id of ids) expect(id.length).toBeLessThanOrEqual(PLAN_LIMITS.maxIdChars);
+  });
+
+  it('is deterministic, because the id is part of planHash', () => {
+    const input = { steps: [{ id: 'A B' }, { id: 'A_B' }] };
+    expect(parse(input).p.steps.map((s: any) => s.id)).toEqual(parse(input).p.steps.map((s: any) => s.id));
+  });
+
+  it('leaves a valid plan untouched and reports no repairs', () => {
+    const { repairs, p } = parse({ steps: [{ id: 'gpu_costs', dependsOn: [] }] });
+    expect(repairs).toEqual([]);
+    expect(p.steps[0].id).toBe('gpu_costs');
+  });
+
+  it('does not rescue a genuinely dangling dependency', () => {
+    // Repair rewrites references to ids it changed. It must not invent a step.
+    const { p } = parse({ steps: [{ id: 'a', dependsOn: ['nope'] }] });
+    expect(p.steps[0].dependsOn).toEqual(['nope']);
   });
 });

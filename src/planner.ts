@@ -49,7 +49,7 @@ Reply with ONLY a JSON object, no prose and no code fence, in exactly this shape
   "goal": "<restate the goal in one line>",
   "steps": [
     {
-      "id": "<short slug, letters digits dash underscore>",
+      "id": "<slug, lowercase letters digits dash underscore, 32 characters max>",
       "title": "<short human label>",
       "prompt": "<the full instruction for this step, self-contained>",
       "maxTokens": <integer>,
@@ -59,6 +59,8 @@ Reply with ONLY a JSON object, no prose and no code fence, in exactly this shape
 }
 
 Rules, all enforced after you reply:
+- Every id must match [a-z0-9_-] and be AT MOST ${PLAN_LIMITS.maxIdChars} CHARACTERS.
+  Count them. "gpu_costs" is good; "determine-break-even-and-conclude" is too long.
 - At most ${PLAN_LIMITS.maxSteps} steps. Fewer is better. Do not pad.
 - maxTokens at most ${PLAN_LIMITS.maxTokensPerStep} per step, ${PLAN_LIMITS.maxTotalTokens} in total.
   Estimate honestly: unused tokens are not charged, but the ceiling is what gets escrowed.
@@ -98,11 +100,67 @@ export function extractJson(raw: string): string | null {
   return null;
 }
 
+/**
+ * Repair step ids in place, and rewrite every reference to them.
+ *
+ * A model that gets everything else right and writes a 33 character slug has
+ * produced a good plan, and throwing it away costs the guest the whole
+ * planning run: measured at 153 seconds on this node, billed, for nothing.
+ * The id is an opaque handle rather than meaning, so normalising it changes
+ * nothing a guest approved.
+ *
+ * Deterministic on purpose. The id is part of the canonical form and therefore
+ * of planHash, so the same reply must always repair to the same plan or the
+ * commitment would depend on when it was parsed.
+ *
+ * What this does NOT touch: prompts, titles, token ceilings, or the dependency
+ * graph's shape. A dangling dependency stays dangling and the validator still
+ * rejects it.
+ */
+export function normalizeIds(parsed: any): string[] {
+  const repairs: string[] = [];
+  if (!parsed || !Array.isArray(parsed.steps)) return repairs;
+  const max = PLAN_LIMITS.maxIdChars;
+  const taken = new Set<string>();
+  const map = new Map<string, string>();
+
+  parsed.steps.forEach((s: any, i: number) => {
+    const original = typeof s?.id === 'string' ? s.id : '';
+    let id = original.toLowerCase().replace(/[^a-z0-9_-]/g, '_').slice(0, max);
+    if (!id) id = `step_${i + 1}`;
+    if (taken.has(id)) {
+      // Suffix without exceeding the cap, so deduplication cannot reintroduce
+      // the very violation being repaired.
+      let n = 2;
+      let candidate: string;
+      do {
+        const suffix = `_${n++}`;
+        candidate = id.slice(0, max - suffix.length) + suffix;
+      } while (taken.has(candidate) && n < 1000);
+      id = candidate;
+    }
+    taken.add(id);
+    if (id !== original) {
+      repairs.push(`${original || '(missing)'} -> ${id}`);
+      if (original) map.set(original, id);
+      s.id = id;
+    }
+  });
+
+  if (map.size) {
+    for (const s of parsed.steps) {
+      if (!Array.isArray(s?.dependsOn)) continue;
+      s.dependsOn = s.dependsOn.map((d: any) => (typeof d === 'string' && map.has(d) ? map.get(d)! : d));
+    }
+  }
+  return repairs;
+}
+
 /** Parse and validate one candidate. Never throws. */
 export function parsePlan(
   raw: string,
   opts: { budgetWei?: bigint; ratePerMillion?: bigint } = {}
-): { plan?: Plan; issues: ValidationIssue[] } {
+): { plan?: Plan; issues: ValidationIssue[]; repairs?: string[] } {
   const json = extractJson(raw);
   if (json === null) {
     return { issues: [{ code: 'no_json', message: 'no JSON object found in the reply' }] };
@@ -113,8 +171,9 @@ export function parsePlan(
   } catch (e: any) {
     return { issues: [{ code: 'bad_json', message: `JSON did not parse: ${e?.message ?? e}` }] };
   }
+  const repairs = normalizeIds(parsed);
   const { ok, issues } = validatePlan(parsed, opts);
-  return ok ? { plan: parsed as Plan, issues: [] } : { issues };
+  return ok ? { plan: parsed as Plan, issues: [], repairs } : { issues, repairs };
 }
 
 /**

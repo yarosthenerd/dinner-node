@@ -45,6 +45,10 @@ export const PLAN_LIMITS = {
   /** Total across every step, independent of the per-step ceilings. */
   maxTotalTokens: 32768,
   /** A step prompt still has to fit a context window with room to answer. */
+  /** Step ids, which are handles rather than meaning. Stated in the planner
+   *  prompt and repaired rather than rejected when a model overruns it by a
+   *  character, which is the single most common way a good plan was lost. */
+  maxIdChars: 32,
   maxPromptChars: 8000,
   maxGoalChars: 2000,
   /** Depth of the dependency chain. A deep chain is a loop wearing a hat. */
@@ -159,8 +163,8 @@ export function validatePlan(
   for (const [i, s] of p.steps.entries()) {
     const where = `step ${i}`;
     if (typeof s !== 'object' || s === null) { bad('bad_step', `${where} is not an object`); continue; }
-    if (typeof s.id !== 'string' || !/^[a-z0-9_-]{1,32}$/i.test(s.id)) {
-      bad('bad_step_id', `${where} id must match [a-z0-9_-]{1,32}`, s.id);
+    if (typeof s.id !== 'string' || !new RegExp(`^[a-z0-9_-]{1,${PLAN_LIMITS.maxIdChars}}$`, 'i').test(s.id)) {
+      bad('bad_step_id', `${where} id must match [a-z0-9_-]{1,${PLAN_LIMITS.maxIdChars}}`, s.id);
     } else if (ids.has(s.id)) {
       bad('duplicate_step_id', `duplicate step id ${s.id}`, s.id);
     } else {
