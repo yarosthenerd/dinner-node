@@ -407,6 +407,49 @@ human has run it.
 To try it: `cd web && npm run dev`, pick a host that advertises plans, and
 switch to "plan a job".
 
+### commitPlan, and what it can honestly enforce
+
+`DinnerNodeV2.commitPlan(jobId, planHash, version, ceiling)` plus enforcement
+in `settle`. Written and tested, **not deployed**; V2 itself is still a draft.
+
+The question worth answering first was what a plan commitment can actually
+enforce, because the alternative is the DinnerZK mistake again: a shaped ritual
+with no property. The contract cannot check that the steps a provider ran are
+the steps in the plan, and the header says so. `planHash` is a commitment for
+later audit, and any comparison of an answer to a plan happens off chain.
+
+**What it does enforce: once a plan is committed, `settle` can never take a
+job's `paid` above `ceiling`, whatever the escrow allows.** That turns the cost
+ceiling the guest approved from a promise made by a web page into a limit held
+by the chain, and raising it costs the guest a transaction they sign, which is
+the lazy-approval boundary in `src/plan.ts` made real rather than enforced by a
+page that could simply not ask.
+
+Design decisions worth keeping:
+
+- **The requester commits, not the provider.** A provider able to commit a plan
+  could raise its own ceiling.
+- **Versions are monotonic and a revision is a new commitment**, so the record
+  of what was approved cannot be rewritten.
+- **A revision cannot retroactively cap work already paid for.** Otherwise a
+  guest could settle a run and then commit a lower ceiling, which changes
+  nothing on chain but makes the record say the provider was overpaid against
+  an approved plan.
+- **Reaching the ceiling does not close the job.** Closing there would make an
+  upward revision impossible: the guest would have to open a new job, losing
+  the checkpoint chain and paying `openJob` again, exactly when they have just
+  decided the work is worth more.
+
+**A defect the tests caught, and it is the interesting one.** The close
+condition compared `rawDue`, which is what the provider CLAIMED, against the
+escrow. So the first time a plan capped a large claim, the job closed with its
+escrow untouched: precisely the case this feature exists to create. It now
+tests `paid >= escrow`, which is identical to the old behaviour when no plan is
+committed. Ten of twelve tests passed before this and the two that failed were
+the two that matter.
+
+12 tests, 23 in the contracts suite.
+
 ### Discovery is running, and announce was broken
 
 `dinnernode-discovery.service` on port 4175, enabled at boot, seeded with both
