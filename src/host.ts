@@ -21,6 +21,10 @@ const CONTEXT_TOKENS = Number(process.env.CONTEXT_TOKENS ?? 32768);
 const OUTPUT_RESERVE = Number(process.env.OUTPUT_RESERVE_TOKENS ?? 2048);
 const CHECKPOINT_EVERY = Number(process.env.CHECKPOINT_TOKENS ?? 64);
 const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT_JOBS ?? 2);
+// Long enough to cover an ollama started alongside this daemon, short enough
+// that a machine with no engine at all fails while the operator is watching.
+const ENGINE_PROBE_ATTEMPTS = Number(process.env.ENGINE_PROBE_ATTEMPTS ?? 15);
+const ENGINE_PROBE_INTERVAL_MS = Number(process.env.ENGINE_PROBE_INTERVAL_MS ?? 2000);
 
 // Roughly four characters per token. Deliberately an estimate: it only has to
 // be good enough to reject an impossible prompt before any money moves.
@@ -82,20 +86,40 @@ let gpuFraction: number | null = null;
 
 type Engine = { kind: string; model: string; gen: (p: string, signal?: AbortSignal) => AsyncGenerator<Chunk> };
 async function pickEngine(): Promise<Engine> {
-  if (process.env.ENGINE !== 'mock') {
-    if (process.env.LLM_BASE_URL) {
-      const model = process.env.LLM_MODEL ?? 'local';
-      return { kind: 'openai-compat', model, gen: (p, s) => openai(p, process.env.LLM_BASE_URL!, model, s) };
-    }
+  if (process.env.ENGINE === 'mock') {
+    return { kind: 'mock', model: process.env.MODEL ?? 'mock-7b', gen: mock };
+  }
+  if (process.env.LLM_BASE_URL) {
+    const model = process.env.LLM_MODEL ?? 'local';
+    return { kind: 'openai-compat', model, gen: (p, s) => openai(p, process.env.LLM_BASE_URL!, model, s) };
+  }
+  // ollama is usually started by the same hand that starts this daemon, and it
+  // is not listening for the first few seconds. A single probe here loses that
+  // race and used to fall through to the mock engine for the lifetime of the
+  // process, while /health went on advertising the configured model name. The
+  // node then took payment for a canned passage. Wait for it instead.
+  let lastErr = '';
+  for (let attempt = 0; attempt < ENGINE_PROBE_ATTEMPTS; attempt++) {
     try {
       const tags = await (await fetch('http://localhost:11434/api/tags')).json() as any;
       const names: string[] = (tags.models ?? []).map((m: any) => m.name);
       let model = process.env.MODEL ?? names[0];
       if (model && !names.includes(model)) { console.log('model ' + model + ' not installed, falling back to ' + names[0]); model = names[0]; }
       if (model) return { kind: 'ollama', model, gen: (p, s) => ollama(p, model, s, CONTEXT_TOKENS) };
-    } catch {}
+      lastErr = 'ollama is running but has no models installed';
+    } catch (e: any) {
+      lastErr = e?.message ?? String(e);
+    }
+    if (attempt === 0) console.log('waiting for ollama on localhost:11434');
+    await new Promise(r => setTimeout(r, ENGINE_PROBE_INTERVAL_MS));
   }
-  return { kind: 'mock', model: process.env.MODEL ?? 'mock-7b', gen: mock };
+  // Serving canned text from a provider that is registered on chain and being
+  // paid per token is worse than not serving at all, so this is fatal. An
+  // operator who genuinely wants the mock engine asks for it by name.
+  console.error('no inference engine: ' + lastErr);
+  console.error('start ollama (`ollama serve`), set LLM_BASE_URL for an OpenAI-compatible server,');
+  console.error('or set ENGINE=mock to serve the canned demo passage on purpose.');
+  process.exit(1);
 }
 const engineP = pickEngine();
 
