@@ -1,3 +1,158 @@
+# Session snapshot, 2026-08-27 (afternoon)
+
+> Newest first. Earlier snapshots follow below, unchanged.
+> `TODO.md` remains the roadmap; this is the build and defect state.
+
+## 1. Headline
+
+Both of the top two items in the previous snapshot's open list are closed,
+and the second one closed by way of a defect that eleven passing contract
+tests were structurally incapable of catching:
+
+- **Guests can order from their own wallet.** The house no longer owns both
+  ends of every transfer, which was the reason no usage figure from this
+  project meant anything. See section 2.
+- **`Semaphore` could never have been deployed by our own script.** It links
+  an external library that the script neither deployed nor linked, and
+  `forge test` links libraries itself, so the whole suite ran green against
+  code that could not reach the chain. See section 3.
+- **`DinnerRatings` is live**, at 1.528 MON against the 0.64 estimated. The
+  gap is one entire contract nobody knew was a separate deployment.
+
+## 2. The guest's own wallet
+
+The burner key in `lib.ts` was generated in the browser and funded by the
+house faucet, so the deposit, the escrow and the settlement were all house
+money moving between house addresses. That is what made "guests paid
+providers" undemonstrable no matter how many jobs the counter showed.
+
+`web/src/lib/wallet.ts` holds whichever wallet is active and `App.tsx`
+destructures it under the old names, so no `writeContract` call site changed.
+
+**The burner stays as the fallback.** A reviewer clicking a link should not
+need an extension installed, and removing that would cost more than it buys.
+
+Discovery is EIP-6963 rather than `window.ethereum`, which with two extensions
+installed is whichever one won the race to assign it; the header renders one
+button per discovered wallet. Connect switches the chain, adds Monad testnet
+on a 4902, and sets `chainOk` false rather than throwing when the guest
+declines. Reconnect goes through `eth_accounts` only, so a page load never
+opens a wallet popup.
+
+**Auto top-up is now burner-only.** The house has no business pushing MON at
+an address it does not control, and an automatic grant to a connected wallet
+puts the house back on both ends of the flow it was just removed from. A
+connected wallet holding too little is told what it holds and what an order
+costs. The manual faucet button still works in both modes.
+
+Measured on a live order from MetaMask: two confirmations on the first turn,
+`deposit` then `openJob`, and none on later turns of the same session, because
+the session job is reused.
+
+Sixteen tests for the state machine: connect, reject, wrong chain, chain add,
+account switch, revoke, restore. 104 web tests total. First paint 593.8 kB,
+up 4.8 kB.
+
+`terms.html` and `README.md` carry the two-wallet split, the new
+`dn_wallet_rdns` key, when an address reaches `/api/topup` in each mode, and a
+sharper linkability warning: a wallet already used elsewhere brings its whole
+history to every job opened from it.
+
+## 3. A library the tests linked and the script did not
+
+`Semaphore` calls `PoseidonT3` as an **external** library, so solc leaves a
+placeholder at six call sites and the deployer is expected to fill them in.
+`scripts/deploy-ratings.mjs` sent the placeholder text as initcode. That is
+not valid hex, and Monad answered `eth_estimateGas` with a bare
+`-32602 Invalid params`.
+
+Three things made this expensive to read correctly:
+
+- The error names the RPC, not us, and `Invalid params` is what a chain says
+  when a chain is broken.
+- The dry run failed identically before anything was deployed, which looked
+  like the ordinary case of a constructor argument that does not exist yet.
+- Size was the obvious suspect and was wrong: the verifier is 30,936 bytes of
+  initcode and estimates fine, against Semaphore's 13,202.
+
+**`forge test` deploys and links libraries itself.** All eleven `DinnerRatings`
+tests passed, including the 570k gas one that runs the real verifier, against
+a `Semaphore` this script could not put on chain. No amount of contract
+testing would have found this. Only a deploy could.
+
+Fixed in `6263673`. Link offsets come from the artifact's `linkReferences`
+rather than from matching placeholder text, and the linked result is checked
+for a surviving placeholder before anything is sent. The script now also
+reuses `SEMAPHORE_VERIFIER_ADDRESS` and `POSEIDON_T3_ADDRESS` when set, which
+was not hypothetical: the verifier deployed successfully and then Semaphore
+failed, so a naive re-run would have paid 3,825,292 gas twice.
+
+## 4. Ratings on chain
+
+| contract | address | gas |
+|---|---|---|
+| PoseidonT3 | `0x910b8ef9fa4fb25ec4f0db0de7f5bfa87344d4f8` | 5,280,601 |
+| SemaphoreVerifier | `0x4434cd7fadc248619e8cf171a1b2939af6b3af6c` | 3,825,292 |
+| Semaphore | `0x6a399092f254e9317eaec677c60f0519e5248d14` | 2,884,656 |
+| DinnerRatings | `0xeb0de71314322e6b0b5d754997dc3ddc1358d87f` | 1,132,523 |
+
+1.528 MON across the two runs against 0.64 estimated. The estimate counted the
+verifier and missed PoseidonT3, which is the single most expensive item of the
+four.
+
+Verified by reading the deployed contract: `semaphore()` returns the new
+Semaphore, `node()` returns the live V1 `0xaF2c...3A92`, `groupId` 0 exists,
+`memberCount` 0.
+
+`VITE_RATINGS_ADDRESS` is set on Vercel Production as a non-sensitive config
+variable. Vercel refuses secret visibility on a `VITE_` prefix, which is
+correct, because the value ships to the browser either way. Verified in the
+served bundle: the address is compiled into the lazy `ProviderRating` chunk.
+
+**The group has zero members**, so the first guest to rate sees "a group this
+small hides nobody". That is the widget behaving as designed rather than a
+defect, and it stays true until three guests have joined.
+
+## 5. Live state
+
+```
+node        qwen3.6:35b-a3b, engine ollama, accepting, activeJobs 0
+web         web-2mf2oxgze, https://web-opal-sigma-55.vercel.app
+contract    V1 0xaF2c...3A92, unchanged. V2 still a draft, still not deployed.
+ratings     DEPLOYED 0xeb0d...d87f, group 0, zero members
+house       0xA91a...5CF4  15.055 MON  -> 12 faucet grants
+provider    0x055a...326A  0.2265 MON  -> settle gas only, no headroom to spare
+web tests   104, 16 of them new. tsc, oxlint, vite build clean.
+```
+
+Two commits: `3b42e28` guest wallets, `6263673` the library link fix.
+
+## 6. Open, in priority order
+
+1. **Cap the fee on the two ratings writes.** `joinWithJob` and `rateProvider`
+   in `web/src/lib/ratings.ts` pass a gas limit and no `maxFeePerGas`, so the
+   `MAX_FEE` protection every other browser write has does not cover them.
+   This mattered less when the burner paid; it is the guest's own wallet now.
+2. **Refill the provider wallet.** 0.2265 MON is settle gas and nothing else.
+3. **Make the cloud kitchen a real second provider**, unchanged and still the
+   load-bearing item. `web/api/p/job.js` ignores `resume` and streams one
+   hardcoded sentence while settling real MON. Until this lands, mid-answer
+   migration is not reproducible from a browser by anyone reviewing us.
+4. **Correct `terms.html` on the prompt commitment**, which session jobs
+   narrowed from per prompt to per session opener. Still a live claim the code
+   does not support.
+5. **Surface the `engine` field in the browser**, so a guest can tell a mock
+   provider from a real one.
+6. **Decide what to do about unbilled visibility**: 3,745 tokens for 128
+   characters of output is defensible and will not feel defensible.
+7. **Separate `HOUSE_PK` into faucet and cloud-kitchen keys.** Connecting a
+   guest wallet fixed one half of the closed loop; the house still pays and
+   receives on the cloud-kitchen side.
+8. Carried forward, unchanged: the gas comment in `web/api/p/_lib.js`, node
+   distribution and `src/discovery.ts`, `web/api/topup.js` before mainnet.
+
+---
+
 # Session snapshot, 2026-08-27
 
 > Newest first. Earlier snapshots follow below, unchanged.
