@@ -480,6 +480,18 @@ function readBody(req: http.IncomingMessage, res: http.ServerResponse): Promise<
 }
 
 function gate(res: http.ServerResponse, prompt: string, resumeText = ''): boolean {
+  // Checked before pressure, because this one is not a wait-and-retry: no
+  // amount of patience refills the wallet, and accepting the job would mean
+  // producing tokens that can never be settled.
+  if (brokeForGas()) {
+    res.statusCode = 503;
+    res.setHeader('retry-after', '300');
+    res.end(JSON.stringify({
+      error: 'provider out of gas', balanceWei: String(providerBalance ?? 0n),
+      needWei: String(gasFloorWei()), settles: MIN_GAS_SETTLES,
+    }));
+    return false;
+  }
   if (pressure() > THRESHOLDS.hard) {
     res.statusCode = 503;
     res.setHeader('retry-after', '15');
@@ -505,6 +517,43 @@ function gate(res: http.ServerResponse, prompt: string, resumeText = ''): boolea
   inFlight++;
   return true;
 }
+
+/**
+ * Gas floor. Below this the node stops accepting work.
+ *
+ * Found by running out. The provider wallet reached 0.0007 MON mid-test and
+ * every settle reverted with "Signer had insufficient balance", while the node
+ * carried on serving: one plan run produced 5,907 billed tokens and settled
+ * none of them. The guest got the work free, the operator paid the electricity,
+ * and /health went on advertising `accepting: true` throughout.
+ *
+ * A node that cannot pay to be paid is not open for business, and saying so is
+ * the difference between a node that is down and a node that is quietly
+ * working for nothing. Sized at about ten settles at the last observed gas
+ * price, so the floor moves with the base fee rather than being a constant
+ * that stops meaning anything during a spike.
+ */
+const MIN_GAS_SETTLES = Number(process.env.MIN_GAS_SETTLES ?? 10);
+let providerBalance: bigint | null = null;
+const gasFloorWei = () => settleGasUnits * gasPriceWei * BigInt(MIN_GAS_SETTLES);
+/** null while the first balance read is still outstanding, so a node does not
+ *  refuse work on startup merely because it has not looked yet. */
+const brokeForGas = () => providerBalance !== null && providerBalance < gasFloorWei();
+const refreshProviderBalance = async () => {
+  try {
+    const b = await pub.getBalance({ address: me });
+    const wasBroke = brokeForGas();
+    providerBalance = b;
+    if (brokeForGas() && !wasBroke) {
+      console.log(`GAS: balance ${formatEther(b)} MON is under ${formatEther(gasFloorWei())} `
+        + `(${MIN_GAS_SETTLES} settles). Refusing new work until it is topped up.`);
+    } else if (!brokeForGas() && wasBroke) {
+      console.log(`GAS: balance ${formatEther(b)} MON, accepting work again`);
+    }
+  } catch { /* a read failure is not evidence of being broke */ }
+};
+refreshProviderBalance();
+setInterval(refreshProviderBalance, 30000).unref?.();
 
 // Registration needs gas. Setup funds the wallet from the faucet, but the
 // faucet returns before the transfer confirms, so a node started immediately
@@ -678,7 +727,17 @@ http.createServer(async (req, res) => {
       priority: PRIORITY, pressure: Number(pressure().toFixed(2)),
       // null until the startup measurement lands, a few seconds in.
       firstTokenMs, gpuFraction, hardware: describeHardware(HW),
-      accepting: pressure() <= THRESHOLDS.hard && active.size < MAX_CONCURRENT,
+      accepting: !brokeForGas() && pressure() <= THRESHOLDS.hard && active.size < MAX_CONCURRENT,
+      // Published rather than implied. A node that cannot settle looks exactly
+      // like a working node from the outside, which is how one served 5,907
+      // tokens for free.
+      gas: {
+        balanceWei: String(providerBalance ?? 0n),
+        floorWei: String(gasFloorWei()),
+        settlesCovered: providerBalance === null ? null
+          : Number(providerBalance / (settleGasUnits * gasPriceWei)),
+        ok: !brokeForGas(),
+      },
     }));
   }
 
