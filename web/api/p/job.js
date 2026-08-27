@@ -29,9 +29,21 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method === 'OPTIONS') { res.status(204); return res.end(); }
 
+  // Vercel's Node runtime parses a JSON body into an OBJECT before the handler
+  // sees it, and leaves other content types as a string. This used to call
+  // JSON.parse unconditionally, so `JSON.parse({...})` stringified the object
+  // to "[object Object]" and threw, and every request sent as
+  // application/json was answered with 400 "bad body".
+  //
+  // That is what the browser sends. The hosted kitchen has therefore rejected
+  // every failover the web app ever attempted, which is why mid-answer
+  // migration could not be reproduced from a browser: not because the resume
+  // path was missing, but because nothing ever reached it.
   let jobId, prompt, resume;
-  try { ({ jobId, prompt, resume } = JSON.parse(req.body || '{}')); }
-  catch { res.status(400); return res.end('bad body'); }
+  try {
+    const parsed = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body ?? {});
+    ({ jobId, prompt, resume } = parsed);
+  } catch { res.status(400); return res.end('bad body'); }
   if (!/^\d+$/.test(String(jobId))) { res.status(400); return res.end('bad jobId'); }
 
   // A resume is only honoured if the claimed prefix hashes to the checkpoint
