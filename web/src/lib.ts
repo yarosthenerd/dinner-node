@@ -26,14 +26,21 @@ export const ABI = parseAbi([
 ]);
 export const pub = createPublicClient({ chain: monadTestnet, transport: http() });
 
+// The burner. It is the fallback identity, not the only one: lib/wallet.ts
+// prefers the guest's own injected wallet when one is connected and falls back
+// to this key when none is. Nothing here changed except the names, which now
+// say which of the two an import is asking for.
 let _pk: `0x${string}`;
 try { _pk = (localStorage.getItem('dn_pk') as `0x${string}` | null) ?? generatePrivateKey(); localStorage.setItem('dn_pk', _pk); }
 catch { _pk = generatePrivateKey(); } // private mode: ephemeral only
-export const guestAddress = privateKeyToAccount(_pk).address;
-export const guestWallet = createWalletClient({ account: privateKeyToAccount(_pk), chain: monadTestnet, transport: http() });
-export const faucet = async () => {
+export const burnerAddress = privateKeyToAccount(_pk).address;
+export const burnerWallet = createWalletClient({ account: privateKeyToAccount(_pk), chain: monadTestnet, transport: http() });
+// Takes the address rather than reading the burner's, because with a wallet
+// connected the address that needs funding is the guest's own. The endpoint
+// decides whether to grant; see the threat model in web/api/topup.js.
+export const faucet = async (address: `0x${string}`) => {
   try {
-    const r = await fetch(`/api/topup?address=${guestAddress}`);
+    const r = await fetch(`/api/topup?address=${address}`);
     // A 200 is not necessarily a grant. The endpoint returns
     // {ok:false, reason:'already funded'} with a 200, and treating that as
     // success would tell a caller funds are coming when none are.
@@ -45,7 +52,7 @@ export const faucet = async () => {
   } catch {}
   return fetch('https://agents.devnads.com/v1/faucet', {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ chainId: 10143, address: guestAddress }),
+    body: JSON.stringify({ chainId: 10143, address }),
   }).then(r => r.ok);
 };
 export const fmt = (w: bigint) => {

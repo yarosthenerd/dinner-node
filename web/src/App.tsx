@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { formatEther, keccak256, parseEther, parseEventLogs, toHex } from 'viem';
-import { ABI, ADDR, EXPLORER, pub, guestWallet, guestAddress, faucet, fmt } from './lib';
+import { ABI, ADDR, EXPLORER, pub, faucet, fmt } from './lib';
+import { useWallet, connect, disconnect, switchChain } from './lib/wallet';
 import { DISCOVERY, KNOWN_PROVIDERS } from './config';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -72,6 +73,14 @@ function artifactsOf(text: string) {
 }
 
 export default function App() {
+  // The guest's wallet: their own if they connected one, otherwise the burner
+  // key in lib.ts. Destructured under the old names so every call site below
+  // reads the same as it did when there was only ever a burner. Each render
+  // captures the wallet that was current when it ran, which is what an order
+  // already in flight should keep using if the guest switches account
+  // mid-answer.
+  const wallet = useWallet();
+  const { address: guestAddress, client: guestWallet } = wallet;
   const [providers, setProviders] = useState<any[]>([]);
   const [feed, setFeed] = useState<any[]>([]);
   const [total, setTotal] = useState(0n);
@@ -206,12 +215,18 @@ export default function App() {
         // TOPUP_RECIPIENT_MAX (0.5), or the app asks for a top-up the faucet
         // always refuses and loops. 0.1 satisfies both with a 5x margin, and a
         // single 0.25 grant always clears it.
-        if (bb < TOPUP_TRIGGER && !sessionStorage.getItem('dn_topped')) {
+        // Burner only. With the guest's own wallet connected, the house has
+        // no business pushing MON at an address it does not control: the
+        // faucet exists to make the burner demo openable, not to subsidise
+        // arbitrary wallets, and an automatic grant to a connected address is
+        // also the thing that makes every usage figure house-to-house flow.
+        // The manual button stays available in both modes.
+        if (wallet.mode === 'burner' && bb < TOPUP_TRIGGER && !sessionStorage.getItem('dn_topped')) {
           // Flag set only on success. Set before the await, one 429 from the
           // shared per-IP cooldown permanently disabled the auto-path for the
           // tab, which is the likeliest failure in a demo room behind one NAT.
           try {
-            await faucet();
+            await faucet(guestAddress);
             sessionStorage.setItem('dn_topped', '1');
           } catch (e) { console.error('auto top-up failed', e); }
         }
@@ -263,7 +278,10 @@ export default function App() {
     startWatch();
     const iv = setInterval(load, 30000);
     return () => { clearTimeout(timer); clearInterval(iv); try { un?.(); } catch {} };
-  }, []);
+    // Re-runs when the guest connects, disconnects or switches account, or the
+    // header would keep showing the previous address's balance and the funding
+    // check would keep testing the wrong wallet.
+  }, [guestAddress, wallet.mode]);
 
   // Ask the selected host what it will accept, so the token counter reflects
   // that host's real context window rather than a guess.
@@ -372,10 +390,21 @@ export default function App() {
     // it has to survive the break and drive cleanup below.
     let warned = '';
     try {
+      if (!wallet.chainOk) {
+        setNote('your wallet is on the wrong network. switch it to Monad testnet and order again.');
+        return; // the finally below clears busy and releases anything open
+      }
       let b = await pub.getBalance({ address: guestAddress }).catch(() => 0n);
       if (b < TOPUP_TRIGGER) {
+        if (wallet.mode === 'injected') {
+          // A connected wallet is the guest's own money, so this stops and
+          // says so rather than quietly asking the house to fund it. The
+          // faucet button in the header is still there if they want to try it.
+          setNote(`this wallet holds ${fmt(b)} MON and one order needs about ${formatEther(TOPUP_TRIGGER)}. top it up, or disconnect to use the burner.`);
+          return; // the finally below clears busy
+        }
         setNote('guest is broke, hitting the faucet…');
-        try { await faucet(); } catch (e) { console.error('faucet failed', e); }
+        try { await faucet(guestAddress); } catch (e) { console.error('faucet failed', e); }
         for (let i = 0; i < 10; i++) {
           await new Promise(r => setTimeout(r, 2000));
           b = await pub.getBalance({ address: guestAddress }).catch(() => 0n);
@@ -685,9 +714,39 @@ export default function App() {
         <p className="tag">idle compute, settling every second</p>
         <span className="addr">
           contract <a href={`${EXPLORER}/address/${ADDR}`} target="_blank" rel="noreferrer">{short(ADDR)}</a>
-          {' '}· guest {short(guestAddress)} · {fmt(bal)} MON
-          <button onClick={async () => { try { await faucet(); } catch {} reloadRef.current(); }}>faucet</button>
+          {' '}· {wallet.mode === 'injected' ? wallet.label : 'burner'}{' '}
+          <a href={`${EXPLORER}/address/${guestAddress}`} target="_blank" rel="noreferrer">{short(guestAddress)}</a>
+          {' '}· {fmt(bal)} MON
+          {wallet.mode === 'injected'
+            ? <button onClick={() => disconnect()}>disconnect</button>
+            : wallet.wallets.length > 1
+              // With two extensions installed, connecting to "the wallet"
+              // means connecting to whichever one won a race. EIP-6963 is what
+              // makes them distinguishable, so having discovered them the page
+              // should let the guest say which.
+              ? wallet.wallets.map(w => (
+                  <button key={w.rdns} disabled={wallet.connecting} onClick={() => void connect(w.rdns)}>
+                    connect {w.name}
+                  </button>
+                ))
+              : <button disabled={wallet.connecting} onClick={() => void connect()}>
+                  {wallet.connecting ? 'connecting…' : 'connect wallet'}
+                </button>}
+          <button onClick={async () => { try { await faucet(guestAddress); } catch {} reloadRef.current(); }}>faucet</button>
         </span>
+        {wallet.mode === 'injected' && !wallet.chainOk && (
+          <span className="addr">
+            this wallet is not on Monad testnet, so it cannot open a job.
+            <button onClick={() => void switchChain()}>switch network</button>
+          </span>
+        )}
+        {wallet.error && <span className="addr">{wallet.error}</span>}
+        {wallet.mode === 'burner' && (
+          <span className="addr dim">
+            you are spending a burner key this page generated and the house funded.
+            connect a wallet to pay the provider with testnet MON of your own.
+          </span>
+        )}
         <span className="addr">
           <a href="/hosting.html">run a node</a> · <a href="/terms.html">terms</a> · <a href="/acceptable-use.html">acceptable use</a> · testnet only, MON here has no monetary value
         </span>

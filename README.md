@@ -51,7 +51,8 @@ because it is never stored at all: it is generated, used to build the hash, and 
 
 | Key | Store | Holds | Cleared |
 |---|---|---|---|
-| `dn_pk` | `localStorage` | the generated guest wallet private key | never, until you clear site data |
+| `dn_pk` | `localStorage` | the generated guest wallet private key, used when no wallet is connected | never, until you clear site data |
+| `dn_wallet_rdns` | `localStorage` | which browser wallet you last connected, so the page can reconnect without asking | on disconnect, or when you clear site data |
 | `dn_sessions` | `localStorage` | your session history: the **sanitized** prompt, the answer, job id and cost | never, until you clear site data |
 | `dn_topped` | `sessionStorage` | a flag recording that the faucet was already called for this tab | on tab close |
 | `dn_engram_*`, `dn_job_binding`, `dn_session_nonce` | `sessionStorage` | any behaviour engrams and their job binding | on job close, tab close, and on a 30 minute TTL |
