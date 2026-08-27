@@ -66,6 +66,23 @@ export const CATALOG: Candidate[] = [
     note: 'general purpose, wants 12 GB to hold a full context' },
   { tag: 'qwen3:14b', weightsMB: 8850, kvPerTokenB: 163840, maxCtx: 40960,
     note: 'noticeably better answers, needs 16 GB' },
+  // The top of the catalog. Without it a 32 GB card was told to serve a 14B,
+  // which is a third of what it can hold. Measured 2026-08-27 from the local
+  // registry manifest and the GGUF metadata header, the same way every row
+  // above it was.
+  //
+  // Read the budget before reading the requirement: probeHardware allots 90%
+  // of VRAM, so this needs 23,485 MiB at 16k context and a 24 GB card offers
+  // 22,118. It is a 32 GB entry, not a 24 GB one, and the weights alone are
+  // 21,573 MiB.
+  //
+  // Mixture of experts, which is what makes it the right top entry rather than
+  // a dense model of similar size. Its KV cache is 83,968 B/token against the
+  // dense 27B's 266,240, so on a 32 GB card it reaches 132k of context where
+  // the dense model stops at 59k, and it activates 3B parameters per token, so
+  // it answers at small-model speed while giving large-model answers.
+  { tag: 'qwen3.6:35b-a3b', weightsMB: 21573, kvPerTokenB: 83968, maxCtx: 262144,
+    note: 'MoE, 35B stored and 3B active: big-model answers at small-model speed, wants 32 GB' },
 ];
 
 export type Fit = {

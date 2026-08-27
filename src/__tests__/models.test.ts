@@ -43,6 +43,25 @@ describe('recommend', () => {
     expect(recommend(hw(16384), 32768).pick.tag).toBe('qwen3:14b');
   });
 
+  it('uses a 32 GB card rather than capping at 14B', () => {
+    // Budgets here are what probeHardware would report, which is 90% of VRAM
+    // on a discrete card, not the card's nameplate size.
+    expect(recommend(hw(Math.floor(32768 * 0.9)), 16384).pick.tag).toBe('qwen3.6:35b-a3b');
+  });
+
+  it('leaves a 24 GB card on 14B, because the MoE does not fit it', () => {
+    // 21,573 MiB of weights against a 22,118 MiB budget. Recording this as a
+    // test rather than a comment because it is the kind of thing a later
+    // catalog entry could silently break.
+    expect(recommend(hw(Math.floor(24576 * 0.9)), 16384).pick.tag).toBe('qwen3:14b');
+  });
+
+  it('still picks 14B on a 16 GB card', () => {
+    // Guard on the row above: adding a bigger entry must not drag a smaller
+    // card up to a model it cannot hold.
+    expect(recommend(hw(Math.floor(16384 * 0.9)), 16384).pick.tag).toBe('qwen3:14b');
+  });
+
   it('falls back to the smallest when nothing fits', () => {
     const r = recommend(hw(2048), 32768);
     expect(r.pick.tag).toBe(CATALOG[0].tag);
