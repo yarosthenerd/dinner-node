@@ -133,14 +133,44 @@ const PII_PATTERNS: PiiPattern[] = [
     pattern: /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g,
     replacement: '[IP_ADDRESS]' },
 
+  // A phone announced by a cue. This is the only rule that redacts an
+  // undelimited digit run below `maximal`, because the cue is what makes it a
+  // phone rather than a quantity. Shares priority 12 with id_number and
+  // address on the same reasoning: all three require a cue, and the three cue
+  // vocabularies are disjoint, so they cannot claim the same text.
+  { type: 'phone', priority: 12, minLevel: 'minimal',
+    pattern: /\b(?:call|text|ring|phone|mobile|cell|tel|telephone|whatsapp|viber|reach\s+me)\b(?:\s+(?:me|him|her|them|us))?(?:\s+(?:on|at|is|number|no\.?|:))*\s*(\+?\d[\d\s().-]*\d)/gi,
+    replacement: '[PHONE]',
+    guard: (m) => digitCount(m) >= 9,
+    replacer: (m, value: string) => m.slice(0, m.length - value.length) + '[PHONE]' },
+
+  // A phone recognised by its shape. Measured 2026-08-27: the previous version
+  // of this rule had no shape requirement, so any run of nine or more digits
+  // was a phone at every strictness including `minimal`. Eleven of twelve
+  // ordinary prompts carrying a long number were corrupted by it, including
+  // "solve this equation 79145443824 + 89542488129", and the guest paid for an
+  // answer about placeholders. A written phone number carries a country prefix
+  // or separators; a quantity does not, so shape is the discriminator that
+  // costs the least.
+  //
+  // What this gives up: a bare undelimited number typed with no cue and no
+  // prefix is no longer a phone below `maximal`. That is the deliberate
+  // trade, and `maximal` still catches it.
   { type: 'phone', priority: 10, minLevel: 'minimal',
     pattern: /\+?\d[\d\s().-]{7,}\d/g,
     replacement: '[PHONE]',
-    // The guard, not the regex, is the binding constraint: nine is the
-    // shortest real dialable number in the plans we care about, and it keeps
-    // "2020 - 2024" (eight digits) from being redacted as a phone. There is
-    // deliberately no upper bound. A 15 digit ceiling meant any longer digit
+    // Nine is the shortest real dialable number in the plans we care about,
+    // and it keeps "2020 - 2024" (eight digits) from being redacted. There is
+    // deliberately no upper bound: a 15 digit ceiling meant any longer digit
     // run was left completely untouched, which is the wrong way to fail.
+    guard: (m) => digitCount(m) >= 9 && (m.startsWith('+') || /[\s().-]/.test(m.slice(1, -1))) },
+
+  // The old unconditional behaviour, kept where a guest has asked for
+  // everything to go. At `maximal` a redacted quantity is the expected cost of
+  // the setting rather than a surprise.
+  { type: 'phone', priority: 3, minLevel: 'maximal',
+    pattern: /\+?\d[\d\s().-]{7,}\d/g,
+    replacement: '[PHONE]',
     guard: (m) => digitCount(m) >= 9 },
 
   // The cue is literal-cased rather than /i, because /i made the [A-Z][a-z]+

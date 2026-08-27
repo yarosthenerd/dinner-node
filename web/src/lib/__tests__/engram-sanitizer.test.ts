@@ -192,12 +192,50 @@ describe('credit_card priority, not just the phone guard', () => {
 });
 
 describe('phone guard bounds', () => {
+  // The digit-count guard is unchanged: nine is the floor and there is no
+  // ceiling. What changed is that a bare run also has to look like a phone or
+  // be announced as one below `maximal`, so these two assert the bounds at
+  // `maximal`, where a bare run is still a phone.
   it('redacts a 9-digit number (the regex previously required ten)', () => {
-    expect(sanitizePrompt('num 555555555 end', { strictness: 'minimal' }).sanitized)
+    expect(sanitizePrompt('num 555 555 555 end', { strictness: 'minimal' }).sanitized)
       .toBe('num [PHONE] end');
   });
   it('does not leave very long digit runs untouched', () => {
-    expect(sanitizePrompt('num 55555555555555555 end', { strictness: 'minimal' }).sanitized)
+    expect(sanitizePrompt('num 55555555555555555 end', { strictness: 'maximal' }).sanitized)
+      .toContain('[PHONE]');
+  });
+  it('eight digits is still below the floor', () => {
+    expect(sanitizePrompt('num 5555 5555 end', { strictness: 'maximal' }).sanitized)
+      .not.toContain('[PHONE]');
+  });
+});
+
+describe('phone shape and cue', () => {
+  // Measured 2026-08-27: with no shape requirement, eleven of twelve ordinary
+  // prompts carrying a long number were corrupted at every strictness, and
+  // the guest paid for an answer about placeholders.
+  it('an arithmetic prompt survives at balanced', () => {
+    expect(sanitizePrompt('solve this equation 79145443824 + 89542488129', { strictness: 'balanced' }).sanitized)
+      .toBe('solve this equation 79145443824 + 89542488129');
+  });
+  it('a quantity is not a phone at balanced', () => {
+    expect(sanitizePrompt('convert 1234567890123 wei to ether', { strictness: 'balanced' }).sanitized)
+      .not.toContain('[PHONE]');
+  });
+  it('a country prefix is phone shape', () => {
+    expect(sanitizePrompt('+381641234567 is the office line', { strictness: 'minimal' }).sanitized)
+      .toContain('[PHONE]');
+  });
+  it('separators are phone shape', () => {
+    expect(sanitizePrompt('my number is 064 123 4567, text me', { strictness: 'minimal' }).sanitized)
+      .toContain('[PHONE]');
+  });
+  it('a cue redacts a bare number and keeps the sentence', () => {
+    expect(sanitizePrompt('phone 79145443824 when you land', { strictness: 'minimal' }).sanitized)
+      .toBe('phone [PHONE] when you land');
+  });
+  it('a bare uncued number is still caught at maximal', () => {
+    expect(sanitizePrompt('what is 12345678901 divided by 7', { strictness: 'maximal' }).sanitized)
       .toContain('[PHONE]');
   });
 });
