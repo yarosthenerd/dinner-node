@@ -407,6 +407,75 @@ human has run it.
 To try it: `cd web && npm run dev`, pick a host that advertises plans, and
 switch to "plan a job".
 
+### Task order, set 2026-08-27 evening
+
+The operator's order, so a clean session can pick it up without re-deciding.
+Items 1 to 3 are done. Item 4 is a deliberate pause. Item 5 is the work.
+
+1. ~~**The ZK contract.**~~ Done. `DinnerZK.sol` deleted from the repo. The
+   deployed instance at `0x1D6f...c8A0` has no owner and no selfdestruct, so it
+   cannot be removed and stays abandoned. README rewritten: it advertised the
+   retired contract as the ratings feature and now describes `DinnerRatings` at
+   `0xeb0d...d87f`, including the two limits that are real (`join` links the
+   wallet to its commitment, and the group has zero members).
+2. ~~**Check the public faucet.**~~ Done, and it **works**. A POST to
+   `agents.devnads.com/v1/faucet` for a fresh address returned 1 MON with a
+   real transaction hash. Disabling our own faucet did not kill the burner
+   path: a visitor with no MON is still funded by the public one and the site
+   remains openable by a stranger. This corrects the concern in the review
+   above.
+3. ~~**Delete the cloud kitchen.**~~ Done, see below.
+4. **Step away from node 2 and the migration video.** Both work; neither is the
+   priority now. Node 2 keeps running under systemd and migration stays proven
+   by `scripts/migrate-e2e.mjs`.
+5. **The seven defects gating a V2 deploy.** The work queue, from `TODO.md` P1:
+
+   1. Clamp `settle` to `checkpoints[jobId].tokens - j.tokens`. One fix bounds
+      loss to one settlement for the first time and stops a replacement
+      provider being paid twice for the same prefix.
+   2. `reassign` lets the requester strand the outgoing provider's unpaid work,
+      free and repeatably. The mirror of the defect V2 exists to fix.
+   3. `reassign` raises `maxTokensPerSecond` without a clamp.
+   4. Checkpoint regression guard uses `>=`, permitting same-height hash
+      rewrites. No hash chaining on chain.
+   5. Reputation counters accumulate unclamped, and discovery sorts on
+      `tokensServed`.
+   6. `topUp(jobId)` cannot rescue an exhausted job, because `settle`
+      auto-closes in the same transaction.
+   7. Centralise `jobs()` and `providers()` decoding. V2 moves `open` from
+      index 5 to 9 and `active` from 6 to 7, and a non-zero rate at the old
+      index reads as truthy, so every liveness check would silently pass.
+      Adding `getJob(uint256) returns (Job memory)` makes index drift
+      structurally impossible and is the better fix while V2 is being edited.
+
+   `commitPlan` was added to V2 this session and none of these were closed, so
+   V2 currently carries one new feature on top of seven known defects.
+
+### The cloud kitchen is deleted
+
+`web/api/p/` is gone: `job.js`, `health.js` and `_lib.js`.
+
+It settled real MON for a fixed pre-written passage, which was the one thing on
+this site that took payment for nothing, and a network whose premise is idle
+consumer GPUs falling back to a serverless function undermined its own pitch.
+Wiring it to a real inference API was the alternative and would have turned it
+into an unauthenticated endpoint converting the operator's API credit into
+strangers' answers, with no rate limit and no spend cap.
+
+What deleting it costs, stated rather than glossed: **the browser has no
+failover target.** `targets` in `App.tsx` is one entry now. An order against a
+node that dies fails and returns its escrow instead of being answered with
+canned text. Restoring failover is a matter of putting a peer URL in that
+array, which is exactly what discovery exists to provide, so it is blocked on
+the same public-URL decision as everything else.
+
+Two live claims came down with it. `terms.html` section 4 was a disclosure that
+the hosted endpoint returns a demo passage; it now says every answer comes from
+a real model and that a failed node fails the order. Section 2.7 said the
+sanitized prompt is sent to our serverless endpoint on failover; no such path
+exists now. The README's "Demo:" paragraph is replaced by what was removed and
+what it cost.
+
 ### commitPlan, and what it can honestly enforce
 
 `DinnerNodeV2.commitPlan(jobId, planHash, version, ceiling)` plus enforcement
