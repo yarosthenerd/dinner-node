@@ -1,3 +1,218 @@
+# Session snapshot, 2026-08-27
+
+> Newest first. Earlier snapshots follow below, unchanged.
+> `TODO.md` remains the roadmap; this is the build and defect state.
+
+## 1. Headline
+
+Three defects found, all by looking at something running rather than by
+reading code, and two of them had been live and invisible:
+
+- **The node served canned text for 32 minutes** while `/health` advertised
+  the real model. A boot race, not a code path anyone chose. See section 2.
+- **The prompt sanitizer corrupted 11 of 12 ordinary prompts** carrying a long
+  number, at every strictness including `minimal`. Measured, not estimated.
+  See section 3.
+- **Every turn of a real conversation clears its own gas**, which contradicts
+  the assumption that short chat turns are a losing shape. Reasoning is billed
+  and this model reasons before it answers, so the shortest measured turn
+  billed 872 tokens against a 481 token break-even. See section 4.
+
+Two features shipped on the back of that: session jobs, and anonymous ratings
+that are actually verified on chain. Neither is deployed.
+
+## 2. The node was serving mock
+
+`pickEngine` in `src/host.ts` probed ollama once at startup and swallowed the
+connection error. systemd starts `dinnernode.service` at 08:32:35 and
+`ollama.service` at 08:32:40, so the probe lost that race and the daemon ran
+the mock engine for the rest of its life.
+
+Nothing surfaced it. The mock branch reuses `process.env.MODEL`, so `/health`
+kept reporting `qwen3.6:35b-a3b`, and the only tell was `"engine":"mock"` in a
+field nothing in the browser reads. A guest who ordered in that window
+received the canned passage and paid a real settlement for it.
+
+A user systemd unit cannot order itself after a system unit, so this has to be
+solved in the process. The probe now retries for 30 seconds, and with no
+engine and no explicit `ENGINE=mock` the daemon exits non-zero rather than
+falling back. With the existing `Restart=always` that turns a boot race into a
+retry loop that resolves itself.
+
+**Still open:** the browser ignores the `engine` field, so a guest cannot tell
+a mock provider from a real one. The daemon can no longer enter that state,
+but another operator's node could.
+
+## 3. A long number is not a phone number
+
+Found from a screenshot: `solve this equation 79145443824 + 89542488129`
+reached the model as `[PHONE] + [PHONE]`, and the guest paid in full for an
+answer about placeholders.
+
+The phone rule matched any run of nine or more digits with no shape
+requirement, from `minimal` up, so no setting a guest could choose avoided it.
+Measured over twelve prompts that carry a long number and no personal data:
+
+| | before | after |
+|---|---|---|
+| false positives at `balanced` | 11/12 | **1/12** |
+| true positives | 6/6 | **10/10** |
+| bare uncued phone at `balanced` | caught | not caught, deliberate |
+
+Split into three rules: a cue ("call me on ...") redacts a bare number from
+`minimal` up, shape (country prefix or internal separators) does the same for
+a number written the way phone numbers are written, and the old unconditional
+match survives at `maximal` only. The one remaining false positive is the
+documented Luhn coincidence in the card rule, not this one.
+
+The two `phone guard bounds` tests asserted the old contract and now assert
+the same nine digit floor and absent ceiling at `maximal`. Seven tests added.
+
+## 4. Session jobs
+
+Measured over a real ten turn conversation on this node, 19,604 billed tokens
+in 322 s wall clock, with `openJob` estimated against live chain state at
+**143,259 gas** and settle and closeJob read from job#49 receipts.
+
+| | one job per turn | one job per session |
+|---|---|---|
+| openJob | 10x | 1x |
+| settle | 13x | 7x |
+| closeJob | 10x | 1x |
+| guest pays | 0.803 MON | **0.672 MON** |
+| gas as share of guest spend | 18.2% | **2.2%** |
+| provider net after power | $0.0115 | **$0.0149** |
+| net per node-month at 100% | $75 | **$85** |
+
+73% less gas overall. The node keeps a job carrying `session: true` open after
+settling and closes it after `SESSION_IDLE_MS` of quiet, refreshed per turn.
+V1 has no expiry, so without that timer a closed tab would strand escrow
+indefinitely, and the provider is the right party to hold it because the
+provider already pays `closeJob`.
+
+The browser decides reuse only from chain state. Three parties can close a job
+between turns without telling it: the provider's idle timer, the cloud
+kitchen, which closes every job it serves, and `settle()` on escrow
+exhaustion. A job is reused only when the chain says open, same guest, same
+provider, and at least 0.20 MON of headroom.
+
+**The fear that drove this was wrong.** Break-even is 481 billed tokens and
+the concern was that chat turns fall under it. Measured, the shortest turn,
+"give me a title for it", returned 50 visible characters and billed 872
+tokens. Every one of the ten turns cleared its own gas. The floor is real for
+a model that does not reason.
+
+**The finding that should worry us instead:** thinking is **88% of all text
+produced**. Turn 8, "translate the title to Serbian", returned 128 visible
+characters and billed 3,745 tokens. In a one-shot job that is invisible. In a
+chat, where the guest sends ten small things and watches a meter, being
+charged 3,745 tokens for a one-line translation will read as theft even though
+it is the market convention and we disclose it. A per-turn reasoning cap, a
+cheaper model for short turns, or a meter that shows the split are the three
+candidate answers. None is built.
+
+**Escrow 0.30 -> 1.00 MON**, about 29,800 tokens, which carried the whole
+measured conversation without a top-up. That broke the faucet invariant, so
+all three constants were re-derived around a full order costing 1.06 MON:
+`TOPUP_AMOUNT` 0.5 -> 1.2, `TOPUP_TRIGGER` 0.4 -> 1.2, `TOPUP_RECIPIENT_MAX`
+1.0 -> 2.5. Each guest is now 2.4x more expensive to seed.
+
+**Known consequence, unresolved:** `promptTag` is computed at `openJob`, so
+the chain commits to the opening prompt of a session and not to later turns.
+V1 has no way to add a commitment to an open job. `terms.html` still describes
+a per-prompt commitment and has not been corrected.
+
+## 5. ZK: the old contract was worse than unused
+
+`DinnerZK.sol` is deployed at `0x1D6f...c8A0` and nothing has ever called it,
+which was the lesser problem. Its `rate()` took a `proofHash` and trusted it,
+with the contract's own comment saying proofs are "generated & verified in the
+guest's browser". Browser-side verification proves nothing to anyone else, so
+any address could record any rating under any nullifier. `join()` was equally
+open, so "paid-guest ratings" was never enforced. Wiring a UI to it would have
+produced a ZK-shaped ritual with no ZK property.
+
+`contracts/src/DinnerRatings.sol` replaces it:
+
+- Proofs verified on chain by Semaphore v4.14.3, matching the npm packages
+  already in `web/package.json`. Nullifiers tracked by Semaphore.
+- `join(jobId, commitment)` requires a closed job, belonging to the caller,
+  with `paid > 0`, and burns that jobId.
+- Rating travels as the proof `message` and provider as the `scope`, so a
+  relayer can neither downgrade a rating nor move it to another provider.
+- `allCommitments()` keeps the group readable as state, because the Monad
+  testnet RPC caps `eth_getLogs` at a 100 block range and a client cannot
+  otherwise rebuild the group to prove membership in it.
+
+Eleven tests, including one that spends 570k gas running the real verifier on
+invented Groth16 points and confirms the rating is not recorded.
+
+Two limits are in the contract header rather than left implied: `join` is sent
+by the guest's own wallet, so the chain links that wallet to its commitment
+and anonymity comes only from group size; and `rate` is deliberately
+relayable, which moves trust to the relayer rather than removing it.
+
+Browser side: `web/src/lib/ratings.ts` and a `ProviderRating` widget, lazy
+loaded so Semaphore's 447 kB proving stack is its own chunk and first paint
+stays at 589 kB. The widget scans stored history for an eligible closed job,
+because a session job stays open until it goes idle, and says plainly that a
+group under three members hides nobody.
+
+The vendored Semaphore clone is trimmed from 24M to 240K, keeping
+`packages/contracts` and the LICENSE. Solidity dependencies live in
+`contracts/package.json` rather than the root, where npm had put them by
+walking up.
+
+**Honest claim once deployed:** "ZK-verified anonymous ratings". Not prompt
+privacy, and not anonymity while the group has a handful of members.
+
+## 6. Live state
+
+```
+node        qwen3.6:35b-a3b, engine ollama, warm in 11.1s, restarted 09:04:58
+contract    V1 0xaF2c...3A92, unchanged. V2 still a draft, still not deployed.
+jobs        jobCounter 69
+ratings     DinnerRatings written and tested, NOT deployed
+house       0xA91a...5CF4  1.6614 MON  -> zero faucet grants at the new amount
+provider    0x055a...326A  0.2769 MON  -> about 17 more settlements
+web         tsc, oxlint, vite build clean. 88 tests.
+root        tsc clean. 36 tests.
+contracts   11 tests, clean forge build.
+```
+
+Five commits: `75ae4d1` sanitizer, `578102f` engine probe, `c6cebc3` session
+jobs, `2625bc9` ratings, `b63515f` the controller contact address.
+
+Pitch material rebuilt and gitignored under the existing "ship product only"
+rule: `DinnerNode_deck.pdf` for sending and `DinnerNode_deck_diligence.pdf`
+for a partner who asks what is staged, with `make_deck.py` and
+`make_deck_diligence.py` as their sources.
+
+## 7. Open, in priority order
+
+1. **Deploy `DinnerRatings`.** `node scripts/deploy-ratings.mjs --send`, about
+   0.64 MON, mostly the 3,825,292 gas verifier. Then set
+   `VITE_RATINGS_ADDRESS`. Blocked only on being run.
+2. **Redeploy `web/`.** `vercel --prod --yes`. The live site still serves the
+   old contact address, the 0.30 escrow and the old phone rule.
+3. **Refill the house wallet.** At `TOPUP_AMOUNT` 1.2 and floor 0.5, grants
+   are `(balance - 0.5) / 1.2`. 1.66 MON is zero guests, 4 MON is two, 7 MON
+   is five. Refilling the provider wallet matters too, at about 17
+   settlements of headroom.
+4. **Correct `terms.html` on the prompt commitment**, which session jobs
+   narrowed from per prompt to per session opener. This is a live claim that
+   the code no longer supports.
+5. **Surface the `engine` field in the browser**, so a guest can tell a mock
+   provider from a real one.
+6. **Decide what to do about unbilled visibility**: 3,745 tokens for 128
+   characters of output is defensible and will not feel defensible.
+7. Carried forward, unchanged: correct the gas comment in
+   `web/api/p/_lib.js`, node distribution and `src/discovery.ts`, the cloud
+   kitchen still returning canned text, `HOUSE_PK` still being both faucet and
+   cloud-kitchen key, `web/api/topup.js` before mainnet.
+
+---
+
 # Session snapshot, 2026-08-26 (evening)
 
 > Newest first. Earlier snapshots follow below, unchanged.
