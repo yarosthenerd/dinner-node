@@ -40,7 +40,7 @@ Ordered. Everything here is ahead of every remaining defect in this file.
    its own frame and bills it as output; escrow and the three faucet constants
    were re-derived around that. See `SNAPSHOT.md` section 6b.
 2. ~~**Fill the three ToS placeholders.**~~ Done 2026-08-26. Operator is
-   Yaroslav Belkin, an individual; contact `jacksavvy3003@gmail.com`, abuse
+   Yaroslav Belkin, an individual; contact `yaros3920@gmail.com`, abuse
    `yaros3920@gmail.com`. No entity is named, because none is formed and GDPR
    Art 13(1)(a) wants the real controller. Swap all three for domain addresses
    when the domain lands.
