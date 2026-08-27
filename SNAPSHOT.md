@@ -263,9 +263,10 @@ executor and plan endpoints, `02c6bd7` id repair, `9002cba` ceiling failure,
 
 1. **Disable the faucet.** Section 7 has the command. Everything else here is
    cheaper than the money that leaves while it is enabled.
-2. **Finish the migration test.** `node scripts/migrate-e2e.mjs`. Leg one is
-   verified on chain; leg two needs `/api/p/job` to stop answering 400 at the
-   alias. Once it passes, this is the migration demo, recordable.
+2. ~~**Finish the migration test.**~~ Done 2026-08-27 evening, between the two
+   real nodes rather than through the cloud kitchen. See the migration section
+   above. What remains is **filming it**, which wants a second machine running
+   a model closer in size to the first.
 3. **The cloud kitchen still returns canned text.** No inference API key exists
    in any environment, so it cannot become a real second model without the
    operator obtaining one. The chain mechanics around it are real; the words
@@ -314,22 +315,11 @@ B can begin unattended; A and C cannot.
 
 ### B. Ready to start unattended, in order
 
-1. **Finish the migration test.** This is the differentiator and it is one
-   defect away from being recordable.
-
-   ```
-   node scripts/migrate-e2e.mjs
-   ```
-
-   Leg one is verified on chain: job#80 produced 128 tokens, published a
-   checkpoint, the prefix hashed to it, 0.0448061625 MON settled. Leg two
-   returns 400 from `/api/p/job` at the alias even after the body fix
-   deployed, and that is the thing to diagnose first. The likeliest causes,
-   in order: the alias still resolving to the previous deployment, or
-   `req.body` arriving as a Buffer rather than the object or string the fix
-   handles. Distinguish them by reading the 400's text, which the retry did
-   not capture: "bad body" is the parse, "bad jobId" is a Buffer falling
-   through to an undefined destructure.
+1. ~~**Finish the migration test.**~~ Done 2026-08-27 evening. It passed
+   between the two real nodes, so the cloud kitchen's 400 was never on the
+   critical path. Receipts are in the migration section above. The remaining
+   work is filming it, and that wants a second machine rather than a second
+   process.
 
 2. **Cap the fee on the two ratings writes.** `joinWithJob` and
    `rateProvider` in `web/src/lib/ratings.ts` pass a gas limit and no
@@ -416,6 +406,43 @@ human has run it.
 
 To try it: `cd web && npm run dev`, pick a host that advertises plans, and
 switch to "plan a job".
+
+### Mid-answer migration: PASSES, on chain, between two real nodes
+
+Done 2026-08-27 evening, and it closes the item this file has carried since
+2026-08-26 as the load-bearing one.
+
+**The cloud kitchen was never needed for it.** Once a second real node existed,
+migration ran between two real providers with real inference on both legs, and
+the `/api/p/job` 400 stopped being on the critical path.
+
+```
+MIGRATE_NODE=http://localhost:4173 \
+MIGRATE_CLOUD=http://localhost:4174 \
+node scripts/migrate-e2e.mjs --show
+```
+
+Receipts, 2026-08-27 evening:
+
+| job | provider | model | tokens | paid |
+|---|---|---|---|---|
+| #86 | `0x055a...326A` | qwen3.6:35b-a3b | 2,193 | 0.0732736125 MON |
+| #87 | `0x1978...94d3` | llama3.2:1b | 155 | 0.0010385 MON |
+
+Provider A was cut off at 128 visible tokens. Its published checkpoint hashed
+to the prefix, provider B verified that hash before writing a word, and B
+billed 155 tokens for its own suffix and nothing for the 128 it was handed.
+**Two providers, one answer, disjoint token ranges, both verifiable on chain.**
+
+Two honest notes for anyone filming this:
+
+- **The seam is grammatical but the quality drops.** A 1B model continuing a
+  35B's sentence produces a clean join and visibly weaker content: the captured
+  run invents "FPGs", "iSoC" and an ARM Cortex-A GPU architecture. The demo
+  proves the payment mechanism, not continuity of quality, and `--show` prints
+  both halves so nobody has to take that on trust. A second machine running a
+  model closer in size to the first would film better.
+- `--show` prints the joined answer with the handover marked.
 
 ### Two models, two providers, two prices
 
