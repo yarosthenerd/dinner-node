@@ -8,12 +8,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_MON_USD, MARKET_ID, PINNED,
-  breakEvenTokens, describeRate, fetchBand, pickTarget, resolveRate, usdPerMillion, weiPerMillion,
+  breakEvenTokens, cheaperThanCount, crossoverRatio, describeFreeInput, describeRate,
+  fetchBand, pickTarget, resolveRate, rivalEffective, usdPerMillion, weiPerMillion,
 } from '../pricing.js';
 
 const endpointsBody = (outs: number[]) => ({
   data: { endpoints: outs.map((o, i) => ({ provider_name: `p${i}`, pricing: { completion: String(o / 1e6), prompt: '0.0000001' } })) },
 });
+const DB = { name: 'Darkbloom', inUsd: 0.070, outUsd: 0.700 };
 const okFetch = (body: unknown) => vi.fn(async () => ({ ok: true, json: async () => body })) as unknown as typeof fetch;
 
 describe('weiPerMillion', () => {
@@ -155,5 +157,71 @@ describe('describeRate', () => {
     expect(s).toContain('below the median');
     expect(s).toContain('10 provider');
     expect(s).toContain('[pinned]');
+  });
+});
+
+
+// The comparison the output column hides. Every provider on this listing bills
+// input; settle() only ever counts tokens this node generated, so our input
+// price is zero and a bare output-to-output comparison flatters them.
+describe('free input', () => {
+  it('prices a rival at what the job actually costs, not at its output column', () => {
+    expect(rivalEffective(DB, 0)).toBeCloseTo(0.700);
+    // A prompt four times the length of the answer costs 4 x the input rate
+    // per output token on top.
+    expect(rivalEffective(DB, 4)).toBeCloseTo(0.980);
+    expect(rivalEffective(DB, 10)).toBeCloseTo(1.400);
+  });
+
+  it('says at what workload shape we become cheaper than the cheapest rival', () => {
+    // ($1.002 - $0.700) / $0.070 per input token.
+    expect(crossoverRatio(DB, 1.002)).toBeCloseTo(4.31, 1);
+  });
+
+  it('is zero against a rival we already undercut on output', () => {
+    expect(crossoverRatio({ name: 'x', inUsd: 0.2, outUsd: 1.6 }, 1.002)).toBe(0);
+  });
+
+  it('is never against a rival that is cheaper on output and free on input', () => {
+    expect(crossoverRatio({ name: 'free', inUsd: 0, outUsd: 0.5 }, 1.002)).toBe(Infinity);
+  });
+
+  it('counts more of the listing undercut as prompts get longer', () => {
+    const band = PINNED['qwen/qwen3.6-35b-a3b'];
+    const atZero = cheaperThanCount(band, 1.002, 0);
+    const atOne = cheaperThanCount(band, 1.002, 1);
+    const atFive = cheaperThanCount(band, 1.002, 5);
+    expect(atZero).toBeLessThan(atOne);
+    expect(atOne).toBeLessThan(atFive);
+    // At five to one we are the cheapest of the ten listed for this model.
+    expect(atFive).toBe(band.endpoints!.length);
+  });
+
+  it('keeps the input price when reading a live listing', async () => {
+    const b = await fetchBand('qwen/x', okFetch({ data: { endpoints: [
+      { provider_name: 'A', pricing: { completion: '0.0000007', prompt: '0.00000007' } },
+    ] } }));
+    expect(b!.endpoints![0]).toEqual({ name: 'A', inUsd: 0.07, outUsd: 0.7 });
+  });
+
+  it('treats a missing input price as free rather than as NaN', async () => {
+    const b = await fetchBand('qwen/x', okFetch({ data: { endpoints: [
+      { provider_name: 'A', pricing: { completion: '0.0000007' } },
+    ] } }));
+    expect(b!.endpoints![0].inUsd).toBe(0);
+  });
+
+  it('describes the advantage with the number that backs it', async () => {
+    const boom = vi.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch;
+    const r = await resolveRate({ model: 'qwen3.6:35b-a3b', policy: 'median', discount: 0.9, fetchImpl: boom });
+    const line = describeFreeInput(r)!;
+    expect(line).toContain('Darkbloom');
+    expect(line).toMatch(/once a prompt is 4\.\d x the answer|once a prompt is 4\.\d+x the answer/);
+  });
+
+  it('says nothing when the band carries no endpoint detail', async () => {
+    const boom = vi.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch;
+    const r = await resolveRate({ model: 'qwen3:8b', fetchImpl: boom });
+    expect(describeFreeInput(r)).toBeNull();
   });
 });

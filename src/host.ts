@@ -10,7 +10,7 @@ import { describeHardware, probeHardware } from './hardware';
 import { PLAN_LIMITS, planCostWei, planHash, validatePlan, type Plan } from './plan';
 import { describePlan, makePlan } from './planner';
 import { executePlan, type Dispatch } from './executor';
-import { DEFAULT_MON_USD, breakEvenTokens, describeRate, resolveRate, usdPerMillion, type Policy, type Resolved } from './pricing';
+import { DEFAULT_MON_USD, breakEvenTokens, cheaperThanCount, crossoverRatio, describeFreeInput, describeRate, resolveRate, usdPerMillion, type Policy, type Resolved } from './pricing';
 
 const w = wallet(process.env.PROVIDER_PK!);
 const me = w.account.address;
@@ -637,6 +637,25 @@ http.createServer(async (req, res) => {
         policy: pricing.policy, discount: pricing.discount,
         band: pricing.band, monUsd: MON_USD,
         breakEvenTokens: breakEvenTokens(settleGasUnits, gasPriceWei, RATE),
+        // We bill output only. settle() charges tokensDelta, which counts
+        // tokens this node GENERATED, so a guest's prompt is free however long
+        // it is. Every provider on the reference listing bills input, so an
+        // output-to-output comparison understates the difference, and the
+        // crossover is the honest form of the claim: it is worth a specific
+        // amount, and that amount is a ratio.
+        input: pricing.band?.endpoints?.length ? {
+          weCharge: 0,
+          cheaperThanOnOutputAlone: cheaperThanCount(pricing.band, pricing.usdPerMillion, 0),
+          cheaperThanAt1to1: cheaperThanCount(pricing.band, pricing.usdPerMillion, 1),
+          cheaperThanAt4to1: cheaperThanCount(pricing.band, pricing.usdPerMillion, 4),
+          of: pricing.band.endpoints.length,
+          crossoverVsCheapest: {
+            provider: pricing.band.endpoints[0].name,
+            theirOutput: pricing.band.endpoints[0].outUsd,
+            theirInput: pricing.band.endpoints[0].inUsd,
+            promptToAnswerRatio: Number(crossoverRatio(pricing.band.endpoints[0], pricing.usdPerMillion).toFixed(2)),
+          },
+        } : null,
       },
       contextTokens: CONTEXT_TOKENS, promptBudget: PROMPT_BUDGET, checkpointEvery: CHECKPOINT_EVERY,
       maxBodyBytes: MAX_BODY, maxConcurrent: MAX_CONCURRENT, activeJobs: active.size,
@@ -885,6 +904,8 @@ http.createServer(async (req, res) => {
   });
   if (pricing.ratePerMillionWei > 0n) RATE = pricing.ratePerMillionWei;
   console.log(`price ${describeRate(pricing)}`);
+  const freeInput = describeFreeInput(pricing);
+  if (freeInput) console.log(`price ${freeInput}`);
   if (pricing.source === 'none') {
     console.log(`price no market reference for ${e.model}; holding ${usdPerMillion(RATE, MON_USD).toFixed(3)}/M from the default`);
   }

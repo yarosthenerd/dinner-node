@@ -38,11 +38,37 @@ export const MARKET_ID: Record<string, string> = {
  * live figure: `resolveRate` prefers the live band every time it can get one.
  */
 export const PINNED: Record<string, Band> = {
-  'qwen/qwen3.6-35b-a3b': { min: 0.700, median: 1.114, max: 1.600, providers: 10, measured: '2026-08-27' },
+  // All ten endpoints as listed on 2026-08-27, input price included. Every one
+  // of them bills input; this node bills none, which is the comparison the
+  // output column hides.
+  'qwen/qwen3.6-35b-a3b': {
+    min: 0.700, median: 1.114, max: 1.600, providers: 10, measured: '2026-08-27',
+    endpoints: [
+      { name: 'Darkbloom', inUsd: 0.070, outUsd: 0.700 },
+      { name: 'AkashML', inUsd: 0.100, outUsd: 0.900 },
+      { name: 'DeepInfra', inUsd: 0.100, outUsd: 0.950 },
+      { name: 'Venice', inUsd: 0.100, outUsd: 1.000 },
+      { name: 'Parasail', inUsd: 0.150, outUsd: 1.000 },
+      { name: 'AtlasCloud', inUsd: 0.186, outUsd: 1.114 },
+      { name: 'Io Net', inUsd: 0.190, outUsd: 1.190 },
+      { name: 'CoreWeave', inUsd: 0.250, outUsd: 1.250 },
+      { name: 'Phala', inUsd: 0.200, outUsd: 1.270 },
+      { name: 'SiliconFlow', inUsd: 0.200, outUsd: 1.600 },
+    ],
+  },
   'qwen/qwen3-8b': { min: 0.455, median: 0.455, max: 0.455, providers: 1, measured: '2026-08-27' },
   'qwen/qwen3-14b': { min: 0.240, median: 0.240, max: 0.240, providers: 1, measured: '2026-08-27' },
   'meta-llama/llama-3.2-1b-instruct': { min: 0.201, median: 0.201, max: 0.201, providers: 1, measured: '2026-08-27' },
   'qwen/qwen3.8-27b': { min: 2.550, median: 2.550, max: 2.550, providers: 1, measured: '2026-08-27' },
+};
+
+export type Endpoint = {
+  name: string;
+  /** USD per million INPUT tokens. Kept because we charge nothing for input
+   *  and every listed rival does, which is not visible in an output column. */
+  inUsd: number;
+  /** USD per million OUTPUT tokens. */
+  outUsd: number;
 };
 
 export type Band = {
@@ -54,7 +80,43 @@ export type Band = {
   max: number;
   providers: number;
   measured: string;
+  /** Every listed provider, when known. This is what makes the input-side
+   *  comparison possible rather than assumed. */
+  endpoints?: Endpoint[];
 };
+
+/**
+ * What a rival that bills BOTH sides actually costs, expressed as an
+ * output-only price so it can be compared with ours.
+ *
+ * `ratio` is input tokens per output token for the workload in question. A
+ * rival charging `inUsd` for input collects `ratio * inUsd` extra per output
+ * token, so their true price for the same job is `outUsd + ratio * inUsd`.
+ * Comparing bare output columns silently assumes ratio 0, which is a workload
+ * nobody runs.
+ */
+export function rivalEffective(e: Endpoint, ratio: number): number {
+  return e.outUsd + Math.max(0, ratio) * e.inUsd;
+}
+
+/**
+ * The input:output ratio at which we become cheaper than one rival.
+ *
+ * 0 means we are already cheaper on output alone. Infinity means never, which
+ * happens only against a rival that charges nothing for input and less than us
+ * for output. This is the honest form of "we do not charge for input": it is
+ * worth a specific amount, and that amount is a number.
+ */
+export function crossoverRatio(e: Endpoint, ourOutUsd: number): number {
+  if (ourOutUsd <= e.outUsd) return 0;
+  if (e.inUsd <= 0) return Infinity;
+  return (ourOutUsd - e.outUsd) / e.inUsd;
+}
+
+/** How many listed providers we undercut at a given workload shape. */
+export function cheaperThanCount(band: Band, ourOutUsd: number, ratio: number): number {
+  return (band.endpoints ?? []).filter(e => ourOutUsd < rivalEffective(e, ratio)).length;
+}
 
 /** Where in the band to sit. `median` is the default because it is the only
  *  position that is both defensible and stable: `min` is a race against
@@ -117,17 +179,25 @@ export async function fetchBand(
     if (!r.ok) return null;
     const j = await r.json() as any;
     const eps = j?.data?.endpoints ?? [];
-    const outs = eps
-      .map((e: any) => Number(e?.pricing?.completion) * 1e6)
-      .filter((n: number) => Number.isFinite(n) && n > 0)
-      .sort((a: number, b: number) => a - b);
-    if (!outs.length) return null;
+    const endpoints: Endpoint[] = eps
+      .map((e: any) => ({
+        name: String(e?.provider_name ?? 'unknown'),
+        inUsd: Number(e?.pricing?.prompt) * 1e6,
+        outUsd: Number(e?.pricing?.completion) * 1e6,
+      }))
+      .filter((e: Endpoint) => Number.isFinite(e.outUsd) && e.outUsd > 0)
+      // Input may legitimately be zero on a free endpoint; only a NaN is bad.
+      .map((e: Endpoint) => ({ ...e, inUsd: Number.isFinite(e.inUsd) ? e.inUsd : 0 }))
+      .sort((a: Endpoint, b: Endpoint) => a.outUsd - b.outUsd);
+    if (!endpoints.length) return null;
+    const outs = endpoints.map(e => e.outUsd);
     return {
       min: outs[0],
       median: outs[Math.floor(outs.length / 2)],
       max: outs[outs.length - 1],
       providers: outs.length,
       measured: new Date().toISOString().slice(0, 10),
+      endpoints,
     };
   } catch {
     return null;
@@ -204,4 +274,19 @@ export function describeRate(r: Resolved): string {
   return `$${r.usdPerMillion.toFixed(3)}/M output, ${pos} of ${r.band.providers} provider(s) `
     + `($${r.band.min.toFixed(3)} to $${r.band.max.toFixed(3)}, median $${r.band.median.toFixed(3)}) `
     + `for ${r.orId} [${r.source}]`;
+}
+
+/** The input-side line for the log, which is the part the output column hides. */
+export function describeFreeInput(r: Resolved): string | null {
+  if (!r.band?.endpoints?.length) return null;
+  const cheapest = r.band.endpoints[0];
+  const x = crossoverRatio(cheapest, r.usdPerMillion);
+  const atOne = cheaperThanCount(r.band, r.usdPerMillion, 1);
+  const atZero = cheaperThanCount(r.band, r.usdPerMillion, 0);
+  const n = r.band.endpoints.length;
+  const cross = x === 0 ? 'at any prompt length'
+    : x === Infinity ? 'never on price alone'
+    : `once a prompt is ${x.toFixed(1)}x the answer`;
+  return `input free (they all bill it): cheaper than ${atZero}/${n} on output alone, `
+    + `${atOne}/${n} at 1:1, and cheaper than ${cheapest.name} at $${cheapest.outUsd.toFixed(3)}+$${cheapest.inUsd.toFixed(3)} ${cross}`;
 }
