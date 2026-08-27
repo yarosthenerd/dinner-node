@@ -142,10 +142,38 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
   /// Release the escrow the guest has not spent. The node leaves a plan job
   /// open for the session, so without this the remainder sits there until the
   /// idle timer fires.
+  /// Release the escrow the guest has not spent, AFTER giving the node time to
+  /// settle what it produced.
+  ///
+  /// closeJob the instant a run finishes trips settle()'s require(j.open) and
+  /// takes tokens the provider already delivered. Measured on job#88: the
+  /// final settle of 575 tokens landed thirteen seconds after the last frame
+  /// of the stream, and a guest clicking this button immediately would have
+  /// won that race and kept the work for free.
+  ///
+  /// The node publishes its own backstop as settleMaxMs, so the wait is that
+  /// number rather than a constant that silently stops matching. Polled, so
+  /// the common case still returns in about a second. This is the same shape
+  /// as releaseJob in App.tsx and for the same reason.
   async function close() {
     if (jobId === null) return;
-    setNote('closing the job and returning unspent escrow…');
+    setNote('waiting for the node to settle what it produced…');
+    let graceMs = 65000;
     try {
+      const h = await (await fetch(host + '/health', { signal: AbortSignal.timeout(6000) })).json();
+      if (h?.settleMaxMs) graceMs = Number(h.settleMaxMs) + 5000;
+    } catch { /* the default already covers this node's published backstop */ }
+    try {
+      const deadline = Date.now() + graceMs;
+      for (;;) {
+        const cur = await pub.readContract({ address: nodeAddress, abi: nodeAbi, functionName: 'jobs', args: [jobId] }) as readonly any[];
+        // The node closes a plan job itself once it goes idle, so a job that is
+        // already shut needs nothing from us.
+        if (!cur[5]) { setNote('the node closed it and settled. nothing left to release.'); setJobId(null); return; }
+        if (Date.now() >= deadline) break;
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      setNote('closing the job and returning unspent escrow…');
       const h = await wallet.writeContract({ address: nodeAddress, abi: nodeAbi, functionName: 'closeJob', args: [jobId], gas: 200000n, maxFeePerGas: maxFee });
       await pub.waitForTransactionReceipt({ hash: h });
       setNote('closed. the unspent remainder is back on your deposit.');
@@ -206,7 +234,13 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
 
       {result && (
         <div className="receipt">
-          <div className="rrow"><span>{result.summary}</span></div>
+            {/* Composed here rather than rendered from the node's `summary`
+              string, which already ends in "ceiling N MON" and so printed the
+              ceiling twice next to the row below it. This also stops the panel
+              depending on the node's phrasing. */}
+          <div className="rrow">
+            <span>{result.plan.steps.length} steps, up to {result.plan.steps.reduce((n, s) => n + s.maxTokens, 0)} tokens</span>
+          </div>
           <div className="rrow dim">
             <span>ceiling</span><span>{costMon} MON</span>
           </div>

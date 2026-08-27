@@ -407,6 +407,35 @@ human has run it.
 To try it: `cd web && npm run dev`, pick a host that advertises plans, and
 switch to "plan a job".
 
+### The plan front end, exercised against the live node
+
+`PlanPanel.tsx` is React and needs a browser, but everything under it is plain
+fetch and TextDecoder, so the layer most likely to carry a contract bug can be
+driven from Node. `scripts/plan-ui-check.ts` imports the browser's own
+`plan-client.ts` and runs a real job through it.
+
+Job#88, all checks passed: the plan frame parsed, `planHash`, `summary` and
+`costWei` all arrived, progress streamed (2,435 reasoning and 250 visible
+tokens), every event kind the panel switches on was emitted, and **the waves
+`waves()` drew before approval matched the waves the node actually ran.** 3,260
+tokens, 0.10892475 MON settled.
+
+It found two defects.
+
+**The close button could rob the provider.** `close()` sent `closeJob`
+immediately, which trips `settle()`'s `require(j.open)` and keeps work the node
+already delivered. Measured on this run: the node's final settle of 575 tokens
+landed thirteen seconds after the last frame of the stream. It won that race by
+seconds. `close()` now waits out the node's published `settleMaxMs`, polling,
+and returns early if the node closed the job itself. This is the same shape as
+`releaseJob` in `App.tsx` and exists for the same reason; the plan path simply
+never got it.
+
+**The ceiling was printed twice.** `describePlan` already ends its summary with
+"ceiling N MON" and the panel rendered that string above its own ceiling row.
+The panel now composes the step and token counts itself, which also stops it
+depending on the node's phrasing.
+
 ### Mid-answer migration: PASSES, on chain, between two real nodes
 
 Done 2026-08-27 evening, and it closes the item this file has carried since
