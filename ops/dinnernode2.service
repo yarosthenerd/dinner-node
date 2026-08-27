@@ -1,0 +1,29 @@
+[Unit]
+Description=DinnerNode second provider (small model)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/yaros/monad-synapse
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# Config comes from .env.node2 rather than .env: a different key, a different
+# model and a different port, so this registers as its own provider instead of
+# overwriting the first one's registration.
+#
+# EnvironmentFile is read by systemd before the process starts, and dotenv does
+# not override variables already present in the environment, so these win over
+# .env without either file knowing about the other.
+#
+# .env is still loaded, and that is deliberate: it carries the settings both
+# nodes should share, such as PRICE_POLICY and PRICE_DISCOUNT. The split is
+# "what makes this node itself" in .env.node2, "what the operator wants
+# everywhere" in .env. Running it by hand with DOTENV_CONFIG_PATH=.env.node2
+# skips .env entirely and will price differently from this unit.
+EnvironmentFile=/home/yaros/monad-synapse/.env.node2
+ExecStart=/usr/local/bin/npx tsx src/host.ts
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

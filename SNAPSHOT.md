@@ -407,6 +407,23 @@ human has run it.
 To try it: `cd web && npm run dev`, pick a host that advertises plans, and
 switch to "plan a job".
 
+### Node 2 under systemd
+
+`dinnernode2.service`, enabled, so it survives a reboot. Linger is already set
+on this machine, so user units start without a login. A copy lives in
+`ops/dinnernode2.service` with install notes, so the old laptop can be set up
+from the repo rather than from memory.
+
+The unit reads `.env.node2` through `EnvironmentFile`, and dotenv still loads
+`.env` underneath it. That split is deliberate: what makes this node itself
+goes in `.env.node2`, what the operator wants everywhere goes in `.env`.
+
+**One consequence to know about.** Run by hand with
+`DOTENV_CONFIG_PATH=.env.node2`, node 2 skipped `.env` and priced at $0.201/M.
+Under the unit it reads `.env`, picks up `PRICE_DISCOUNT=0.9`, and prices at
+$0.181/M, 6.03 MON/M on chain. Both nodes now share one pricing policy, which
+is the right answer, but the number moved and the reason was not obvious.
+
 ### The plan front end, exercised against the live node
 
 `PlanPanel.tsx` is React and needs a browser, but everything under it is plain
