@@ -239,6 +239,70 @@ two `registry.ts` files, and a `host.ts` change to pass prefix hashes into
       field's position; all 13 call sites read through them. Switching to v2 is
       an edit to those two files.
 
+### The v2 cutover: what is actually left
+
+Scoped 2026-08-27 by reading every call site and measuring the deployed
+contract. Nothing here is blocked on the domain; the domain blocks the MetaMask
+warning and the legal contact addresses, not this.
+
+**A. Without these, v2 does not run at all.** Signature changes, mechanical.
+
+- [ ] `registerProvider` gained `maxTokensPerSecond`. `src/host.ts:599` passes
+      three arguments, so a node cannot register on v2 at all. This is the first
+      thing that breaks.
+- [ ] `openJob` gained `requireCheckpoints`. Six call sites: `src/guest.ts:47`,
+      `src/host.ts:807` (the LAN page), `web/src/App.tsx:516`,
+      `web/src/components/PlanPanel.tsx:82`, and the three e2e scripts.
+- [ ] `settle` gained three checkpoint arguments. Only `src/host.ts` settles.
+      **Gotcha:** v2 declares two `settle` overloads, and viem disambiguates
+      overloads by argument shape. Simplest fix is to put only the five-argument
+      form in the client ABI and never mention the convenience overload.
+- [ ] Rewrite both ABIs: `src/chain.ts` and `web/src/lib.ts`.
+- [ ] Point both `registry.ts` bodies at `getJob`/`getProvider`. This is the
+      one step that is already prepared: no call site changes.
+- [ ] Addresses: `DINNER_NODE_ADDRESS` in `.env`, `ADDR` in `web/src/config.ts`.
+
+**B. Without these you take v2's costs and none of its benefit.**
+
+- [ ] **`host.ts` must publish checkpoints inside `settle`.** This is the big
+      one. Until it does, `requireCheckpoints` has to stay false and the
+      published-progress bound -- the headline guarantee, the thing that makes
+      "worst case one settlement" true -- is opt-in and switched off. `serveJob`
+      already tracks `prefix`, `produced` and the billed delta, so it is a
+      contained change: pass `keccak256(prefix)`, visible tokens and billed
+      tokens into the settle it already makes.
+      **Measured on the deployed contract, so this is affordable:** the
+      checkpoint adds 77,366 gas the first time a job writes one and **6,293 gas
+      every settle after that**, because the four slots are warm. A checkpointed
+      v2 settle estimates at 61,791 gas against the 113,430 the live node
+      currently budgets per v1 settle. Different jobs in different storage
+      states, so treat it as indicative rather than exact, but v2 with the
+      guarantee on does not look more expensive than v1 with it off.
+- [ ] **Call `commitPlan`.** Nothing does. The plan ceiling built last session
+      is dead code: `web/src/components/PlanPanel.tsx` has the guest approve a
+      plan and its cost in the browser and never writes that approval to chain,
+      which is the difference between a promise a web page makes and a limit the
+      chain holds. The panel already computes the hash and the ceiling.
+
+**C. Value that must be moved before the switch, or it strands.**
+
+- [ ] `refund()` the guest's **1.306 MON** sitting in v1 deposits.
+- [ ] `withdraw()` node 1's **2.559 MON** of unwithdrawn earnings, and node 2's
+      0.0022 MON. Roughly **3.87 MON in total** across both.
+      Not lost if skipped -- v1 stays callable forever -- but it is real money
+      in a contract nothing will be watching any more.
+- [ ] Drain open v1 jobs before switching, or their escrow sits until each
+      node's idle timer closes them.
+
+**D. `DinnerRatings` has to be redeployed, and it loses history.**
+
+- [ ] Its `IDinnerNode` interface hard-codes v1's six-field `jobs()`, and both
+      `node` and `groupId` are `immutable`, so it cannot be repointed. A v2
+      ratings deploy needs the interface switched to `getJob` and creates a
+      **new Semaphore group**: existing memberships and ratings do not carry
+      over. Cheap today, since the group has zero members. It gets expensive the
+      day it does not, which is an argument for doing the cutover soon.
+
 ### Found while verifying, 2026-08-27
 
 - **`closeJob` reverts after an escrow-exhausting settle, on v1, in production.**
