@@ -10,11 +10,28 @@ import { describeHardware, probeHardware } from './hardware';
 import { PLAN_LIMITS, planCostWei, planHash, validatePlan, type Plan } from './plan';
 import { describePlan, makePlan } from './planner';
 import { executePlan, type Dispatch } from './executor';
+import { DEFAULT_MON_USD, breakEvenTokens, describeRate, resolveRate, usdPerMillion, type Policy, type Resolved } from './pricing';
 
 const w = wallet(process.env.PROVIDER_PK!);
 const me = w.account.address;
 const PORT = Number(process.env.PORT ?? 4173);
-const RATE = BigInt(process.env.RATE_PER_MILLION ?? '26700000000000000000');
+// Mutable, because the rate is decided by the market for the model this node
+// actually serves rather than by a constant. The value here is only what the
+// process holds between start and the resolve in the listen callback below,
+// which happens before register() writes anything on chain.
+//
+// RATE_PER_MILLION still wins when an operator sets it. Setting a price is a
+// decision, and a file that silently overrode it would be worse than one that
+// prices badly.
+let RATE = BigInt(process.env.RATE_PER_MILLION ?? '26700000000000000000');
+// Where in its own market band this node sits, and by how much it undercuts
+// that position. Defaults sit at the median of every provider serving the same
+// weights, which is the only position that is both defensible and stable: the
+// minimum is a race against whoever is dumping capacity this week.
+const PRICE_POLICY = (process.env.PRICE_POLICY ?? 'median') as Policy;
+const PRICE_DISCOUNT = Number(process.env.PRICE_DISCOUNT ?? 1);
+const MON_USD = Number(process.env.MON_USD ?? DEFAULT_MON_USD);
+let pricing: Resolved | null = null;
 
 // Limits. The UI reads these from /health so its estimate matches ours instead
 // of guessing, and a prompt is rejected with a number rather than silently
@@ -610,6 +627,17 @@ http.createServer(async (req, res) => {
     return res.end(JSON.stringify({
       provider: me, engine: e.kind, model: e.model, port: PORT,
       ratePerMillion: String(RATE),
+      // Published so the price can be checked rather than trusted. A buyer
+      // comparing us looks at the same OpenRouter listing this is derived
+      // from, so the claim "below the median of N providers for the model we
+      // actually serve" is verifiable in one request.
+      pricing: pricing && {
+        usdPerMillion: Number(pricing.usdPerMillion.toFixed(4)),
+        source: pricing.source, reference: pricing.orId,
+        policy: pricing.policy, discount: pricing.discount,
+        band: pricing.band, monUsd: MON_USD,
+        breakEvenTokens: breakEvenTokens(settleGasUnits, gasPriceWei, RATE),
+      },
       contextTokens: CONTEXT_TOKENS, promptBudget: PROMPT_BUDGET, checkpointEvery: CHECKPOINT_EVERY,
       maxBodyBytes: MAX_BODY, maxConcurrent: MAX_CONCURRENT, activeJobs: active.size,
       // The guest closes an unfinished job to recover its escrow, and closing
@@ -846,6 +874,26 @@ http.createServer(async (req, res) => {
   }
 }).listen(PORT, async () => {
   const e = await engineP;
+
+  // Priced before registration, because registerProvider writes the rate on
+  // chain and a node that registers first would advertise the wrong number
+  // until its next restart.
+  pricing = await resolveRate({
+    model: e.model,
+    overrideWei: process.env.RATE_PER_MILLION ? BigInt(process.env.RATE_PER_MILLION) : null,
+    policy: PRICE_POLICY, discount: PRICE_DISCOUNT, monUsd: MON_USD,
+  });
+  if (pricing.ratePerMillionWei > 0n) RATE = pricing.ratePerMillionWei;
+  console.log(`price ${describeRate(pricing)}`);
+  if (pricing.source === 'none') {
+    console.log(`price no market reference for ${e.model}; holding ${usdPerMillion(RATE, MON_USD).toFixed(3)}/M from the default`);
+  }
+  // The number that decides whether a short job is worth serving at all. It
+  // moves with the price and with the base fee, so it is printed rather than
+  // assumed: undercutting the market raises it, and at some price a chat turn
+  // costs more gas than the tokens are worth.
+  console.log(`price break-even ${breakEvenTokens(settleGasUnits, gasPriceWei, RATE)} tokens per settle at ${Number(gasPriceWei) / 1e9} gwei`);
+
   await register(e);
   const lan = Object.values(os.networkInterfaces()).flat().find(a => a?.family === 'IPv4' && !a.internal)?.address;
   console.log(`\nprovider ${me} listening on :${PORT}`);
