@@ -76,7 +76,9 @@ async function stream(url, body, stop) {
 const nodeHealth = await (await fetch(NODE + '/health')).json();
 const cloudHealth = await (await fetch(CLOUD + '/health')).json();
 console.log(`provider A ${nodeHealth.provider}  ${nodeHealth.model} (${nodeHealth.engine})`);
-console.log(`provider B ${cloudHealth.provider}  ${cloudHealth.model} (${cloudHealth.kind})`);
+// `kind` is the hosted kitchen's field and `engine` is a node's. Printing one
+// against the other is how this said "(undefined)" for a real node.
+console.log(`provider B ${cloudHealth.provider}  ${cloudHealth.model} (${cloudHealth.engine ?? cloudHealth.kind})`);
 if (nodeHealth.provider.toLowerCase() === cloudHealth.provider.toLowerCase()) {
   console.error('both providers are the same address; migration would prove nothing'); process.exit(1);
 }
@@ -122,6 +124,16 @@ console.log(`\nprefix handed over: ${legA.cp.n} tokens, and provider B billed ${
 console.log(b2[4] > 0n && a2[4] > 0n && String(a2[1]).toLowerCase() !== String(b2[1]).toLowerCase()
   ? 'PASS: two different providers paid for disjoint ranges of one answer.'
   : 'FAIL: see the receipts above.');
+
+// The answer, with the handover marked. Worth printing because the seam is the
+// thing a viewer wants to see, and because a cross-model migration does not
+// read seamlessly and we should not pretend otherwise.
+if (process.argv.includes('--show')) {
+  console.log(`\n--- the answer, both halves ---`);
+  console.log(prefix);
+  console.log(`\n>>> provider A stopped here at token ${legA.cp.n}. provider B continues. <<<\n`);
+  console.log(legB.text);
+}
 
 for (const [id, j] of [[jobA, a2], [jobB, b2]]) {
   if (j[5]) {
