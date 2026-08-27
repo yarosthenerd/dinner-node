@@ -75,11 +75,28 @@ export const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT ?? [
   'Do not preface answers with dates, hedges, or apologies for what you might not know.',
 ].join(' ');
 
-export async function* ollama(prompt: string, model: string, signal?: AbortSignal, numCtx?: number, system: string = SYSTEM_PROMPT): AsyncGenerator<Chunk> {
+/**
+ * `think` controls whether the model reasons before answering.
+ *
+ * It matters far more than it looks. Measured on qwen3.6:35b-a3b 2026-08-27
+ * with an identical short prompt: 317 thinking frames against 25 visible with
+ * thinking on, and 0 against 32 with it off. Reasoning is billed here, so a
+ * bounded sub-task that reasons costs roughly thirteen times what it needs to
+ * and can spend an entire step ceiling before producing a word.
+ *
+ * Left ON for a guest's own prompt, where the reasoning is streamed, disclosed
+ * and part of what they are buying. Turned OFF for plan steps, which are
+ * bounded pieces of work under a ceiling the guest approved in advance.
+ */
+export async function* ollama(prompt: string, model: string, signal?: AbortSignal, numCtx?: number, system: string = SYSTEM_PROMPT, think = true): AsyncGenerator<Chunk> {
   const res = await fetch('http://localhost:11434/api/generate', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       model, prompt, stream: true, keep_alive: KEEP_ALIVE,
+      // Only sent when disabling it: a model with no thinking mode rejects an
+      // unexpected parameter, and `think: true` is already the default for one
+      // that has it.
+      ...(think ? {} : { think: false }),
       // Sent as `system` rather than glued onto the prompt, so the guest's
       // prompt reaches the model exactly as it was committed on chain, and so
       // the instruction cannot be mistaken for guest text by anything reading

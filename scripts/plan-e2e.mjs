@@ -70,10 +70,17 @@ console.log(`node ${health.model} via ${health.engine}, provider ${health.provid
 console.log(`rate ${health.ratePerMillion} wei/M ($${health.pricing?.usdPerMillion}/M, ${health.pricing?.source})`);
 if (!health.plans?.supported) { console.error('this node does not advertise plan support'); process.exit(1); }
 
+// Top up only the shortfall. closeJob returns a job's unspent escrow to
+// deposits[guest] rather than to the wallet, so a second run needs far less
+// than the budget and asking for the whole thing reverts on a guest whose
+// balance is already sitting on the contract.
 const dep = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'deposits', args: [account.address] });
 if (dep < BUDGET) {
-  console.log(`[${el()}] depositing ${formatEther(BUDGET)} MON…`);
-  const h = await w.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: BUDGET, gas: 200000n, maxFeePerGas: MAX_FEE });
+  const short = BUDGET - dep;
+  const bal = await pub.getBalance({ address: account.address });
+  console.log(`[${el()}] deposit ${formatEther(dep)}, need ${formatEther(BUDGET)}, topping up ${formatEther(short)} (wallet ${formatEther(bal)})`);
+  if (bal < short) { console.error(`guest wallet holds ${formatEther(bal)} MON and needs ${formatEther(short)} plus gas`); process.exit(1); }
+  const h = await w.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: short, gas: 200000n, maxFeePerGas: MAX_FEE });
   await pub.waitForTransactionReceipt({ hash: h });
 }
 

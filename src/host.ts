@@ -110,7 +110,12 @@ const HW = probeHardware();
 let firstTokenMs: number | null = null;
 let gpuFraction: number | null = null;
 
-type Engine = { kind: string; model: string; gen: (p: string, signal?: AbortSignal) => AsyncGenerator<Chunk> };
+export type GenOptions = {
+  /** Whether the model may reason before answering. Costs about 13x on this
+   *  node's model and is billed, so a plan step turns it off. See engines.ts. */
+  think?: boolean;
+};
+type Engine = { kind: string; model: string; gen: (p: string, signal?: AbortSignal, o?: GenOptions) => AsyncGenerator<Chunk> };
 async function pickEngine(): Promise<Engine> {
   if (process.env.ENGINE === 'mock') {
     return { kind: 'mock', model: process.env.MODEL ?? 'mock-7b', gen: mock };
@@ -131,7 +136,7 @@ async function pickEngine(): Promise<Engine> {
       const names: string[] = (tags.models ?? []).map((m: any) => m.name);
       let model = process.env.MODEL ?? names[0];
       if (model && !names.includes(model)) { console.log('model ' + model + ' not installed, falling back to ' + names[0]); model = names[0]; }
-      if (model) return { kind: 'ollama', model, gen: (p, s) => ollama(p, model, s, CONTEXT_TOKENS) };
+      if (model) return { kind: 'ollama', model, gen: (p, s, o) => ollama(p, model, s, CONTEXT_TOKENS, undefined, o?.think !== false) };
       lastErr = 'ollama is running but has no models installed';
     } catch (e: any) {
       lastErr = e?.message ?? String(e);
@@ -854,7 +859,13 @@ http.createServer(async (req, res) => {
 
       // v1 dispatches every step to this node's own engine. The signature is
       // the seam a peer's /job plugs into later without touching the executor.
-      const dispatch: Dispatch = (_step, prompt, signal) => e.gen(prompt, signal);
+      // Thinking off for plan steps. A step is a bounded piece of work under a
+      // ceiling the guest approved, and reasoning is billed: measured on this
+      // node, three steps at a 3,072 ceiling each spent the whole ceiling
+      // reasoning and produced nothing at all. The planner still reasons,
+      // because choosing the shape of the work is exactly the case reasoning
+      // is worth paying for.
+      const dispatch: Dispatch = (_step, prompt, signal) => e.gen(prompt, signal, { think: false });
 
       try {
         for await (const ev of executePlan(p, dispatch, {
