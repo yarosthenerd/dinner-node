@@ -51,7 +51,10 @@ const openHash = await w.writeContract({
 const jobId = await jobIdFromReceipt(openHash);
 console.log(`job#${jobId} open  ${EXPLORER}/tx/${openHash}`);
 
-pub.watchContractEvent({  // live settlement feed = the wow
+// Live settlement feed. The handle is kept because the poller holds the event
+// loop open: without unwatching, this process printed its whole answer and then
+// hung until something killed it.
+const unwatch = pub.watchContractEvent({
   address: ADDR, abi: ABI, eventName: 'StreamSettled',
   args: { jobId },
   onLogs: logs => logs.forEach(l =>
@@ -80,5 +83,27 @@ for await (const line of res.body!.pipeThrough(new TextDecoderStream()) as any) 
   }
 }
 console.log(`\n--- session: ${tokens} tokens visible + ${thought} reasoning, both billed, from someone else's hardware`);
-const job = await readJob(jobId);
-console.log(`--- paid: ${formatEther(job.paid)} MON | provider earned it for doing what their PC was doing anyway: nothing`);
+
+// Settlement is ASYNCHRONOUS to the stream. The node flushes its last tokens
+// after the final frame and closes the job a moment later, so reading the job
+// the instant the stream ends reported `paid: 0 MON` on a session that had in
+// fact just settled 0.0146 MON. Printing zero next to a real payment is the
+// same class of defect as logging a reverted settlement as a success, and this
+// number is the whole point of the receipt, so wait for the chain to catch up.
+const DEADLINE_MS = 45_000;
+const t0 = Date.now();
+let job = await readJob(jobId);
+while (job.open && Date.now() - t0 < DEADLINE_MS) {
+  await new Promise(r => setTimeout(r, 1500));
+  job = await readJob(jobId);
+}
+unwatch();
+if (job.open) {
+  // Said out loud rather than papered over with whatever `paid` happened to
+  // read: the figure below is a snapshot of an unfinished settlement.
+  console.log(`--- paid so far: ${formatEther(job.paid)} MON for ${job.tokens} tok. The job is still open after ${DEADLINE_MS / 1000}s;`
+    + ` the node settles and closes on its own timer, so the final figure may be higher.`);
+} else {
+  console.log(`--- paid: ${formatEther(job.paid)} MON for ${job.tokens} tok billed`
+    + ` | refunded ${formatEther(job.escrow - job.paid)} MON of the ${formatEther(job.escrow)} MON escrow`);
+}
