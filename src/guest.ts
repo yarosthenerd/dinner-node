@@ -63,11 +63,22 @@ const res = await fetch(providerUrl + '/job', {
   body: JSON.stringify({ jobId: jobId.toString(), prompt }),
 });
 let tokens = 0;
+let thought = 0;
 for await (const line of res.body!.pipeThrough(new TextDecoderStream()) as any) {
   for (const l of line.split('\n')) if (l.startsWith('data: ') && l !== 'data: [DONE]') {
-    process.stdout.write(JSON.parse(l.slice(6)).t); tokens++;
+    const f = JSON.parse(l.slice(6));
+    // Three frame shapes reach this loop and only one of them is the answer.
+    // Writing `.t` unconditionally crashed on the first reasoning frame, which
+    // meant this CLI could not order from a reasoning model at all -- and the
+    // node this project is built around serves one. Checkpoints and errors are
+    // structural too, so they are named rather than swallowed.
+    if (f.th !== undefined) { thought++; continue; }
+    if (f.err !== undefined) { console.error(`\n  ! node reported: ${f.err}`); continue; }
+    if (f.cp !== undefined) continue;
+    if (typeof f.t !== 'string') continue;
+    process.stdout.write(f.t); tokens++;
   }
 }
-console.log(`\n--- session: ${tokens} tokens streamed from someone else's hardware`);
+console.log(`\n--- session: ${tokens} tokens visible + ${thought} reasoning, both billed, from someone else's hardware`);
 const job = await readJob(jobId);
 console.log(`--- paid: ${formatEther(job.paid)} MON | provider earned it for doing what their PC was doing anyway: nothing`);

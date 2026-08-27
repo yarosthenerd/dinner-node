@@ -183,7 +183,18 @@ not true of the model we actually serve.
 All seven closed 2026-08-27. `contracts/test/DinnerNodeV2Defects.t.sol` has one
 section per item, written as the attack rather than as the fix: each test does
 the thing a guest or a provider could actually do and asserts the money that
-changes hands. 48 contract tests pass. **Still not deployed.**
+changes hands. 48 contract tests pass.
+
+**Deployed to Monad testnet at `0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd`**
+and verified against the deployed instance, not just in Foundry:
+`DINNER_NODE_V2=0x2881... node scripts/v2-live.mjs` runs all seven as real
+transactions with real wallets and real elapsed seconds. 27 live checks pass.
+
+**Nothing points at it yet.** The site, both running nodes and DinnerRatings
+still use v1 at `0xaF2c...3A92`. Cutting over is a separate job: `settle` and
+`openJob` changed signature, so it needs `src/chain.ts`, `web/src/lib.ts`, the
+two `registry.ts` files, and a `host.ts` change to pass prefix hashes into
+`settle`. Not started.
 
 - [x] Clamp `settle` to published progress. The checkpoint now carries a
       `billed` count beside the visible `tokens`, and settle refuses to take a
@@ -227,6 +238,27 @@ changes hands. 48 contract tests pass. **Still not deployed.**
       and `web/src/lib/registry.ts` are now the only two places that know a
       field's position; all 13 call sites read through them. Switching to v2 is
       an edit to those two files.
+
+### Found while verifying, 2026-08-27
+
+- **`closeJob` reverts after an escrow-exhausting settle, on v1, in production.**
+  Seen live on job#91 and three times in the last three days of node 1's
+  journal: `settle` auto-closes when the escrow runs out, so the provider's own
+  `closeJob` a moment later hits `require(j.open)` and reverts. Monad charges
+  the gas limit, so each one burns 120,000 gas for nothing. This is defect 6
+  observed from the outside, and the v2 fix removes it: v2 does not auto-close.
+  Harmless on v1 beyond the wasted gas and an alarming log line.
+- **`src/guest.ts` could not order from a reasoning model at all.** It wrote
+  `JSON.parse(l).t` for every SSE frame, so the first `{th}` frame crashed it
+  with `ERR_INVALID_ARG_TYPE`, aborting the stream. Node 1 serves a reasoning
+  model, so the CLI guest had been broken against its own main node. Fixed: the
+  three frame shapes are now handled and reasoning is counted and reported.
+- **`DinnerRatings` cannot be pointed at v2 as written.** Its `IDinnerNode`
+  interface declares the v1 six-field `jobs()`, which decodes v2's eleven-field
+  return wrong: `open` would read a rate. `node` is immutable and the deployed
+  instance points at v1, so nothing is broken today, but a v2 ratings deploy
+  must switch that interface to `getJob`. This is the same defect as item 7, in
+  a place the original list did not cover.
 
 ## P2: hardening still open
 
