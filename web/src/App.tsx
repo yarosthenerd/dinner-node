@@ -1,9 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { formatEther, keccak256, parseEther, parseEventLogs, toHex } from 'viem';
 import { ABI, ADDR, EXPLORER, pub, guestWallet, guestAddress, faucet, fmt } from './lib';
 import { DISCOVERY, KNOWN_PROVIDERS } from './config';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+// Lazy on purpose. Semaphore's proving stack is about 450 kB and only a guest
+// who actually rates ever needs it, so importing it eagerly would put that
+// weight on every first paint for a feature most sessions never touch.
+const ProviderRating = lazy(() => import('./components/ProviderRating'));
+// Read straight from the environment rather than through lib/ratings, or the
+// check itself would pull the module it is trying to defer.
+const RATINGS_ON = !!import.meta.env.VITE_RATINGS_ADDRESS;
 import { EngramSelector } from './components/EngramSelector';
 import { initEngramSystem, preparePrompt, onJobOpen, onJobClose, applyPendingEngrams, resolvePendingEngrams, behavioralPreamble } from './lib/engram-integration';
 import type { PendingEngrams } from './lib/engram-integration';
@@ -91,6 +98,9 @@ export default function App() {
   const [sentPrompt, setSentPrompt] = useState('');
   const [budgetTokens, setBudgetTokens] = useState(30720);
   const [sessions, setSessions] = useState<Session[]>(loadSessions);
+  // The provider this browser has actually paid. Ratings are gated on a paid
+  // job by the contract, so there is nothing to show before the first one.
+  const [ratedProvider, setRatedProvider] = useState<`0x${string}` | null>(null);
   const [canResume, setCanResume] = useState(false);
   const [discoveryUp, setDiscoveryUp] = useState<boolean | null>(null);
   // Whether the text on screen was produced by the hosted kitchen. The note
@@ -632,6 +642,7 @@ export default function App() {
         ts: Date.now(), prompt: finalPromptRef.current, answer: liveRef.current,
         jobId: finalJobId.toString(), cost: cost.toString(),
       };
+      if (cost > 0n && sessionRef.current) setRatedProvider(sessionRef.current.provider as `0x${string}`);
       const next = [entry, ...loadSessions()].slice(0, 20);
       try { localStorage.setItem('dn_sessions', JSON.stringify(next)); } catch {}
       setSessions(next);
@@ -822,6 +833,19 @@ export default function App() {
             <div className="rtotal"><span>WINDOW TOTAL</span><b>{fmt(total)} MON</b></div>
             {sessionCost > 0n && <div className="rcost">guest cost −{fmt(sessionCost)} MON</div>}
           </div>
+          {RATINGS_ON && ratedProvider && sessions.length > 0 && (
+            <Suspense fallback={<div className="dim">loading the proving stack…</div>}>
+            <ProviderRating
+              pub={pub}
+              wallet={guestWallet}
+              provider={ratedProvider}
+              nodeAbi={ABI}
+              nodeAddress={ADDR}
+              guestAddress={guestAddress}
+              jobIds={sessions.map(x => BigInt(x.jobId))}
+            />
+            </Suspense>
+          )}
           {sessions.length > 0 && (
             <>
               <h2>earlier orders</h2>

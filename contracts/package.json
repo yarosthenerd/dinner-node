@@ -1,0 +1,9 @@
+{
+  "name": "dinnernode-contracts",
+  "private": true,
+  "description": "Solidity dependencies for the DinnerNode contracts. Kept out of the root package.json because these are Solidity sources resolved by forge remappings, not JavaScript the node or the web app ever imports.",
+  "dependencies": {
+    "@zk-kit/lean-imt.sol": "2.0.1",
+    "poseidon-solidity": "0.0.5"
+  }
+}

@@ -27,3 +27,13 @@ web/.envtmp
 
 # dev-only patch script, contradicts commit 09c6579 "ship product only"
 patch_engrams3.cjs
+
+# investor and diligence decks, same rule as the older pitch artifacts above:
+# generated here, not shipped. Rebuild with `python3 make_deck.py` and
+# `python3 make_deck_diligence.py`, then convert with soffice.
+/DinnerNode_deck.pptx
+/DinnerNode_deck.pdf
+/DinnerNode_deck_diligence.pptx
+/DinnerNode_deck_diligence.pdf
+/make_deck.py
+/make_deck_diligence.py
