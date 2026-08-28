@@ -1,4 +1,304 @@
-# Session snapshot, 2026-08-28
+# Session snapshot, 2026-08-28 (afternoon)
+
+> Newest first. Earlier snapshots follow below, unchanged.
+> `TODO.md` remains the roadmap; this is the build and defect state.
+
+## 1. Headline
+
+**The V2 cutover is done, live, and proven against the deployed contract.**
+This morning's snapshot ended with V2 deployed and nothing pointing at it. Now
+every part of it has run: both nodes are registered on
+`0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd`, the browser talks to it, V1 is
+empty, and each mechanism has been exercised by a real job rather than a test.
+
+- **job#15 published a checkpoint inside its settlement**, on a job the guest
+  opened with `requireCheckpoints` true. This is the headline guarantee and it
+  had never run before today. Section 3.
+- **job#13 committed a plan and its ceiling on chain before a step ran**, and
+  the ceiling held: 0.5218698375 MON committed, 0.265094775 MON paid. Section 4.
+- **V1 is drained.** 3.8779239575 MON recovered in four transactions, re-read as
+  zero. Section 5.
+- **`DinnerRatings` redeployed** against V2 for 1.616 MON. Its group had zero
+  members, so nothing was lost, which was the whole argument for doing this
+  week rather than next. Section 6.
+
+Three defects found by running things rather than reading them:
+
+- **The guest was shown fewer reasoning tokens than it paid for**, 836 against
+  920 on job#15, because three parts of the system counted one number three
+  ways. Section 7.
+- **The plan receipt rendered one word per line**, because it reused a
+  three-column grid for two-column rows. Section 8.
+- **`www.dinnernode.xyz` lost its DNS record** while the domain was being
+  configured, and my own verification missed it by pinning the IP. Section 9.
+
+The site is live on `dinnernode.xyz` with metadata, structured data and a
+sitemap. Sections 10 and 11.
+
+**Resuming work: read section 12 first.**
+
+## 2. What the cutover actually changed
+
+Mechanical, all of `TODO.md` section A:
+
+- Both ABIs rewritten with structs, so `getJob` and `getProvider` decode to
+  named objects. **Only the five-argument `settle` is declared.** V2 has two
+  overloads and viem disambiguates by argument shape, so naming both would make
+  every settle call a guess.
+- `registerProvider` gained `maxTokensPerSecond`, defaulted to 400. That is
+  about twice the fastest decode ever measured here (215.5 tok/s on
+  `llama3.2:1b`), so a real stream never trips it while a runaway settlement is
+  still bounded to seconds of plausible work. Both visible and reasoning tokens
+  count against it. The contract caps it at 10,000 regardless.
+- `openJob` gained `requireCheckpoints`. True everywhere except `PlanPanel`.
+- Both `registry.ts` bodies now call `getJob`/`getProvider`. The file predicted
+  when it was written that this would be a single edit with no call site
+  changes, and that is exactly what it was.
+
+Read back off the deployed contract after the restart:
+
+| provider | model | active | max tok/s | rate wei/M |
+|---|---|---|---|---|
+| `0x055a…326A` | `qwen3.6:35b-a3b` | true | 400 | 3.34e19 |
+| `0x1978…94d3` | `llama3.2:1b` | true | 400 | 6.03e18 |
+
+## 3. Checkpoints inside settle, and the case the scoping missed
+
+`host.ts` now passes a checkpoint into the settle it was already making. The
+gas measurement from this morning said this is affordable: 77,366 the first
+time a job writes one, 6,293 every settle after, against a whole transaction
+for `commitCheckpoint`.
+
+**The prefix is held and hashed at settle time, not on a token interval.** The
+first design kept a hash refreshed every `CHECKPOINT_TOKENS`, which would have
+published a token count from now against a hash from up to 64 tokens ago. A
+replacement handed that text would compute a different hash and refuse to
+continue, which is the exact failure the checkpoint exists to prevent.
+
+**A settle covering only reasoning cannot publish one.** `_checkpoint` requires
+a strict advance in VISIBLE tokens, and job#93 billed 1,631 reasoning against
+20 visible, so this is a common shape rather than an edge case. On a job that
+requires checkpoints such a settle would revert, and a reverted settle loses
+the tokens it was flushed with. `canSettle` holds them back instead, and the
+next settlement with visible progress pays for them. If a stream produces no
+visible token at all, they are written off, which is the same policy plan steps
+already follow.
+
+**job#15, read off chain:**
+
+```
+requireCheckpoints  true
+prefixHash          0x7c7b908566e624e22e23a2b58d2c550a847e492a03297015a8c1ce4346f3fd4b
+tokens (visible)    152
+billed (vis+reas)   1072
+chainHash           0xb42ff9deeef64fa72ba81d5c552328298327b87d40ef3bf87c0acaf90f93e269
+paid                0.0358182 MON
+```
+
+1,072 x 33.4125e18 / 1e6 = 0.0358182 MON exactly. `billed >= visible` holds and
+tokens paid never exceed what the checkpoint proves.
+
+## 4. commitPlan, and the ceiling arithmetic that is not obvious
+
+`PlanPanel` commits before the first step runs, and a failure to commit stops
+the run rather than quietly serving the version of the feature without the
+property.
+
+Two things the contract forces, each a revert if ignored:
+
+- **The ceiling must cover work already paid for.** `require(ceiling >= j.paid)`.
+  Planning is billed before the plan exists, so the ceiling is `paid + run
+  cost`, not the run alone. On job#13 that is the difference between the
+  0.4105728 MON the panel shows for the plan and the 0.5218698375 MON committed.
+- **The version must strictly advance**, so it is read from `getPlan` rather
+  than taken from `plan.version`, which is a format number and would be the
+  same 1 on every re-plan of one job.
+
+**The hash is computed in the browser from the plan on screen.** A node
+returning a hash of text other than what it displayed would otherwise have the
+guest sign for it. `web/src/lib/plan-client.ts` carries its own `canonicalize`
+and a test asserts it matches `src/plan.ts` byte for byte, including the
+dependency sort.
+
+**job#13 on chain:** plan hash `0xd478e840…c145d5`, version 1, ceiling
+0.5218698375 MON, paid 0.265094775 MON for 7,934 tokens. Ceiling held. Its
+output is kept in `.context/feedback/plan-output.md`: 4 steps, 2 waves, a real
+conclusion with a break-even figure.
+
+## 5. V1 is empty
+
+`scripts/drain-v1.mjs`, read-only unless `--send`. Four transactions, all
+confirmed on receipt:
+
+| what | amount |
+|---|---|
+| node 1 `withdraw()` | 2.5593549825 MON |
+| node 1 `refund()` | 0.009904 MON |
+| guest `refund()` | 1.306440575 MON |
+| node 2 `withdraw()` | 0.0022244 MON |
+
+**3.8779239575 MON**, and a re-read returns zero across every key. V1 stays
+callable forever; nothing points at it.
+
+## 6. DinnerRatings
+
+Its `IDinnerNode` hard-coded V1's six-field `jobs()` and `node` is immutable, so
+it could not be repointed. Interface switched to `getJob` and redeployed for
+1.616 MON:
+
+```
+DinnerRatings      0xb418490c7679765ae5e05069c6ebedc132cba731
+Semaphore          0xa7d933dd5b80f6578c72be9962048a5c0e1857c8
+SemaphoreVerifier  0x3175d4dd8d6973521e04191c6acbcb88e3f91bbd
+PoseidonT3         0x15444a746c5a73d61974ef9cf4e88eb22b349c9c
+```
+
+`node()` verified as the V2 address, group fresh. `VITE_RATINGS_ADDRESS`
+updated in Vercel production and confirmed present in the deployed
+`ProviderRating` chunk with the old address absent.
+
+The test stub in `DinnerRatings.t.sol` now carries non-zero middle fields on
+purpose, so a V1-shaped decode fails the test rather than passing silently.
+That is precisely how this defect would have reached production: `open` would
+have read a rate, which is non-zero, and every closed job would have passed.
+
+**Note for anyone re-running the deploy script:** `DinnerRatings` cannot be
+gas-estimated without `--send`, because its constructor calls `createGroup` on a
+Semaphore a dry run has not deployed. That estimate failure is expected.
+
+## 7. The guest was shown fewer reasoning tokens than it paid for
+
+Three ways of counting one number, and only one of them was the one charged:
+
+- billing increments once per streamed `{th}` frame,
+- the browser displayed `thinking.length / 4`,
+- the node logged `estTokens(thought)`, same estimate.
+
+Measured on job#15: **836 shown, 920 billed, 9% under.**
+
+This is small until you read terms 3.1, which gained a sentence this morning
+saying the reasoning is shown as it streams so what you are charged for is
+visible rather than hidden. A displayed figure that is not the billed figure
+makes that untrue, and it was untrue in the direction of understating the bill.
+
+A frame is the billing unit and its token boundary is gone once the text is
+concatenated, so the count cannot be recovered from the string. The browser
+counts frames as they arrive and the node sends its own totals in the final
+frame for the browser to adopt. Both reset per turn, or a session job carries
+the previous turn's count. The node's log stopped printing `~` because it
+stopped estimating.
+
+`src/guest.ts` already counted frames and needed no change, which is why the
+CLI was the one place reporting the truth all along.
+
+**Verified on job#16, three independent sources agreeing exactly:** node log
+434 visible + 818 reasoning, CLI guest 434 + 818, and 1,252 settled on chain.
+434 + 818 = 1,252.
+
+## 8. The plan receipt rendered one word per line
+
+`.rrow` is a three-column grid, 52px and 70px then the rest, written for the
+item/quantity/price rows in `App.tsx`. `PlanPanel` reused it for rows with two
+children, so every label and every step title landed in a 52px column: "4
+steps, up to 12288 tokens" and "Home GPU Amortization & Power" both rendered
+vertically. Pre-existing, and the "ceiling on chain" row added today made it
+worse by being the longest label yet. `.prow` is the shape those rows actually
+are.
+
+## 9. The domain, and a verification method that proved nothing
+
+`dinnernode.xyz` is registered, on Vercel nameservers, serving.
+
+**`www` lost its A record** during the window when Discord verification records
+were being added by hand. Two `_discord` TXT records exist and are correct;
+`www` had none. Since the apex 308-redirects to `www`, the site was unreachable
+by either name. Fixed with a `www` CNAME to `cname.vercel-dns.com`.
+
+**My verification missed it entirely.** I checked with `curl --resolve`, which
+pins the IP and bypasses DNS, so it proved the origin serves content and said
+nothing about whether the name resolves. I reported the site as up while it was
+unreachable. DNS questions need a DNS query; the `dig` in this sandbox is
+unreliable, and `https://dns.google/resolve` over 443 is what actually worked.
+
+## 10. The site can now be found
+
+`index.html` shipped with `<title>web</title>` and nothing else, which is what
+every link preview has been scraping. It now carries a title, description,
+canonical, Open Graph and Twitter tags, and a JSON-LD graph of an
+`Organization`, a `WebSite` and a `SoftwareApplication` linked by `@id`.
+
+Google's Rich Results Test returns valid with two optional-field notices,
+`offers` and `aggregateRating`. **Both should stay empty.** Review markup must
+reflect ratings genuinely collected and shown on the page, and the group has
+zero members; `offers` would state a price, and prices here are per provider
+and derived from a live market band, so any number written into schema is wrong
+for some providers immediately and there is no signal when it goes stale.
+
+`robots.txt` and `sitemap.xml` added, and the `noindex` removed from
+`hosting.html`, `terms.html` and `acceptable-use.html`. The hosting page is the
+income calculator and was excluded from search entirely. `slides.html` is
+disallowed: a single slide out of context is a worse result than none.
+
+**The sitemap namespace is `sitemaps.org`, plural.** I wrote the singular first
+and it would have been rejected as invalid.
+
+`.well-known/discord` is checked in rather than uploaded, because Discord
+re-fetches it: a hand-placed file would vanish on the next deploy and
+un-verify the domain weeks later with no visible cause.
+
+## 11. The calculator, and the terms
+
+**The calculator leads with a ceiling.** 24 hours a day with a job running the
+whole time, net of gas and electricity: $40.27/month at the 12 GB default,
+$311.91 at 32 GB. Computed by calling `estimate` again at the ceiling rather
+than by a second formula, so it cannot drift from the table below it and the
+parity test against `src/earnings.ts` holds with that file untouched. The
+slider defaults stay honest at 5%, because the figures underneath have to
+survive an operator checking them.
+
+**Terms 3.1 corrected.** It said reasoning "can be roughly three times" the
+answer. Measured: job#93 billed 1,631 reasoning against 20 visible, 98.8% of
+the bill, whole escrow gone, nothing refunded; job#92 was 422 against 15. The
+section now carries both figures and states that there is no upper bound,
+because the length of the reasoning is decided by the model rather than by the
+question. Published rather than held for the fourteen day notice, which exists
+for changes that take rights away. Version 0.2.
+
+## 12. Next session, start here
+
+### Needs the operator
+
+1. **Google Search Console.** Sitemap is at
+   `https://www.dinnernode.xyz/sitemap.xml`. Ownership verification wants its
+   own DNS TXT record or HTML file; the file route can be deployed the way
+   `.well-known/discord` was.
+2. **A logo and an `og:image`.** There is no 1200x630 image, so link previews
+   render without one and `twitter:card` is `summary` rather than
+   `summary_large_image`. The same image is the LinkedIn page logo, which is
+   still missing.
+3. **A DeltaV weekly update is due.** The cutover, the drain and the domain are
+   exactly the kind of change that profile exists to carry, and nothing has been
+   posted about any of it.
+
+### Ready to start unattended
+
+1. **The CLI ignores its prompt argument, or reuses session context.** Job#16
+   was asked "In one sentence, what is a GPU?" and answered about idle GPU
+   economics instead. Did not affect the token accounting, and it is the only
+   loose thread from today.
+2. **`web/api/topup.js` must be deleted before mainnet.** Unchanged from every
+   previous snapshot.
+3. **Measure `qwen3.6:35b-a3b` on a card that can hold it.** Still the weakest
+   input to the largest number on the hosting page.
+
+### Worth knowing
+
+- Filming the migration still wants a second machine.
+- The V2 failover path itself — `reassign` between two live providers — has not
+  run. Checkpoints are published and verified, which is the precondition, but
+  no job has actually changed hands on V2.
+
+# Session snapshot, 2026-08-28 (morning)
 
 > Newest first. Earlier snapshots follow below, unchanged.
 > `TODO.md` remains the roadmap; this is the build and defect state.
