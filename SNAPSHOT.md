@@ -1,3 +1,424 @@
+# Session snapshot, 2026-08-28
+
+> Newest first. Earlier snapshots follow below, unchanged.
+> `TODO.md` remains the roadmap; this is the build and defect state.
+
+## 1. Headline
+
+The seven defects gating a V2 deploy are closed, and **V2 is deployed to Monad
+testnet at `0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd`** with all seven
+re-verified against the deployed instance as real transactions. Nothing points
+at it yet; the cutover is scoped in `TODO.md` and not started.
+
+Six things this session found by running code rather than reading it:
+
+- **`src/guest.ts` could not order from a reasoning model at all.** It wrote
+  `.t` for every SSE frame, so the first `{th}` frame crashed it and aborted
+  the stream. Node 1 serves a reasoning model, so the CLI guest had been broken
+  against its own main node. See section 7.
+- **The CLI reported `paid: 0 MON` on a session that had settled 0.0146 MON**,
+  because it read the job before the node's final settlement landed. See
+  section 7.
+- **My own `reassign` fix paid a departing provider on no evidence.** Caught by
+  a Foundry test before it reached the chain. See section 5.
+- **A model that does not fit was being reported as measured** at the reference
+  machine's speed, quoting 215 tok/s to a 2 GB card. See section 9.
+- **`PINNED` was stale.** `qwen3.8-27b` is 12 providers at median $3.000, not
+  the 1 provider at $2.550 recorded. See section 9.
+- **V1 `closeJob` reverts in production** after a settle that exhausts the
+  escrow, burning 120,000 gas each time. Three occurrences in three days of
+  node 1's journal. This is defect 6 observed from outside. See section 6.
+
+A dynamic income calculator now ships on `/hosting.html`, built on four
+throughput measurements rather than a formula.
+
+**Resuming work: read section 11 first.**
+
+## 2. The four operator items, settled
+
+- **Faucet disabled and verified.** `TOPUP_DISABLED=1` is set in Vercel
+  production and the live endpoint returns
+  `503 {"error":"faucet disabled; fund the guest wallet yourself"}`. Verified
+  against the endpoint rather than the config. The public faucet at
+  `agents.devnads.com` still funds a visitor with no MON, so the site remains
+  openable by a stranger.
+- **House wallet not refilled**, per the operator: the faucet site's limit is
+  reached. It read **4.43 MON** at the start of the session and **4.29 MON** at
+  the end, the difference being gas it paid as the second provider in the V2
+  live checks. Both figures are well above the 1.4285 recorded in the previous
+  snapshot. Nothing this session depends on it, because the faucet is off and
+  no longer draining it.
+- **Cloud kitchen** was already deleted last session. No work.
+- **Domain** pending purchase. It blocks the MetaMask warning and the legal
+  contact addresses. It does **not** block the V2 cutover, which was checked
+  explicitly.
+
+**Price band unchanged at `median x 0.9`.** `.env` already carried it and node
+1 resolves it live at $1.002/M against a ten provider band. No work needed.
+
+## 3. Work that produced nothing is no longer billed
+
+The operator's rule: a guest pays for output they received, and a hard
+technical failure costs the node its compute rather than the guest their MON.
+
+`src/billing.ts` splits the per-job counter in two. `delta` is delivered and is
+the only thing the settle ticker charges for. `hold` is work in flight whose
+deliverability is undecided, and nothing ever settles out of it.
+
+- **Planning is atomic.** Tokens accrue to `hold` and are billed only when
+  `makePlan` returns a valid plan. Job#75's 0.2736 MON for a plan that never
+  existed cannot recur.
+- **Plan runs bill per step.** `step_done` releases exactly that step's count;
+  a step that fails, hits an engine error, or is cut off by an abort is written
+  off with the size logged. Held tokens stay exact under wave parallelism
+  because releases are capped at what the pool holds.
+- **`serveJob` is unchanged and deliberately so.** It writes each token to the
+  guest in the same breath as it bills it, so billed and delivered are the same
+  set by construction, and a stream cut off halfway still delivered the half it
+  sent.
+
+Terms 3.1 now states the commitment, which the code backs. 14 tests, including
+five that drive the real `executePlan` and account for its events exactly the
+way the `/plan/run` handler does.
+
+## 4. The 24 GB catalog gap, closed on an operator decision
+
+`qwen3.8:27b` added at 16,920 MiB weights, 266,240 B/token KV, 262,144 trained
+context. Every figure was read from the published artefacts on 2026-08-27, the
+same way every other row was: the manifest layer sum for weights (16,032 MiB
+model plus an 888 MiB vision projector), `file_type` Q4_K_M from the config
+blob, and `block_count 65 x head_count_kv 4 x (key 256 + value 256) x 2` from a
+range-fetched GGUF metadata header. The locally installed copy is 16,920 MiB,
+which confirms the manifest arithmetic independently.
+
+What is measured is the sizing. What is **not** measured is the model running
+well on a 24 GB card, which rests on a second-hand report from a friend of the
+operator. The catalog row and its comment both say so.
+
+One thing the header turned up: `qwen35.full_attention_interval` is 4, so only
+every fourth layer keeps a full KV cache and `kvPerTokenFromInfo` does not
+model that. The 266,240 figure is therefore pessimistic, probably by a lot,
+which costs context and never costs a spill to CPU.
+
+## 5. The seven V2 defects
+
+All closed. `contracts/test/DinnerNodeV2Defects.t.sol` has a section per
+defect, each written as the attack rather than the fix: it does the thing a
+guest or provider could actually do and asserts the money that changes hands.
+48 contract tests pass.
+
+1. **`settle` is clamped to published progress.** `Checkpoint` gains a `billed`
+   count beside the visible `tokens`, and `settle` cannot take a job's paid
+   token count past it. `tokens` stays cumulative across providers, so a
+   replacement's headroom is what it published minus what the job already paid
+   for.
+2. **`reassign` settles the outgoing provider out** against its own published
+   checkpoint, bounded by the same `_allowed` a settle would use. A requester
+   could previously let a node stream for a full settlement interval and
+   reassign a moment before it settled, repeatably, for one transaction.
+3. **`reassign` moves `maxTokensPerSecond` down only**, mirroring the rate. It
+   could previously raise the bound the job locked at open.
+4. **Checkpoints must strictly advance in both counts**, killing same-height
+   hash rewrites, and each extends a `chainHash` over the whole history
+   including which provider published it.
+5. **Reputation ignores self-dealing.** `tokensServed` and a new
+   `lifetimeEarned` count only arm's-length jobs; `earned` stays a withdrawable
+   balance and always accrues.
+6. **`settle` no longer auto-closes an exhausted escrow.** It emits
+   `JobExhausted` and leaves the job open so `topUp` can rescue it. Inert,
+   because `remainingBudget` is zero.
+7. **`getJob`, `getProvider`, `getCheckpoint` and `getPlan` return named
+   structs**, and `remainingBudget(jobId)` publishes the rule so a client does
+   not reimplement it.
+
+### Three design decisions worth knowing
+
+- **The checkpoint needed a second count.** Clamping `settle` to
+  `checkpoints[jobId].tokens` as `TODO.md` wrote it would have made reasoning
+  unbillable, because reasoning is charged (terms 3.1) and deliberately
+  excluded from the hash chain, which must cover exactly the text a replacement
+  is handed. `billed` is what settle clamps against; `prefixHash` still covers
+  visible text only.
+- **`commitCheckpoint` was never called by anything.** Checkpoints existed only
+  as SSE frames, so a clamp against a checkpoint that nothing writes would have
+  clamped every settlement to zero. `settle` now carries the checkpoint in the
+  same transaction, and `openJob` takes a `requireCheckpoints` flag so a
+  streaming job gets the hard guarantee while a plan run, which has no single
+  growing prefix, takes its ceiling from `commitPlan` instead.
+- **The self-dealing guard is partial and says so.** Two wallets still inflate
+  the counters for the price of gas. Harder and no longer free, not prevented.
+
+### One defect I introduced and the tests caught
+
+The first `reassign` used `_allowed(j, cp, type(uint256).max)`, which falls
+through to the full throughput allowance when no checkpoint exists. That paid a
+departing provider for work it had never evidenced, including on a job
+reassigned in the same second it opened. Guarded on `cp.billed > 0`.
+
+## 6. V2 deployed and verified on chain
+
+Deployed from the node 1 key. `scripts/v2-live.mjs` re-checks all seven defects
+against the deployed contract with real wallets, real MON and real elapsed
+seconds. **27 checks, 0 failures.** Foundry proves these where time is a
+variable and gas is free; the script proves them where neither is, which is
+where this project has been bitten before.
+
+Selected live results:
+
+- A replacement published a checkpoint covering the whole 60,000 token answer
+  and was paid for 30,000. Cumulative stayed 60,000 rather than 90,000.
+- The outgoing provider collected 10,000 to 30,000 tokens on reassign instead
+  of being stranded.
+- A job opened against a 100 tok/s node, handed to a 10,000 tok/s node, then
+  billed for 1,000,000 tokens: paid for 500.
+- Self-dealing moved `earned` and left `tokensServed` and `lifetimeEarned`
+  untouched.
+- `topUp` revived an exhausted job.
+
+Two live expectations of mine were wrong on the first run, both because the
+defect 2 and defect 3 fixes interact: reassign settles the outgoing provider
+out **and** lowers the throughput cap in the same call. The contract was right
+and the assertions were not.
+
+### Defect 6, observed in production on V1
+
+Job#91's log reads
+`close FAILED: closeJob reverted (gas 120000, used 120000)`. V1's `settle`
+auto-closes on an exhausted escrow, so the provider's own `closeJob` a moment
+later hits `require(j.open)` and reverts. Monad charges the limit, so each one
+burns 120,000 gas for nothing. Three occurrences in the last three days of node
+1's journal. Harmless beyond the waste and an alarming log line, and V2 removes
+it.
+
+### Checkpoint gas, measured on the deployed contract
+
+| call | gas |
+|---|---|
+| V2 settle, no checkpoint | 55,498 |
+| V2 settle, first checkpoint on a job | 132,864 |
+| V2 settle, every checkpoint after | 61,791 |
+
+The four slots are warm after the first write, so the guarantee costs **77,366
+gas once per job and 6,293 gas per settle thereafter**. For comparison the live
+node currently budgets 113,430 for a V1 settle. Different jobs in different
+storage states, so treat it as indicative, but V2 with the guarantee on does
+not look more expensive than V1 with it off. There is no economic reason to
+ship V2 with `requireCheckpoints` disabled.
+
+## 7. Two client defects, found by verifying
+
+Both were pre-existing and both were invisible from the node's own logs.
+
+- **`src/guest.ts` crashed on the first reasoning frame.** It wrote
+  `JSON.parse(l).t` for every SSE frame, so a `{th}` frame produced
+  `ERR_INVALID_ARG_TYPE` and aborted the stream mid-answer. The three frame
+  shapes are now handled and reasoning is counted and reported separately.
+- **The CLI printed `paid: 0 MON` on a session that had settled 0.0146 MON.**
+  Settlement is asynchronous to the stream, so reading the job the instant the
+  stream ends reads a job the node has not finished paying. It now waits for
+  the job to close, prints tokens billed and escrow refunded, and says plainly
+  when it gave up waiting rather than passing a snapshot off as a total.
+- **The process hung after printing.** `watchContractEvent`'s poller holds the
+  event loop open. The unwatch handle is kept and called. Exit code was 124 and
+  is now 0.
+
+Verified on job#93: `paid: 0.05 MON for 1651 tok billed`, exit 0.
+
+### An economic finding worth a decision
+
+Job#93 was a one-sentence answer. It cost the full 0.05 MON escrow and the
+split was **20 visible tokens against 1,631 reasoning tokens**, so 98.8% of the
+bill was reasoning and nothing was refunded. Job#92 was the same shape at 15
+against 422.
+
+This is disclosed behaviour. Terms 3.1 warns that reasoning is billed and that
+it "can be roughly three times the size" of the answer. The measured ratio on a
+short prompt is closer to 80x. On a long briefing the ratio is fine; on a quick
+question the fixed reasoning cost swamps everything. Three options, and the
+choice is the operator's:
+
+1. Turn thinking off for short prompts, as plan steps already do.
+2. Show the guest the ratio before they order.
+3. Correct the "three times" figure in terms 3.1, which is the option with a
+   compliance edge because it currently understates what happens.
+
+## 8. The V2 cutover: what is left
+
+Scoped by reading every call site and measuring the deployed contract. Full
+checklist in `TODO.md`. Not blocked on the domain.
+
+- **A. Without these V2 does not run.** `registerProvider` gained
+  `maxTokensPerSecond` and `src/host.ts:599` passes three arguments, so a node
+  cannot register at all. `openJob` gained `requireCheckpoints` across six call
+  sites. `settle` gained three arguments, and V2's two overloads mean the
+  client ABI should carry only the five-argument form. Both ABIs, both
+  `registry.ts` bodies, both addresses.
+- **B. Without these V2 costs more and delivers nothing.** `host.ts` must
+  publish checkpoints inside `settle`, or `requireCheckpoints` stays false and
+  the headline guarantee is switched off. `commitPlan` is called by nothing, so
+  the plan ceiling built last session is dead code.
+- **C. 3.87 MON strands.** Guest holds 1.306 MON in V1 deposits; node 1 holds
+  2.559 MON of unwithdrawn earnings; node 2 holds 0.0022. Not lost, since V1
+  stays callable, but unwatched.
+- **D. `DinnerRatings` must be redeployed.** Its `IDinnerNode` interface
+  hard-codes V1's six-field `jobs()` and both `node` and `groupId` are
+  `immutable`, so it cannot be repointed. A new deploy creates a new Semaphore
+  group and existing memberships do not carry over. Cheap today because the
+  group has zero members, and expensive the first day it does not, which is the
+  argument for cutting over soon.
+
+## 9. The income calculator on /hosting.html
+
+A prospective node operator can pick VRAM and context and get the recommended
+model, whether it fits, the context it leaves room for, throughput, and gross
+minus gas minus power. Hours, utilisation, watts and electricity price are
+adjustable, and there is a field for the operator's own measured tok/s.
+
+This page is a recruitment pitch, and the project has already published a wrong
+earnings figure once: $0.60/hour when the truth at the rate then registered was
+about $0.005. Everything below exists so that cannot happen again.
+
+### Throughput is measured
+
+Four models on the reference machine (RTX 5070 Ti Laptop, 12,227 MiB VRAM, 30
+GB RAM), one resident at a time, unloaded between runs, with the GPU/CPU split
+read from `/api/ps` immediately after each run.
+
+| model | weights | tok/s | on GPU |
+|---|---|---|---|
+| `llama3.2:1b` | 1,259 MiB | 215.5 | 100% |
+| `qwen3:8b` | 4,987 MiB | 49.5 | 100% |
+| `qwen3.8:27b` | 16,920 MiB | 4.3 | 49.4% |
+| `qwen3.6:35b-a3b` | 21,573 MiB | 40.4 | 42.8% |
+
+Reading the split is what made these trustworthy. An earlier pass reported 27.7
+tok/s for `qwen3:8b` and it was contention with a model the node had kept
+alive, not the model's speed.
+
+The two rows that fit agree to within 10% on `tok/s x weights`, which is the
+evidence that decoding is bandwidth bound and that scaling by size is
+legitimate **for a model that fits**. Effective bandwidth is 259,086 MiB/s,
+about 272 GB/s, well under the card's spec sheet, which is expected at a
+measured 65 W peak. The two spilled rows sit 9x apart on identical hardware, so
+a spilled figure is reported as a measured floor and never extrapolated.
+
+**The MoE needed separate treatment.** Scaling on resident weights predicted 12
+tok/s for a model measured at 40 while spilling, which is impossible.
+`src/models.ts` gains an optional `activeMB`, set to 1,900 for
+`qwen3.6:35b-a3b` from 3B active parameters at Q4_K_M. Derived, not measured,
+and marked as such: it is the least certain input on the page and it drives the
+largest number.
+
+### Three results worth acting on
+
+- **16 GB earns less than 12 GB.** At 100% utilisation and 12 h/day, $3.87/mo
+  against $20.13/mo. The picker moves a 16 GB card to `qwen3:14b`, which the
+  market prices at roughly half what it pays for `qwen3:8b` while running about
+  three times slower. Recorded as a regression test, because a price refresh
+  could silently reverse it.
+- **The 6 to 8 GB tier has no market price at all.** `qwen3:1.7b`,
+  `qwen2.5:3b` and `qwen3:4b` were queried and none has an OpenRouter listing,
+  because nobody sells a model that small as an API. The page shows no income
+  rather than inventing one, and says why. Net at that tier is negative,
+  because electricity is still real.
+- **`PINNED` was stale.** `qwen/qwen3.8-27b` is 12 providers at median $3.000,
+  recorded as 1 provider at $2.550. `qwen/qwen3-14b` is 3 providers, recorded
+  as 1. Refreshed from live data, which also strengthens the 24 GB catalog
+  entry from section 4 considerably. Separately, Darkbloom cut its input price
+  from $0.070 to $0.050, moving our free-input crossover from 4.3x to 6.0x.
+
+### What the page reports
+
+At the honest default of 5% utilisation and 12 h/day, a 12 GB card nets about
+**$1.01/month**. At 100% utilisation, which is a ceiling rather than a forecast:
+
+| VRAM | model | tok/s | price | net |
+|---|---|---|---|---|
+| 8 GB | `qwen3:4b` | 108.7 (est) | unpriced | -$3.51/mo |
+| 12 GB | `qwen3:8b` | 49.5 (measured) | $0.410/M | $20.13/mo |
+| 16 GB | `qwen3:14b` | 29.3 (est) | $0.216/M | $3.87/mo |
+| 24 GB | `qwen3.8:27b` | 15.3 (est) | $2.700/M | $44.71/mo |
+| 32 GB | `qwen3.6:35b-a3b` | 136.4 (est, weakest) | $1.003/M | $155.96/mo |
+
+Utilisation is the first input, defaults to 5%, and the page states that demand
+today is near zero. Gas is one tenth of gross by construction, because
+`SETTLE_GAS_MULTIPLE` is 10.
+
+### Anti-drift, and two bugs it caught
+
+The page's data is generated from `src/models.ts` and `src/pricing.ts` by
+`scripts/gen-hosting-calc.ts`. `src/__tests__/earnings.test.ts` fails if the
+generated block goes stale or if the page's arithmetic disagrees with
+`src/earnings.ts` anywhere on a 9x3x3 grid of inputs.
+`web/src/lib/__tests__/hosting-calc.test.ts` mounts the real page body in jsdom
+and drives the real script.
+
+Two bugs surfaced there before shipping:
+
+- A model that does **not** fit was reported as `measured` at the reference
+  machine's speed, which would have quoted `llama3.2:1b` at 215 tok/s to
+  someone with a 2 GB card. The fit check now precedes the measured branch.
+- The page threw outright when an operator entered their own tok/s, the path it
+  actively recommends, because `SOURCE_NOTE` had no `given` entry.
+
+Three pricing tests broke on the `PINNED` refresh and were asserting market
+literals that had moved. They now assert the relationship and derive the
+crossover from the band. One of them claimed to test "no endpoint detail" using
+a fixture that had since gained endpoints, and now constructs its own.
+
+## 10. Live state
+
+- **Both nodes restarted onto this session's code and serving.** Node 1
+  `qwen3.6:35b-a3b` at $1.002/M with 2,141 settles of gas covered; node 2
+  `llama3.2:1b` at $0.181/M. Discovery and tunnel up under systemd.
+- **V1 `0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92`** is still what the site,
+  both nodes and DinnerRatings use.
+- **V2 `0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd`** deployed and verified.
+  Nothing points at it.
+- **DinnerRatings `0xeb0de71314322e6b0b5d754997dc3ddc1358d87f`**, group still
+  empty.
+- Faucet off. Balances read at the close of the session: house 4.29 MON, node
+  1 key 24.77 MON after paying for the V2 deploy and the live checks. These
+  move with every settlement, so treat them as a timestamp rather than a
+  constant.
+- Real jobs settled this session on V1: #90 through #93.
+- **292 tests pass**: 131 node, 113 web, 48 contract, plus 27 live V2 checks
+  that are run on demand rather than in the suite.
+- Six commits on `session/2026-08-26-hardening-and-node-setup`, nothing pushed:
+  `d2c795b`, `d5caa16`, `7ccf516`, `b907321`, `d20f11c`, `c2d45d2`.
+
+## 11. Next session, start here
+
+### Needs a decision from the operator
+
+1. **Whether to start the V2 cutover.** Section 8 and the `TODO.md` checklist.
+   Argument for soon: DinnerRatings loses no history while its group is empty.
+2. **What to do about the reasoning ratio.** Section 7. The terms currently say
+   three times and the measured figure on a short prompt is about eighty.
+3. **Whether to publish the hosting calculator.** It is built and tested but
+   not deployed. It states earnings honestly enough that the honest numbers are
+   small, which is a positioning choice as much as a technical one.
+
+### Ready to start unattended, in order
+
+1. **`host.ts` publishes checkpoints inside `settle`.** The largest single item
+   in the cutover, and section 6 shows it costs 6,293 gas per settle in steady
+   state. `serveJob` already tracks `prefix`, `produced` and the billed delta.
+2. **Wire `commitPlan` from `PlanPanel.tsx`**, which already computes the hash
+   and the ceiling.
+3. **Drain V1** before any switch: `refund()` the guest's 1.306 MON,
+   `withdraw()` node 1's 2.559 MON, close open jobs.
+4. **Measure `qwen3.6:35b-a3b` on a card that can hold it.** It is the weakest
+   input to the largest number on the hosting page, and it is exactly the
+   contribution an early operator with a 32 GB card could make.
+
+### Not started, still true from previous snapshots
+
+- Filming the migration wants a second machine.
+- The plan front end has never been clicked through by a human in a browser.
+- `web/api/topup.js` must be deleted before mainnet.
+
+
 # Session snapshot, 2026-08-27 (evening)
 
 > Newest first. Earlier snapshots follow below, unchanged.
