@@ -191,6 +191,89 @@ The burner deposits are the interesting line. Those keys live in one browser's
 `localStorage` under `dn_pk` and nowhere else, so 1.21 MON is recoverable only
 if that browser profile still exists. Details in `TODO.md` section C.
 
+
+## 10. Legal review of the v2 work, and what it caught
+
+Run against the failover, the faucet deletion, `reassign`, the footer and our
+Article 50 reading. Lead finding was a defect this session created.
+
+**Blocking, fixed the same night in `db12260`.** `2e34835` falsified a
+published privacy notice. `terms.html` 2.7 said the prompt goes "to whichever
+node you select, in plaintext, and to no one else" and that there is "no longer
+any fallback path"; section 4 said the order simply fails. A failover sends the
+sanitized prompt AND the partial answer to up to two further hosts.
+
+The sharp part: section 3's billing text, added the same day, already described
+a handover in detail. **The document contradicted itself**, which removes any
+argument the drafter did not know. Rewritten, along with the summary bullet.
+
+**Also fixed: a prompt-disclosure route this session opened.** `?peer=`, like
+the pre-existing `?host=`, names a machine that receives the prompt, and the
+browser reads a provider address out of that host's own `/health` without
+checking the machine controls it. A hostile host **cannot be paid**, because
+settlement goes to a registered address on chain, but it receives the prompt
+and the partial answer. This is the open `/announce` hijack in `TODO.md` P2,
+reachable by a route that does not need discovery wired. Banner before
+ordering, plus `terms.html` 2.9. The signed-nonce challenge closes both.
+
+**Cleared:** the faucet deletion and its disclosure; `reassign` on custody and
+payment-services grounds; the footer wording; our Article 50 reading on all
+three points.
+
+**The one compliance fact worth keeping.** The review named it the strongest
+the project has, and it became true only this week: no key the operator
+controls signs a value movement a third party can trigger. `reassign` requires
+`msg.sender == j.requester`. Recorded in `SECURITY_REVIEW.md` 2b as a standing
+rule rather than a closed item.
+
+**Left for the operator**, both wanting their wording: a provider-side clause
+for `reassign` before mainnet, and a "both nodes are mine" caveat on any
+failover claim, since `terms.html` says node operators are independent third
+parties while both live nodes are one household on one LAN.
+
+## 11. Market review: the mechanism holds, the thesis does not
+
+Recorded, not acted on. Cutting a thesis is a decision, and it has not been
+made.
+
+**What survives.** The gap is real and the market leader documents it: OpenRouter
+states it cannot fail over once partial content has been delivered, and does
+not refund cancelled streams on every provider. Nobody resumes across
+providers.
+
+**What does not.** The gap is unclosed because it is not worth closing. Median
+coding-agent output is 252 tokens, so at our own rate a median lost generation
+is worth $0.00025 and a buyer doing a million requests a year loses about $0.25
+to mid-stream death. The continuation half is already solvable client-side by
+re-issuing with the partial as an assistant prefix; `reassign` uniquely
+enforces only the refund for the prefix.
+
+**A4 is contested rather than cut.** Featherless serves 47,400+ models at
+$25/month for any size with unlimited tokens, on positioning close to verbatim
+our thesis. Price elasticity is weak. And the long-jobs premise runs backwards:
+the measured trend is short outputs behind enormous contexts, up to 164:1, so
+migration is worth less over 12 months rather than more. Detail and sources in
+`TODO.md` under "The thesis problem".
+
+**Two findings that are ours regardless of thesis:**
+
+1. **Darkbloom's input price is $0.05, not $0.070.** Break-even against them is
+   6.0x, not 4.3x. Corrected in `TODO.md`. It was wrong in the direction that
+   flattered us and is checkable in one click.
+2. **Prefill is unbilled**, confirmed in our own code. `SECURITY_REVIEW.md` 2b.
+   Free input is the giveaway and the availability hole wearing one set of
+   clothes, and it points at a workload `REFRAME.md` says we will not serve and
+   `CONTEXT_TOKENS` cannot hold.
+
+**The proposed replacement thesis is auditable metered inference**, and the
+reviewer flagged it as inferred and NOT verified: it found no buyer paying for
+billing attestation today. Five customer conversations settle it. More
+searching does not.
+
+**Recommended and not acted on:** apply to be an OpenRouter provider ahead of
+the model list, on the argument that distribution rather than mechanism took
+Darkbloom to 4.5B tokens in four months.
+
 ---
 
 # Session snapshot, 2026-08-28 (evening)
@@ -211,7 +294,10 @@ it.
   deleted. Section 4. **Not committed and not deployed.**
 - **`DinnerRatings` is correctly deployed and has done nothing**, because the
   group is empty. Section 5.
-- **The site footer states a claim that is now false.** Section 6. Not fixed.
+- **The site footer states a claim that is now false.** Section 6. Fixed.
+- **Both project agents were run against the v2 work.** Sections 10 and 11. The
+  legal one caught a false privacy notice this session had created; the market
+  one refuted the thesis the work sits under.
 
 Sitemap and indexing needed nothing: the operator confirmed the sitemap is
 valid and the URLs are indexed, so that item is closed without work.

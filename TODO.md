@@ -132,7 +132,7 @@ this node actually runs. Ten providers.**
 
 | provider | output $/M | input $/M |
 |---|---|---|
-| Darkbloom | 0.700 | 0.070 |
+| Darkbloom | 0.700 | **0.050** |
 | AkashML | 0.900 | 0.100 |
 | DeepInfra | 0.950 | 0.100 |
 | Venice | 1.000 | 0.100 |
@@ -146,6 +146,12 @@ this node actually runs. Ten providers.**
 
 So the position is: **1.44x the cheapest provider, below the ten provider
 median of $1.114, and free on input.** Not a deep discount, and not a giveaway.
+
+**Corrected 2026-08-28 (night).** Darkbloom's input price is $0.05, not the
+$0.070 this table carried, so the break-even ratio against them is 6.0x rather
+than 4.3x. Band re-read the same night and current on every other row. The
+figure was wrong in the direction that flattered us and is checkable in one
+click, which is the reason to fix it before it reaches a deck.
 
 **Darkbloom is on this list.** Eigen Labs' network is already an OpenRouter
 provider for the same weights, at the bottom of the band. Any pricing claim we
@@ -161,7 +167,7 @@ times the length of the answer:
 - cheaper than 5 of 10 on output alone
 - cheaper than 8 of 10 at a 1:1 prompt-to-answer ratio
 - cheaper than all 10 at 5:1
-- cheaper than Darkbloom once a prompt is 4.3x the answer
+- cheaper than Darkbloom once a prompt is **6.0x** the answer
 
 That is the defensible form of the claim, and it is the one to use in a pitch:
 it is a specific number, it moves with the workload, and anyone can check it.
@@ -190,6 +196,54 @@ not true of the model we actually serve.
       migration beats OpenRouter's refund only when the work already done is
       expensive, which means only when jobs are long. **A4 is the moat.**
       Resolving it is worth more than anything else in this file.
+
+### A4 is CONTESTED, 2026-08-28 (night)
+
+A market review recommended cutting A4 outright and recording it as resolved
+negative. **It is recorded as contested rather than cut, because that is a
+strategy decision and it has not been made.** The evidence against it, so it
+can be weighed rather than remembered:
+
+- **Featherless AI** serves 47,400+ open-source models as Hugging Face's
+  largest inference provider, at $25/month for any model size with unlimited
+  tokens, on stated positioning that is close to verbatim this thesis: the long
+  tail of fine-tuned and niche-language models no other provider hosts, against
+  competitors covering only the top 100. If that holds, the window closed
+  before the thesis was written down.
+- **Weak price elasticity.** The OpenRouter 100-trillion-token study (arXiv
+  2601.10088) finds even drastic cost differences do not fully shift demand. So
+  "long-tail model plus lower price" has both halves independently
+  disconfirmed.
+- **The long-jobs premise runs backwards.** TraceLab (arXiv 2606.30560, ~4,300
+  coding-agent sessions) measures long contexts with SHORT outputs: median 252
+  output tokens for one agent, 184 for another, p90 under 1.7k. A ReAct agent
+  can sit at a 164:1 input-to-output ratio. Migration is worth less over the
+  next 12 months on this trend, not more, because the per-call unit of work is
+  shrinking while the per-call context grows.
+- **The value of the gap, sized.** At our own $1.002/M a median lost generation
+  is worth $0.00025 and a half-lost 10,000-token run $0.005. At the 99.91%
+  routed availability OpenRouter publishes for our exact model, a buyer doing a
+  million requests a year loses about $0.25 to mid-stream death.
+
+What survives unchallenged: the gap itself is real and the market leader
+documents it in its own words. OpenRouter states it cannot fail over once
+partial content has been delivered, and does not refund cancelled streams on
+every provider. Nobody resumes across providers. The question the review raises
+is not whether we are alone in doing it. It is whether anyone will pay for it.
+
+**The proposed replacement thesis, flagged by the reviewer as inferred and NOT
+verified:** auditable metered inference. The settlement record here is a public
+third-party-checkable object rather than an invoice, and a mid-stream failure
+elsewhere gives the buyer no usage number at all. Stripe's acquisition of
+OpenRouter is offered as evidence that token metering is now understood as a
+payments problem. The reviewer found **no buyer currently paying for billing
+attestation** and said so. Five customer conversations settle this; more
+searching does not.
+
+**Also recommended and not acted on:** apply to be an OpenRouter provider,
+ahead of item 8's model list, on the argument that distribution rather than
+mechanism is what took Darkbloom from research preview to 4.5B tokens in four
+months, and that we already meet most of the published provider requirements.
 
 ## P1: DinnerNodeV2, settle before deploying
 
@@ -396,6 +450,26 @@ contract holds **3.678 MON**. Identified so far:
       are properties of that shape and not of that file: an endpoint gated only
       on chain state a caller can create is a denial-of-wallet, and a nonce
       serialized per instance is not serialized.
+- [ ] **Prefill is unbilled, and it is the node's scarcest resource.** `settle`
+      charges `tokensDelta`, which counts tokens GENERATED, so a guest can send
+      a 30,000 token prompt, take one token back, and pay for one token while
+      consuming the node's full context prefill. `gate()` in `src/host.ts`
+      accepts anything under `PROMPT_BUDGET`, so no exploit code is needed,
+      only a long prompt in the box. Found 2026-08-28 (night) by a market
+      review and confirmed in the code. This is the same line the pitch calls
+      "free on input", which makes it a giveaway and an availability hole
+      wearing the same clothes. Fix is small: bill input at a nominal rate, or
+      bound prompt length against the escrow. **Decide it together with the
+      long-context question below, because they are the same decision.**
+- [ ] **We price for a workload we have decided not to serve.** Free input pays
+      most at high input-to-output ratios, and at the 164:1 an agent reaches,
+      Darkbloom costs $8.90 per million output-equivalent against our $1.002.
+      That is the strongest economic claim in the project and we cannot honour
+      it: `.context/REFRAME.md` section 4 says we do not sell long input
+      prompts, and `CONTEXT_TOKENS` is 32,768, which cannot hold an 82K
+      context. Either long context becomes the product and the hardware
+      requirement changes, or free input comes out of the pitch as a claim that
+      only pays in a case we decline.
 - [ ] `deposit`, `openJob` and `registerProvider` still use fixed padded gas
       limits. Measured with Foundry: `deposit` 55094 against 200000 (3.6x),
       `openJob` 166702 against 250000 to 300000, `registerProvider` 126392 first
@@ -443,6 +517,18 @@ All blocking. See `SECURITY_REVIEW.md` section 4.
       `TOPUP_DISABLED` was set. The client-side funding invariant in
       `web/src/App.tsx` lost its upper bound with it, since the grant size is
       no longer ours to set.
+- [ ] **Node operators have never agreed to `reassign`.** `hosting.html:280`
+      points them at `terms.html` section 5, which covers data duties and says
+      nothing about a live job being taken away and the compensation fixed
+      unilaterally by the contract. On testnet a provider forfeiting valueless
+      MON has no claim. On mainnet, one that streams 40 seconds, publishes no
+      checkpoint and is reassigned to zero has an unjust-enrichment argument
+      under Serbian law, and `DinnerNodeV2.sol:473` deliberately gives it
+      nothing. A clause was drafted by the legal review 2026-08-28 and wants
+      the operator's wording. Raised by the legal review, 2026-08-28 (night).
+- [ ] A handover writes MORE on-chain records keyed to the guest's address.
+      `terms.html` 2.1 describes the footprint as "exactly two items", which a
+      reassign makes an understatement. One sentence in 2.6.
 - [ ] Independent review of the fixed contract.
 - [ ] Serbian counsel on escrow-as-custody and the house wallet as a possible
       transfer service.
@@ -462,8 +548,20 @@ All blocking. See `SECURITY_REVIEW.md` section 4.
       - Expose a public `GET /verify?jobId=` detector backed by the on-chain
         settlement trail. This is a genuine detector and a differentiator worth
         naming in the Delta V material.
-      - Mark the mock output too. Marking real inference and not the mock is
-        worse than either alone.
+      - ~~Mark the mock output too.~~ Moot: there is no mock output left.
+        Replaced by a harder one: **mark output on both the original and the
+        replacement provider's stream.** A failover means one answer can have
+        two producers, and a marking scheme that tags only the first is worse
+        than none.
+      - **Do not plan around 2 December.** The legal review's reading,
+        2026-08-28: we almost certainly never qualified for the grandfathering.
+        Claiming it means evidencing this system was on the market before
+        2 August 2026, against a domain bought last week, new metadata, a new
+        contract and a launch-framed update. Treat 50(2) as due now.
+      - Scope: Serbia is a third country, but Art 2(1)(c) catches third-country
+        providers whose output is used in the Union, and the site is public and
+        indexed. Assume we are in scope. Do not build a plan around not being
+        in the EU.
       - Document the proportionality choice in one page.
 
 ## Assumptions still unmeasured

@@ -385,6 +385,39 @@ Severity: n/a. Status: OPEN. Do not deploy without an independent read.
 
 ---
 
+## 2b. Unpriced prefill, found 2026-08-28 (night)
+
+`settle()` charges `tokensDelta`, which counts tokens the node GENERATED. A
+prompt is therefore free, however long it is, and that is a deliberate pricing
+choice published as "free on input". It is also an unmetered claim on the
+node's scarcest resource.
+
+**The shape of it.** `gate()` in `src/host.ts` rejects a prompt only when it
+exceeds `PROMPT_BUDGET`, derived from `CONTEXT_TOKENS` (32,768). Under that
+ceiling, a guest can send a 30,000 token prompt, receive one token, and pay for
+one token, while the node performs the full prefill. No exploit code is
+required. The cost to the attacker is one `openJob` and its gas; the cost to
+the node is its entire context window of GPU work, repeated.
+
+`MAX_CONCURRENT` and the pressure throttle bound how many run at once, which
+makes this a degradation rather than a takedown, and a job still needs escrow
+to open. Neither bounds the work per job.
+
+**Not fixed.** It sits with a product decision rather than alone: free input is
+the strongest economic claim the project has at high input-to-output ratios,
+and honouring that claim means serving long contexts, which the current
+`CONTEXT_TOKENS` cannot do and `.context/REFRAME.md` section 4 says we will not
+sell. Bill input at a nominal rate, or bound prompt length against the escrow,
+and decide both together. See `TODO.md` P2.
+
+**Standing invariant, worth stating once.** The legal review of 2026-08-28
+named the strongest single compliance fact this project has, and it became true
+only that day: *no key the operator controls may sign a value movement a third
+party can trigger.* The faucet deletion and the removal of `web/api/p/*` are
+what made it true, and `reassign` does not weaken it, since
+`DinnerNodeV2.sol:456` requires `msg.sender == j.requester`. Treat it as a rule
+for anything proposed later rather than as a closed item.
+
 ## 3. Monad transaction discipline checklist
 
 Applied to every `writeContract` and `sendTransaction` site.
