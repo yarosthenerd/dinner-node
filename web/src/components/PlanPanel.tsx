@@ -299,13 +299,13 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
               string, which already ends in "ceiling N MON" and so printed the
               ceiling twice next to the row below it. This also stops the panel
               depending on the node's phrasing. */}
-          <div className="rrow">
+          <div className="prow prow-full">
             <span>{result.plan.steps.length} steps, up to {result.plan.steps.reduce((n, s) => n + s.maxTokens, 0)} tokens</span>
           </div>
-          <div className="rrow dim">
+          <div className="prow dim">
             <span>ceiling</span><span>{costMon} MON</span>
           </div>
-          <div className="rrow dim">
+          <div className="prow dim">
             <span>plan hash</span>
             <span>
               {localHash.slice(0, 10)}…{localHash.slice(-6)}
@@ -317,7 +317,7 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
               {localHash !== result.planHash && <span className="bad"> · node disagrees</span>}
             </span>
           </div>
-          <div className="rrow dim">
+          <div className="prow dim">
             <span>ceiling on chain</span>
             <span>
               {committed
@@ -335,7 +335,7 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
                 const s = result.plan.steps.find(x => x.id === id)!;
                 const st = steps[id];
                 return (
-                  <div className="rrow" key={id}>
+                  <div className="prow" key={id}>
                     <span onClick={() => setOpen(o => ({ ...o, [id]: !o[id] }))} style={{ cursor: 'pointer' }}>
                       {st?.status === 'done' ? '✓ ' : st?.status === 'failed' ? '✕ ' : st?.status === 'running' ? '… ' : ''}
                       {s.title}

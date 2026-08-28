@@ -107,6 +107,16 @@ select:focus, input:focus, textarea:focus { outline:none; border-color:var(--min
 .receipt::before { margin:-16px -14px 10px; transform:rotate(180deg); }
 .receipt::after { margin:10px -14px -10px; }
 .rrow { display:grid; grid-template-columns:52px 70px 1fr; gap:8px; padding:7px 2px; border-bottom:1px dashed #b7ad9e; font-weight:600; }
+/* The plan panel's rows are label/value pairs, not the three-column
+   item/quantity/price rows .rrow describes. Reusing .rrow put every label into
+   its 52px first column, so "4 steps, up to 12288 tokens" and every step title
+   rendered one word per line. Left column takes the space, right column sizes
+   to its content, which is what a receipt looks like. */
+.prow { display:grid; grid-template-columns:1fr auto; gap:12px; align-items:baseline;
+  padding:7px 2px; border-bottom:1px dashed #b7ad9e; font-weight:600; }
+.prow > span:last-child { text-align:right; }
+.prow-full { grid-template-columns:1fr; }
+
 .rtotal { display:flex; justify-content:space-between; padding-top:12px; font-size:15px; font-weight:800; }
 .rtotal b { border-bottom:3px solid var(--mint); }
 .rcost { color:var(--ketchup); font-weight:700; padding-top:8px; }
