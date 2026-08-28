@@ -102,6 +102,12 @@ export default function App() {
   // makes 15 to 47 seconds of silence look like a model working rather than a
   // dead node.
   const [thinking, setThinking] = useState('');
+  /// Reasoning tokens BILLED, which is not derivable from `thinking`. One {th}
+  /// frame is one billed token, and a frame's token boundaries are gone once
+  /// the text is concatenated, so this counts frames as they arrive and then
+  /// takes the node's own figure from the final frame. It used to be
+  /// `thinking.length / 4`, which showed 836 on a stream that billed 920.
+  const [thinkTokens, setThinkTokens] = useState(0);
   const [thinkOpen, setThinkOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [sanitization, setSanitization] = useState<'minimal' | 'balanced' | 'maximal'>('balanced');
@@ -399,7 +405,7 @@ export default function App() {
     // while an answer streams does not silently rewrite the question it was an
     // answer to. On a resume the original prompt stays; it is the same question.
     if (!resume) { setStream(''); cpRef.current = null; liveRef.current = ''; setCanResume(false); setSentPrompt(prompt); setServedByCloud(false); }
-    setThinking('');
+    setThinking(''); setThinkTokens(0);
     const opened: bigint[] = [];
     let finished = false;
     // Set by a {warn} frame, which means the answer completed but the
@@ -553,7 +559,7 @@ export default function App() {
           setStream(base);
           // Reasoning belongs to the attempt that produced it. A failover to a
           // second provider starts its own.
-          setThinking('');
+          setThinking(''); setThinkTokens(0);
 
           const ac = new AbortController();
           abortRef.current = ac;
@@ -641,13 +647,18 @@ export default function App() {
                   // appended to liveRef, so it cannot enter a checkpoint or
                   // the visible answer. It is billed by the host, but the
                   // checkpoint chain covers the visible answer only.
-                  if (msg.th) { lastToken = Date.now(); setThinking(x => x + msg.th); }
+                  if (msg.th) { lastToken = Date.now(); setThinking(x => x + msg.th); setThinkTokens(n => n + 1); }
                   // A checkpoint frame is written after the tokens it covers,
                   // so at this instant liveRef holds exactly the prefix that
                   // msg.cp.h hashes. Snapshotting here, rather than tracking
                   // the running text, is what makes the resume payload
                   // verifiable by the next provider.
                   if (msg.cp) cpRef.current = { text: liveRef.current, n: msg.cp.n, h: msg.cp.h };
+                  // The node's own count, which is what it settled against.
+                  // Frame counting above should already agree; this makes the
+                  // displayed number the billed number by construction rather
+                  // than by the two staying in step.
+                  if (msg.bill && typeof msg.bill.reasoning === 'number') setThinkTokens(msg.bill.reasoning);
                   // The host writes {err} and then STILL writes the final
                   // checkpoint and [DONE]. Treating [DONE] as success here
                   // showed the guest a truncated answer, a success message and
@@ -893,7 +904,7 @@ export default function App() {
                     <div className={'thinking' + (thinkOpen || !stream ? ' open' : '')}>
                       <button className="thinking-head" onClick={() => setThinkOpen(o => !o)}>
                         {stream ? '▸ thought before answering' : '◌ thinking…'}
-                        <span className="dim"> ({Math.ceil(thinking.length / 4)} tok, billed as output)</span>
+                        <span className="dim"> ({thinkTokens} tok, billed as output)</span>
                       </button>
                       {(thinkOpen || !stream) && <div className="thinking-body">{thinking}</div>}
                     </div>

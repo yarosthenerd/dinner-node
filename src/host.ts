@@ -503,6 +503,13 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
   console.log(`[job#${jobId}] serving ${estTokens(String(prompt))} tok in via ${e.kind}/${e.model}${resume ? ` (resume from ${resume.n} tok)` : ''}`);
 
   let produced = 0;
+  // Reasoning frames BILLED, which is one per frame, the same increment the
+  // ledger takes. Counted rather than estimated from the text: estTokens is
+  // chars/4 and came out 84 tokens under the truth on job#15, so the figure the
+  // guest was shown was 9% below the figure they paid. Terms 3.1 says the
+  // guest can see what they are charged for, and that has to be the same
+  // number.
+  let reasoned = 0;
   let sinceCp = 0;
   // Unbilled reasoning, accumulated only to report the ratio. This node
   // performs roughly twice the compute it invoices and nothing measured it
@@ -528,6 +535,7 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
         // increments the same counter.
         active.get(jobId)!.delta++;
         prog.billed++;
+        reasoned++;
         // It is still NOT appended to `prefix` and NOT counted in `produced`.
         // The checkpoint chain covers the visible answer only, because that is
         // the text a replacement provider is handed and must reproduce. What
@@ -563,12 +571,16 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
     if (!res.writableEnded) res.write(`data: ${JSON.stringify({ err: String(err?.message ?? err) })}\n\n`);
   }
   clearInterval(hb);
-  if (thought) {
-    const th = estTokens(thought);
-    console.log(`[job#${jobId}] ${produced} tok visible + ~${th} tok reasoning, both billed (${Math.round((th / (th + produced || 1)) * 100)}% reasoning)`);
+  if (reasoned > 0) {
+    console.log(`[job#${jobId}] ${produced} tok visible + ${reasoned} tok reasoning, both billed (${Math.round((reasoned / (reasoned + produced || 1)) * 100)}% reasoning)`);
   }
   if (!res.writableEnded) {
-    res.write(`data: ${JSON.stringify({ cp: { n: (resume?.n ?? 0) + produced, h: keccak256(stringToHex(prog.prefix)), final: true } })}\n\n`);
+    // `bill` is what this node actually charged for this stream, sent so the
+    // guest reads the node's own numbers rather than re-deriving them from the
+    // text. The browser cannot compute the reasoning figure honestly: the
+    // frames are the billing unit and their token boundaries are not
+    // recoverable from the concatenated string.
+    res.write(`data: ${JSON.stringify({ cp: { n: (resume?.n ?? 0) + produced, h: keccak256(stringToHex(prog.prefix)), final: true }, bill: { visible: produced, reasoning: reasoned } })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
   }
