@@ -10,8 +10,10 @@ stale and marks several things done that never existed. Read alongside:
 Legend: `[x]` done and verified, `[~]` done but not verified against a live run,
 `[ ]` open.
 
-Last updated 2026-08-26 (evening). Now items 1, 2, 3 and 4 are closed. Item 5,
-the cloud kitchen as a real second provider, is the load-bearing one left.
+Last updated 2026-08-28 (evening). Now items 1 through 4 are closed, and 5 and
+7 are struck: the cloud kitchen they were written about was deleted in
+`fd86fb8`. The load-bearing item is item 5 as it now reads, `reassign` between
+two live providers, triggered from a browser.
 
 ---
 
@@ -21,10 +23,14 @@ P0 is closed. Every item the 2026-08-25 sessions opened has been fixed and
 verified: three live serverless exposures, the engram and privacy layer, a
 plaintext prompt path in the CLI, and thirteen further defects the verification
 agents found, several of which the fixes themselves had introduced. The root of
-the repo now typechecks for the first time, and `web/` has 36 regression tests.
+the repo now typechecks, and `web/` has 115 regression tests.
 
-Nothing is deployed. The live site still runs the old code, including the 10 MON
-faucet and the health endpoint that sends a transaction on an RPC blip.
+The tree is deployed and the site is live at `dinnernode.xyz` on v2. **There is
+no serverless surface left at all:** `web/api/` is an empty path, because
+`fd86fb8` deleted the cloud kitchen and this session deleted the faucet. Every
+transaction a guest causes is now signed by the guest's own key or by a node
+the operator runs on a machine, and none by a key sitting in Vercel's
+environment.
 
 **The next move is not more hardening.** It is making the differentiator
 demonstrable and the price honest. See "Now" below.
@@ -61,21 +67,28 @@ Ordered. Everything here is ahead of every remaining defect in this file.
    The per-job budget in `web/src/App.tsx` had to move with it: at 2.67e19 the
    old 0.01 MON escrow bought 374 output tokens instead of 5,000, so it is now
    0.05 for about 1,870.
-5. **Make the cloud kitchen a real second provider.** This is the load-bearing
-   item and it is the reason the section exists. `web/api/p/job.js` does not
-   accept a `resume` payload at all: it destructures `{ jobId, prompt }` and
-   streams one hardcoded sentence while settling real MON. Checkpoint
-   verification lives only in `src/host.ts`. So mid-answer migration, the
-   claimed differentiator, is reproducible today only between two LAN hosts run
-   by hand, and cannot be triggered from a browser by a reviewer. Needs: accept
-   `resume`, verify the checkpoint hash, call a real inference API.
+5. **`reassign` between two live providers, from the browser.** The
+   load-bearing item, and it replaces the cloud-kitchen item that stood here.
+   `fd86fb8` deleted `web/api/p/job.js`, `health.js` and `_lib.js`, so the
+   canned second provider is gone and **the browser has no failover target at
+   all**: an order against a dead node fails and returns its escrow.
+   `web/src/App.tsx:493` says as much in a comment. What exists is the whole
+   precondition and none of the product: v2 `reassign` pays the outgoing
+   provider for exactly what it published and clamps the replacement to the
+   suffix, proven by 27 live checks in `scripts/v2-live.mjs`; `host.ts`
+   publishes a checkpoint inside `settle`; the browser has a manual resume
+   button. Needs: a peer URL the client can fail over to, an automatic
+   failover on stream death rather than a button, and a `reassign` call so the
+   handover is the contract's and not a convention between two hosts.
 6. **Record the migration demo.** Start a job, kill the laptop mid-answer, watch
    it continue elsewhere, with an on-chain receipt showing two providers paid
    for disjoint token ranges. Nobody in the competitive set can run this.
-7. **Separate the faucet key from the cloud-kitchen provider key.** Both derive
-   from `HOUSE_PK` today, so the on-chain graph is a closed loop and any usage
-   or revenue figure is house-to-house flow. Do this before showing anyone a
-   number.
+7. ~~**Separate the faucet key from the cloud-kitchen provider key.**~~ Moot
+   2026-08-28. Both halves are gone: the cloud kitchen was deleted in
+   `fd86fb8`, and `web/api/topup.js` was deleted this session. `HOUSE_PK` no
+   longer signs anything a guest can trigger. The underlying warning stands in
+   a different form: any usage figure produced by the operator's own wallets is
+   house-to-house flow, whatever the keys are.
 8. **Model list with per-model rates.** Cheapest way to look like a marketplace
    rather than a single-host demo, and it is what the long-tail thesis requires.
 
@@ -351,17 +364,15 @@ warning and the legal contact addresses, not this.
 
 ## P2: hardening still open
 
-- [ ] `web/api/p/job.js` is an unauthenticated denial-of-wallet. The only gate is
-      `job.provider == house && job.open`, so anyone opens a 0.01 MON job and
-      fires N concurrent POSTs; all N read `open == true` before any closes, and
-      each runs a full settle chain plus `closeJob`. The house pays far more gas
-      than the job can return. Needs a requester signature or a shared served
-      flag.
-- [ ] Cross-instance nonce collisions on `HOUSE_PK`. The promise chain in
-      `job.js` serializes within one serverless instance and nothing serializes
-      across them, so two concurrent guests collide and a settle is lost. A
-      public `health.js` poll can collide with an in-flight settle the same way.
-      Needs a shared nonce source or a single serialized worker.
+- [x] ~~`web/api/p/job.js` unauthenticated denial-of-wallet~~ and ~~cross-instance
+      nonce collisions on `HOUSE_PK`~~. Both closed by deletion rather than by a
+      fix: `fd86fb8` removed `web/api/p/*` and this session removed
+      `web/api/topup.js`, so there is no serverless code and no house key in a
+      serverless environment for either finding to apply to. **Read them before
+      writing any new endpoint that signs with an operator key**, because both
+      are properties of that shape and not of that file: an endpoint gated only
+      on chain state a caller can create is a denial-of-wallet, and a nonce
+      serialized per instance is not serialized.
 - [ ] `deposit`, `openJob` and `registerProvider` still use fixed padded gas
       limits. Measured with Foundry: `deposit` 55094 against 200000 (3.6x),
       `openJob` 166702 against 250000 to 300000, `registerProvider` 126392 first
@@ -384,8 +395,8 @@ warning and the legal contact addresses, not this.
 
 ## Test coverage still missing
 
-`web/` has 36 tests and a measured mutation score of 8 of 9 before this pass.
-Gaps, in the order worth adding:
+`web/` has 115 tests across 5 files and a measured mutation score of 8 of 9 as
+of the pass that recorded it. Gaps, in the order worth adding:
 
 - [ ] The `>128` target cap and the 16-rule cap in `extractSanitizationRules`.
 - [ ] The no-binding path of `getAllEngrams` beyond the one case added.
@@ -400,11 +411,15 @@ Gaps, in the order worth adding:
 
 All blocking. See `SECURITY_REVIEW.md` section 4.
 
-- [ ] **Delete** `web/api/topup.js`. Do not merely disable it: `TOPUP_DISABLED`
-      is an environment variable and a deploy that forgets it is a one-variable
-      mistake with regulatory consequences. The endpoint hardcodes chainId 10143
-      and now asserts it, which is a structural gate, but deletion is the real
-      one.
+- [x] **Delete** `web/api/topup.js`. Done 2026-08-28, deleted rather than left
+      disabled, because `TOPUP_DISABLED` is an environment variable and a deploy
+      that forgets it is a one-variable mistake with regulatory consequences.
+      `web/src/lib.ts` `faucet()` no longer calls `/api/topup` and goes straight
+      to the public testnet faucet, which is not ours and can refuse. Nothing
+      was lost that worked: the endpoint had granted nothing since
+      `TOPUP_DISABLED` was set. The client-side funding invariant in
+      `web/src/App.tsx` lost its upper bound with it, since the grant size is
+      no longer ours to set.
 - [ ] Independent review of the fixed contract.
 - [ ] Serbian counsel on escrow-as-custody and the house wallet as a possible
       transfer service.
