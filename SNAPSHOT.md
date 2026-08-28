@@ -274,6 +274,55 @@ searching does not.
 the model list, on the argument that distribution rather than mechanism took
 Darkbloom to 4.5B tokens in four months.
 
+
+## 12. A1, A2 and A3 measured, and what they say about the pivot
+
+Full numbers in `TODO.md` under "Assumptions". Scripts kept as
+`scripts/bench-throughput.py` and `scripts/bench-prefix-cache.py`, run through
+ollama directly so they measure the machine rather than the billing path.
+
+**The machine is better than the file said.** Generation is 58 tok/s, not the
+25 the roadmap guessed and not the 40.4 the market review used. It is a MoE
+with ~3B active parameters, so speed barely depends on 22.6GB of weights that
+are 57 percent in system RAM. Prefill is 460-490 tok/s and flat to 95k, against
+the 158 tok/s the `App.tsx` cold-start comment claims.
+
+**95k context fits without OOM**, so `CONTEXT_TOKENS=16384` on both live nodes
+is a choice and not a hardware ceiling.
+
+**What breaks is time to first token, and the cost is model load, not prefill.**
+16s at 16k, 43s at 32k, 114s at 40k, because changing `num_ctx` forces a
+reload. Cold TTFT at 95k is 274 seconds. One-shot long-context serving on this
+hardware is not a product.
+
+**Prefix cache reuse is what changes the answer.** Same prefix, new tail:
+**1.36s against 20.9s cold, a 15x cut.** So the shape that works is a session
+held against one node, which is the session job mechanic already built. An
+agent pays the big prefill once and about a second per step after that.
+
+**The conflict nobody had noticed.** We charge zero for input, and `reassign`
+hands the replacement a cold cache. On a 95k session that is 207 seconds of
+prefill the replacement performs and cannot bill for. **Free input and
+mid-answer migration are in direct opposition on exactly the workload a
+long-context pivot would target.** The P2 prefill item and the long-context
+decision are one decision, and this is why.
+
+**A3 resolves without more measurement.** Realized utilisation, read off the
+chain, is **1.13%**; total revenue ever across both contracts is **$0.387**. A
+busy hour is worth $0.209 gross, $0.188 net of settle gas. The break-even then
+turns entirely on how the electricity is counted: 12 to 16 percent utilisation
+if the machine is dedicated, or a 91 percent margin per busy hour and
+utilisation irrelevant under the idle-PC premise the project actually holds.
+
+At 6 percent utilisation the node earns $99/yr. Darkbloom's observed figure is
+about $113 per provider per year across 900+ providers. Independent network,
+different hardware, same order of magnitude. **$100 to $150 a year is what a
+consumer node earns**, and every claim should be sized against that.
+
+A2 is partial: 49.5W mean GPU draw under load, 61.7W peak. Still wants a wall
+meter, for a now-specific reason: at `gpuFraction` 0.43 the CPU does most of
+the work, so a GPU-only figure understates system draw.
+
 ---
 
 # Session snapshot, 2026-08-28 (evening)

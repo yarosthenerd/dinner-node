@@ -568,9 +568,108 @@ All blocking. See `SECURITY_REVIEW.md` section 4.
 
 From `.context/REFRAME.md` section 10. Each is cheap to settle and none has been.
 
-- [ ] A1 throughput on the reference machine. 25 tok/s is a guess. One benchmark.
-- [ ] A2 power draw under load. 250W is a guess. One wall meter.
-- [ ] A3 achievable utilisation. Unmodelled. Decides whether this is a business.
+- [x] **A1 throughput. MEASURED 2026-08-28 (night)**, `scripts/bench-throughput.py`,
+      through ollama directly so the numbers are the machine's rather than the
+      billing path's. `qwen3.6:35b-a3b`, RTX 5070 Ti Laptop 12GB, 24 cores.
+
+      | prompt tok | prefill s | prefill tok/s | model load s | TTFT s | gen tok/s |
+      |---|---|---|---|---|---|
+      | 517 | 2.3 | 222 | 0.0 | 2.3 | 57.5 |
+      | 1,936 | 3.7 | 521 | 0.0 | 3.7 | 62.9 |
+      | 7,777 | 20.4 | 382 | 16.0 | 36.3 | 57.9 |
+      | 15,532 | 34.9 | 446 | 42.7 | 77.6 | 55.2 |
+      | 31,075 | 63.4 | 490 | 114.3 | 177.6 | 54.6 |
+      | 63,085 | 128.9 | 490 | 43.6 | 172.5 | 43.8 |
+      | 95,128 | 207.4 | 459 | 66.4 | 273.8 | 31.9 |
+
+      **The 25 tok/s guess was low by 2.3x.** Generation is 58 tok/s at working
+      context and holds there, because this is a MoE with about 3B active
+      parameters: speed barely depends on the 22.6GB of weights, most of which
+      sit in system RAM at `gpuFraction` 0.43. It degrades only past 32k, to
+      43.8 at 63k and 31.9 at 95k, which is KV cache pressure.
+
+      **Prefill is 460 to 490 tok/s and essentially flat to 95k.** The 158
+      tok/s in the `web/src/App.tsx` cold-start comment is wrong and makes the
+      browser wait longer than it needs to.
+      - [ ] Correct that comment and the watchdog budget derived from it.
+
+      **95k context fits. It does not OOM.** So `CONTEXT_TOKENS=16384` on both
+      live nodes is a configuration choice, not a hardware limit.
+
+      **What actually breaks is time to first token**, and the cost is model
+      load rather than prefill: 16s at 16k, 43s at 32k, 114s at 40k. Changing
+      `num_ctx` forces a reload, so a node serving mixed context sizes pays it
+      repeatedly. Any long-context product must pin one context size.
+
+- [x] **A1b prefix cache reuse. MEASURED**, `scripts/bench-prefix-cache.py`.
+      **This is the result that decides whether long context is serveable.**
+
+      | call | prompt tok | prefill s |
+      |---|---|---|
+      | cold | 11,638 | 20.88 |
+      | identical repeat | 11,638 | 0.12 |
+      | same prefix, new tail | 11,635 | **1.36** |
+
+      An agent that holds a stable context and changes only the tail pays
+      **1.36s per step instead of 20.9s, a 15x reduction.** The product shape
+      that works is therefore a SESSION against one node, which is the session
+      job mechanic already built, rather than one-shot calls.
+
+      **Two limits, both real.** The cache is resident, so interleaved traffic
+      from a second guest evicts it, and `MAX_CONCURRENT` is 2. And it holds
+      only while the session stays on one node.
+
+      **The tension this exposes, which nothing else in this file names:** we
+      charge zero for input, and a reassign hands the replacement provider a
+      cold cache. On a 95k session that is 207 seconds of prefill the
+      replacement performs and cannot bill for. Free input and mid-answer
+      migration are in direct conflict on exactly the workload the pivot would
+      target. Resolve it with the P2 prefill item; they are one decision.
+
+- [~] A2 power draw. **GPU-only measured 2026-08-28: 49.5W mean under load,
+      61.7W peak, 42.2W over a mixed window.** Still wants a wall meter, and
+      the reason is now specific rather than general: `gpuFraction` is 0.43, so
+      the 24-core CPU is doing most of this model's work and a GPU-only figure
+      understates system draw badly. The 250W guess is probably high; 120 to
+      180W is the plausible band and it is not measured.
+- [x] **A3. MODELLED, and it does not need more measurement.** Achievable
+      utilisation cannot be measured without demand we do not have, so it
+      splits into a number that can be read and a number that can be computed.
+
+      **Realized, read off the chain: 1.13%.** 385,704 tokens ever across v1
+      and v2 is 1.79 hours of generation at 58 tok/s, against 158 hours of
+      project age. **Total revenue ever, both contracts, $0.387.**
+
+      **Per busy hour: $0.209 gross, $0.188 net** of the 10 percent settle gas
+      takes at `settleGasMultiple` 10.
+
+      **The break-even depends entirely on how the electricity is counted, and
+      that is the whole answer to A3:**
+
+      | basis | break-even utilisation |
+      |---|---|
+      | dedicated machine, 250W | 15.9% |
+      | dedicated machine, 180W | 11.5% |
+      | **idle PC, marginal draw only** | **91% margin per busy hour, utilisation irrelevant** |
+
+      Under the dedicated reading this is marginal and needs 12 to 16 percent
+      utilisation. Under the idle-PC reading, which is the project's own
+      premise, marginal cost is about $0.016 per busy hour against $0.188 of
+      revenue, so it profits at any utilisation and the only question is
+      whether the absolute number is worth a stranger's attention:
+
+      | utilisation | net revenue |
+      |---|---|
+      | 1.13%, what we have achieved | $18.65/yr |
+      | 6% | $99/yr |
+      | 25% | $413/yr |
+      | 100% | $1,650/yr |
+
+      **The 6 percent row is the one to look at.** It lands on $99, and
+      Darkbloom's observed figure is about $113 per provider per year across
+      900+ providers. An independent network, different hardware, different
+      chain, same order of magnitude. Treat $100 to $150 a year as what a
+      consumer node earns, and size every claim against that.
 - [ ] A4 long-tail demand. See "The thesis problem" above. This is the moat.
 
 ## Docs
