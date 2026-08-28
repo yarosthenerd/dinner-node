@@ -312,16 +312,39 @@ warning and the legal contact addresses, not this.
 
 **C. Value that must be moved before the switch, or it strands.**
 
-- [~] `refund()` the guest's **1.306 MON** sitting in v1 deposits.
-      `scripts/drain-v1.mjs` does this and every other item in section C.
-      Dry run 2026-08-28 confirms **3.8756995575 MON** across the three keys.
-      Not sent: it moves value and wants the operator's word.
-- [ ] `withdraw()` node 1's **2.559 MON** of unwithdrawn earnings, and node 2's
-      0.0022 MON. Roughly **3.87 MON in total** across both.
-      Not lost if skipped -- v1 stays callable forever -- but it is real money
-      in a contract nothing will be watching any more.
-- [ ] Drain open v1 jobs before switching, or their escrow sits until each
-      node's idle timer closes them.
+- [x] `refund()` the guest's v1 deposits, and `withdraw()` both nodes' v1
+      earnings. **Done. Verified on chain 2026-08-28 (night)**, not read out of
+      this file, which had it marked open: `deposits()` and the `earned` field
+      of `providers()` on v1 `0xaF2c...3A92` return **0 for every key
+      `scripts/drain-v1.mjs` covers** -- both node addresses and the house
+      `0xA91a...5CF4`. The 3.8756995575 MON the dry run found is out.
+
+**What is still in v1, and none of it is what the script targets.** The
+contract holds **3.678 MON**. Identified so far:
+
+| what | where | amount |
+|---|---|---|
+| burner deposits | `0x592244b5...` | 1.2143 MON |
+| burner deposits | `0x9880e39f...` | 0.0093 MON |
+| retired provider earnings | `0xEadCAED4...` | 0.0114 MON |
+| escrow in 23 open jobs | jobs 1-25, 39, 63 | about 0.55 MON |
+
+- [ ] The two burner deposits are **probably unrecoverable**. Those are browser
+      wallets: the key lives in one browser's `localStorage` under `dn_pk` and
+      nowhere else. If either browser profile still exists, `refund()` from it
+      works; otherwise that MON stays. Worth one look before writing it off,
+      since 1.21 MON is not nothing.
+- [ ] `withdraw()` the retired provider key `0xEadCAED4...`, if the operator
+      still holds it. It is a pre-rotation key and is not in the script.
+- [ ] The 23 open v1 jobs hold about 0.55 MON of escrow. Twenty are 0.01 MON
+      demo jobs from the earliest sessions. Only the requester or the provider
+      can close a job, and the requesters are mostly those same burner wallets,
+      so most of this is stranded with the deposits above. Job#63's 0.30 MON is
+      the one worth a look: its provider is the house key, which is held.
+- Roughly 1.89 MON of the contract's balance is still unaccounted for. It will
+      be more deposits and more retired-provider earnings, and there is no
+      cheap way to enumerate it: the public RPC caps `eth_getLogs` at 100
+      blocks, so the account list cannot be recovered from events.
 
 **D. `DinnerRatings` has to be redeployed, and it loses history.**
 

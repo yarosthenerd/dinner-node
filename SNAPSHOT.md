@@ -133,9 +133,10 @@ is pure downside. Remove it from the Vercel project.
    the harness this session. Nothing above is live until this runs.
 2. **The two failover prerequisites** in section 4.
 3. **Remove `HOUSE_PK`** from Vercel, section 5.
-4. **`scripts/drain-v1.mjs`.** 3.8756995575 MON across three keys, dry run
-   confirmed 2026-08-28. It moves value and has wanted the operator's word
-   since the afternoon session.
+4. ~~`scripts/drain-v1.mjs`.~~ **Already done, and both `TODO.md` and this
+   file had it marked open.** Checked on chain rather than in the docs:
+   `deposits()` and `providers().earned` on v1 return 0 for every key the
+   script covers. See section 9.
 
 **Next in the code:**
 
@@ -145,6 +146,50 @@ is pure downside. Remove it from the Vercel project.
 2. A4, long-tail demand, still the moat and still unmeasured.
 3. No tests for `src/**`. The settle path moves money and is exercised only by
    running it.
+
+
+## 8. The discovery listener is running against v1
+
+Found while checking the drain, and it matters for section 3, because
+discovery is where peer URLs come from.
+
+```
+GET :4175/health  ->  "registry":"0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92"
+```
+
+That is **v1**. `.env` line 1 says v2 and has since the cutover, so the process
+was started before the address changed and has not been restarted. The figures
+prove it independently: discovery reports node 1 at 79,446 tokens over 54 jobs,
+which is v1's `providers()` exactly; v2's `getProvider()` says 306,258 tokens
+over 14 jobs.
+
+Two consequences. The provider cards on a site wired to discovery would show
+v1's lifetime numbers, and `/announce` verifies an announcing address against
+v1's registry rather than v2's. Both nodes happen to be registered on both
+contracts, so nothing is being rejected today, which is why this was invisible.
+
+**Fix is a restart, not a change.** Worth doing before anything is wired to
+discovery, which section 4 says has to happen for failover to work at all.
+
+## 9. What is actually left in v1
+
+The drain is done for every key `scripts/drain-v1.mjs` covers. What remains is
+a different set of accounts:
+
+| what | where | amount |
+|---|---|---|
+| burner deposits | `0x592244b5...` | 1.2143 MON |
+| burner deposits | `0x9880e39f...` | 0.0093 MON |
+| retired provider earnings | `0xEadCAED4...` | 0.0114 MON |
+| escrow in 23 open jobs | jobs 1-25, 39, 63 | about 0.55 MON |
+
+The contract holds 3.678 MON, so roughly 1.89 of it is still unattributed, and
+it cannot be enumerated cheaply: the public RPC caps `eth_getLogs` at 100
+blocks, so there is no way to recover the account list from events.
+
+The burner deposits are the interesting line. Those keys live in one browser's
+`localStorage` under `dn_pk` and nowhere else, so 1.21 MON is recoverable only
+if that browser profile still exists. Details in `TODO.md` section C.
 
 ---
 
