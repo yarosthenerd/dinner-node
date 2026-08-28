@@ -717,12 +717,28 @@ export default function App() {
           // evict and load, so the cold budget has to clear that with room.
           //
           // The cold budget scales with prompt length, because prompt
-          // evaluation dominates it. Measured on the reference laptop: a 17,042
-          // token prompt took ~110s before the first token, about 158 tok/s of
-          // prompt eval, on top of ~48s if the model has to load. A fixed
-          // budget cannot serve both ends of a 30,720 token range: 150s aborts
-          // every long prompt, and a constant big enough for the longest one
-          // leaves a wedged short job hanging for minutes.
+          // evaluation dominates it. A fixed budget cannot serve both ends of a
+          // long range: a small constant aborts every long prompt, and one big
+          // enough for the longest leaves a wedged short job hanging.
+          //
+          // REMEASURED 2026-08-28, `scripts/bench-throughput.py`, seven prompt
+          // lengths from 517 to 95,128 tokens. Prefill is 460 to 490 tok/s and
+          // essentially FLAT across that whole range, not the 158 tok/s an
+          // earlier single reading suggested. The old divisor of 150 was
+          // therefore budgeting about three times the time prefill actually
+          // needs, so a wedged long-prompt job hung for minutes past the point
+          // it was already dead.
+          //
+          // 300 is deliberately not 490. It is the measured rate with a margin
+          // of about 1.6x, because prefill on a busy node is slower than on the
+          // idle one these numbers came from, and because aborting a healthy
+          // job is a worse failure than waiting out a dead one.
+          //
+          // What the same measurements say NOT to fold in here: model load,
+          // which dominates and does not scale with the prompt at all. It ran
+          // 16s at num_ctx 16k, 43s at 32k and 114s at 40k, and it is paid only
+          // when the node has to load or reload. That is what firstTokenMs
+          // below is for.
           let lastToken = Date.now();
           let streaming = false;
           let streamErr = '';
@@ -738,8 +754,9 @@ export default function App() {
           // a guest arrives on a busy one. Capped, because a node this slow is
           // one the guest should be leaving, not waiting on for ten minutes.
           const measured = Number(health?.firstTokenMs) || 0;
+          const PREFILL_TOK_S = 300;
           const COLD_BUDGET_MS =
-            Math.min(300000, Math.max(60000, measured * 3)) + Math.ceil(promptTokens / 150) * 1000;
+            Math.min(300000, Math.max(60000, measured * 3)) + Math.ceil(promptTokens / PREFILL_TOK_S) * 1000;
           const watchdog = setInterval(() => {
             const budget = streaming ? 30000 : COLD_BUDGET_MS;
             if (Date.now() - lastToken > budget) ac.abort();

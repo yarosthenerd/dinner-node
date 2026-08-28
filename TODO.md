@@ -37,6 +37,72 @@ demonstrable and the price honest. See "Now" below.
 
 ---
 
+## DECIDED 2026-08-28 (night): the session shape
+
+The product is a **session held against one node**, not a one-shot call. This
+follows from A1 and it is not a preference:
+
+- Cold prefill of a 12k context costs 20.9s. The same prefix with a new tail
+  costs **1.36s**. An agent that holds its context pays the big prefill once
+  and about a second a step after that.
+- Cold TTFT at 95k is 274 seconds, so one-shot long-context serving is not a
+  product on this hardware at any price.
+- Generation ramps as the node warms: 20 tok/s on the first request after a
+  load, then 28, 39, 43, reaching about 58 in steady state. A node that serves
+  one request and goes cold never reaches its own throughput.
+
+**Everything below is read in that light.** The session job mechanic already
+exists, so the architecture matches the decision; what does not match yet is
+the configuration, the pricing and the failover story.
+
+### What the decision commits us to
+
+- [x] Pin one context size. Done 2026-08-28: `CONTEXT_TOKENS` 16384 -> 32768 in
+      `.env`. **The nodes must restart to pick it up.** Changing `num_ctx`
+      forces a model reload, so a node that adapts context per request pays 16
+      to 114 seconds repeatedly. One pinned size is the only workable shape.
+- [ ] **65536 is the real target and needs `OLLAMA_NUM_PARALLEL=1` first.**
+      95k loaded and ran here without OOM, so context is a configuration
+      question rather than a hardware ceiling, but ollama divides the context
+      across parallel slots and the machine has 11GB free. Measure before
+      raising it again.
+- [ ] **`OLLAMA_MAX_LOADED_MODELS=1` breaks the session shape outright.** Both
+      nodes share one ollama and serve different models, so every alternation
+      between node 1 and node 2 EVICTS a 22GB model and the next request pays a
+      full reload. This is where the reload times in the A1 sweep came from.
+      Raise it to 2. Node 2's model is 1.3GB and there is room.
+- [ ] `OLLAMA_KEEP_ALIVE=-1` is already set and is correct. Do not change it.
+- [ ] **Keep a node warm on purpose.** A cold node is 3x slower for its first
+      requests, which lands entirely on the first guest of the session. Cheapest
+      version is a periodic one-token self-request when idle. Weigh it against
+      the idle-PC premise: a node that never sleeps is not an idle PC.
+
+### The conflict this decision forces us to resolve
+
+Free input, mid-answer migration and the session shape cannot all three be
+true as currently built.
+
+We charge zero for input. `reassign` hands the replacement a COLD cache, so on
+a 95k session it performs 207 seconds of prefill it cannot bill for. The better
+the session shape works, the worse the failover economics get, because the
+value of a warm cache is exactly what a handover destroys.
+
+**Proposed resolution, not yet built:** bill COLD prefill, keep CACHED prefill
+free. That is what commercial providers already do with cached-input pricing,
+so a buyer reads it without explanation, and it aligns price with cost, since a
+cached prefill genuinely costs the node almost nothing while a cold one is real
+GPU seconds. It closes three things at once:
+
+- the P2 prefill hole, because a 30k cold prompt is no longer free
+- the replacement provider's unpaid prefill on a handover
+- the pricing claim, which sharpens from "free input", which is a subsidy, to
+  "we do not bill you for context you have already sent", which is a product
+
+**Open question before building it:** input tokens would have to ride in the
+`billed` count the way reasoning already does, which needs no contract change,
+but `maxTokensPerSecond` is 400 on node 1 and a 31k prefill in 63s is 490
+tok/s. The throughput bound would clamp it. Settle that before writing code.
+
 ## Now: the next two weeks
 
 Ordered. Everything here is ahead of every remaining defect in this file.
