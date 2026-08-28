@@ -5,21 +5,52 @@
 
 ## 1. Headline
 
-The four hygiene items the evening snapshot left open are closed, and the
-load-bearing item is built and not yet run against two live nodes.
+A long session. The hygiene block closed and shipped, the differentiator
+rebuilt onto the contract, both project agents run against the result, the four
+standing assumptions measured, and a strategic direction decided off the back
+of the numbers.
 
-- **The faucet is deleted, and three documents that promised it were wrong.**
+**It is deployed.** Bundle `index-CN5UhUbj.js`, verified live. Section 13.
+
+**Built and shipped**
+
+- **The faucet is deleted**, and three documents that promised it were wrong.
   Section 2.
-- **Failover is a `reassign` now**, one job across providers rather than a job
-  per attempt. Section 3.
-- **Production cannot fail over**, whatever the code does, for two reasons that
-  are both operational. Section 4. **This is the blocker.**
-- **`HOUSE_PK` is still in the Vercel environment with nothing left to read
-  it.** Section 5.
-- Icons, footer, roadmap and the stray banner: done. Section 6.
+- **Failover is a `reassign`** now: one job crosses providers, and the contract
+  pays the outgoing provider for exactly what it published. Section 3.
+- Icons, footer, roadmap, stray banner. Section 6.
 
-**Nothing in this session is deployed.** `npx vercel --prod` was refused by the
-harness, so the live site still serves the previous bundle.
+**Reviewed**
+
+- **The legal review caught a false privacy notice this session created**, and
+  it is fixed. It cleared the faucet deletion, `reassign` and our Article 50
+  reading. Section 10.
+- **The market review refuted the thesis the work sits under.** The mechanism
+  is sound and the moat is not. A4 is recorded as contested rather than cut,
+  because that is a decision. Section 11.
+
+**Measured, and this is the part that changes what happens next**
+
+- **A1: the machine is 2.3x better than the file said.** 58 tok/s, not 25.
+  Prefill flat at 460-490 tok/s to 95k. Section 12.
+- **Prefix cache reuse cuts a repeat step from 20.9s to 1.36s.** This is the
+  finding that decides the product shape. Section 12.
+- **A3 resolves without more measurement.** Realized utilisation 1.13 percent,
+  total revenue ever $0.387, and a consumer node earns $100 to $150 a year on
+  two independent estimates. Section 12.
+
+**Decided**
+
+- **The session shape.** The product is a session held against one node, not a
+  one-shot call. `CONTEXT_TOKENS` is pinned at 32768 and both nodes restarted
+  onto it. The rationale and what it commits us to are in `TODO.md` under
+  "DECIDED 2026-08-28 (night)".
+
+**Still blocking, and it is the same thing it was this morning**
+
+- **Failover cannot be triggered from the live site.** `VITE_DISCOVERY_URL` is
+  unset in Vercel and there is nothing publicly reachable to point it at.
+  Sections 4 and 13. `?peer=` is the only way to exercise a handover today.
 
 ## 2. The faucet, deleted rather than disabled
 
@@ -97,6 +128,11 @@ demonstrable to anyone:
 2. **Node 2 announces `http://192.168.3.8:4174`.** A browser on an https page
    blocks that as mixed content. It needs its own tunnel.
 
+**Updated at the end of the session.** Reason 2 is fixed: node 2's `PUBLIC_URL`
+was also a stale LAN IP and now announces correctly, and discovery is on v2.
+Reason 1 stands unchanged and is now the single blocker, because there is
+nothing publicly reachable to point `VITE_DISCOVERY_URL` at. Section 13.
+
 `?peer=<url>` was added as the manual lever, so the demo is recordable before
 either of those lands. It takes the same trust as the `?host=` parameter that
 has always decided who receives the prompt.
@@ -127,28 +163,48 @@ is pure downside. Remove it from the Vercel project.
 
 ## 7. Still open, and what it is waiting on
 
-**Waiting on the operator:**
+Reconciled at the end of the session. Four of the items this section opened
+were closed within it, and are struck rather than deleted so the record shows
+what was actually blocking and for how long.
 
-1. **Deploy.** `cd ~/monad-synapse/web && npx vercel --prod --yes`. Refused by
-   the harness this session. Nothing above is live until this runs.
-2. **The two failover prerequisites** in section 4.
-3. **Remove `HOUSE_PK`** from Vercel, section 5.
-4. ~~`scripts/drain-v1.mjs`.~~ **Already done, and both `TODO.md` and this
-   file had it marked open.** Checked on chain rather than in the docs:
-   `deposits()` and `providers().earned` on v1 return 0 for every key the
-   script covers. See section 9.
+**Closed during this session**
 
-**Next in the code:**
+- ~~Deploy.~~ Done and verified, section 13.
+- ~~Restart the nodes.~~ Done, and it found three defects, section 13.
+- ~~`scripts/drain-v1.mjs`.~~ Was already done before the session started, and
+  both this file and `TODO.md` had it marked open. Section 9.
+- ~~Discovery running against v1.~~ Fixed by the restart, section 13.
 
-1. Run a real handover: order, kill node 1 mid-answer, watch node 2 continue,
-   then read `JobReassigned` and the two `StreamSettled` events for disjoint
-   token ranges. This is item 6 in `TODO.md` and the whole point of section 3.
-2. A4, long-tail demand, still the moat and still unmeasured.
-3. No tests for `src/**`. The settle path moves money and is exercised only by
-   running it.
+**Waiting on the operator**
+
+1. **A tunnel, and it is the only thing between us and the demo.**
+   `VITE_DISCOVERY_URL` needs something publicly reachable to point at, and
+   node 2 needs https rather than a LAN http address. Sections 4 and 13.
+2. **`OLLAMA_MAX_LOADED_MODELS=2`**, which needs sudo. Until then the two nodes
+   evict each other and the workaround is a restart-order dependency. Section
+   13, command in `TODO.md`.
+3. **Remove `HOUSE_PK` from Vercel.** Nothing reads it any more. Section 5.
+4. **Two pieces of wording**: the provider-side `reassign` clause, and the
+   "both nodes are mine" caveat that has to travel with the failover demo.
+   Section 10.
+5. **A2 wants a wall meter.** GPU-only draw is measured; at `gpuFraction` 0.43
+   the CPU does most of the work, so it understates system draw. Section 12.
+
+**Next in the code**
+
+1. **Run a real handover.** Order, kill node 1 mid-answer, watch node 2
+   continue, then read `JobReassigned` and the two `StreamSettled` events for
+   disjoint token ranges. Still the load-bearing item, still never run.
+2. **Resolve free input against the session shape.** They conflict, and the
+   proposed resolution and its open question are in `TODO.md` under the
+   decision. This is one decision, not two.
+3. **A4.** Contested rather than cut. Settled by five customer conversations,
+   not by more searching. Section 11.
+4. **No tests for `src/**`.** The settle path moves money and is exercised only
+   by running it.
 
 
-## 8. The discovery listener is running against v1
+## 8. The discovery listener was running against v1
 
 Found while checking the drain, and it matters for section 3, because
 discovery is where peer URLs come from.
@@ -170,6 +226,9 @@ contracts, so nothing is being rejected today, which is why this was invisible.
 
 **Fix is a restart, not a change.** Worth doing before anything is wired to
 discovery, which section 4 says has to happen for failover to work at all.
+
+**Done later the same session.** `registry` now reads `0x2881...` and the
+listing carries v2's figures. Section 13.
 
 ## 9. What is actually left in v1
 
