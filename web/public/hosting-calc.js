@@ -255,6 +255,11 @@ function render() {
     bandwidthMiBs: 0,
   };
   const e = estimate(input);
+  // The same estimate with the two demand inputs at their ceiling. Computed by
+  // calling estimate again rather than by a second formula, so the headline
+  // cannot drift from the table underneath it, and so src/earnings.ts stays the
+  // only model of what a node earns.
+  const best = estimate({ ...input, hoursPerDay: 24, utilisation: 1 });
   g('utilOut').textContent = `${num('util')}%`;
   g('hoursOut').textContent = `${num('hours')} h`;
 
@@ -262,6 +267,15 @@ function render() {
   const priced = !!e.band;
 
   g('result').innerHTML = `
+    ${priced ? `
+    <div class="headline">
+      <div class="headline-label">Maximum, on this hardware</div>
+      <div class="headline-figure">${money(best.netUsdPerMonth)}<span class="headline-unit"> per month</span></div>
+      <div class="headline-note">Serving 24 h a day with a job running the whole time, net of gas and
+      electricity. <strong>Your income will differ.</strong> Utilisation is the term that decides it and
+      nobody can promise you a number: today this network has two nodes and almost no demand. The table
+      below is your own settings, not this ceiling.</div>
+    </div>` : ''}
     <table>
       <tr><th>Model you would serve</th><td><code>${e.pick.tag}</code><div class="dim">${e.pick.note}</div></td></tr>
       <tr><th>Fits your VRAM</th><td>${e.fitsWhole

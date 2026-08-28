@@ -46,6 +46,15 @@
   .tag-ok { color:var(--mint); border-color:var(--mint); }
   .tag-warn { color:var(--ketchup); border-color:var(--ketchup); }
   #result table { margin-top:14px; }
+  .headline { border:1px solid var(--mint); border-radius:10px; padding:14px 16px; margin-top:16px;
+    background:linear-gradient(180deg,rgba(159,239,0,.07),rgba(159,239,0,0)); }
+  .headline-label { color:var(--mint); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; }
+  .headline-figure { font:800 34px/1.15 system-ui,-apple-system,'Segoe UI',sans-serif; color:var(--mint);
+    letter-spacing:-1px; margin:4px 0 6px; }
+  .headline-unit { font-size:15px; font-weight:700; color:var(--text); letter-spacing:0; }
+  .headline-note { color:var(--dim); font-size:11px; line-height:1.55; }
+  .headline-note strong { color:var(--text); }
+  @media (max-width:600px) { .headline-figure { font-size:27px; } }
   #result th { width:32%; white-space:nowrap; }
   @media (max-width:600px) { .wrap { padding:18px 14px 48px; } h1 { font-size:21px; } }
 </style>

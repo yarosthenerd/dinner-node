@@ -84,6 +84,30 @@ describe('the calculator on the page', () => {
     set('util', '5');
   });
 
+  it('leads with the ceiling, and says it is one', () => {
+    set('vram', '12');
+    set('util', '5');
+    set('hours', '12');
+    // The headline is the same estimate at 24 h and 100%, so it must not move
+    // when the two demand sliders do. If it ever does, it has grown a second
+    // formula and the page has two answers to one question.
+    const headline = () => document.querySelector('.headline-figure')!.textContent!;
+    const first = headline();
+    set('util', '80');
+    set('hours', '3');
+    expect(headline()).toBe(first);
+    set('util', '5');
+    set('hours', '12');
+    expect(out()).toContain('Your income will differ');
+  });
+
+  it('quotes no ceiling for a model it cannot price', () => {
+    set('vram', '8');
+    expect(document.querySelector('.headline-figure')).toBeNull();
+    set('vram', '12');
+    expect(document.querySelector('.headline-figure')).not.toBeNull();
+  });
+
   it('lets an operator override throughput with their own measurement', () => {
     set('vram', '12');
     set('tps', '250');
