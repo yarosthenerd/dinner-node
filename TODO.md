@@ -247,25 +247,34 @@ warning and the legal contact addresses, not this.
 
 **A. Without these, v2 does not run at all.** Signature changes, mechanical.
 
-- [ ] `registerProvider` gained `maxTokensPerSecond`. `src/host.ts:599` passes
+- [x] `registerProvider` gained `maxTokensPerSecond`. Done 2026-08-28. `src/host.ts` passes
       three arguments, so a node cannot register on v2 at all. This is the first
       thing that breaks.
-- [ ] `openJob` gained `requireCheckpoints`. Six call sites: `src/guest.ts:47`,
+- [x] `openJob` gained `requireCheckpoints`. Done 2026-08-28. Six call sites, and
+      only `PlanPanel.tsx` passes false, because a plan has no single prefix: `src/guest.ts:47`,
       `src/host.ts:807` (the LAN page), `web/src/App.tsx:516`,
       `web/src/components/PlanPanel.tsx:82`, and the three e2e scripts.
-- [ ] `settle` gained three checkpoint arguments. Only `src/host.ts` settles.
+- [x] `settle` gained three checkpoint arguments. Done 2026-08-28. Only the
+      five-argument form is in either client ABI, so viem never disambiguates.
       **Gotcha:** v2 declares two `settle` overloads, and viem disambiguates
       overloads by argument shape. Simplest fix is to put only the five-argument
       form in the client ABI and never mention the convenience overload.
-- [ ] Rewrite both ABIs: `src/chain.ts` and `web/src/lib.ts`.
-- [ ] Point both `registry.ts` bodies at `getJob`/`getProvider`. This is the
-      one step that is already prepared: no call site changes.
-- [ ] Addresses: `DINNER_NODE_ADDRESS` in `.env`, `ADDR` in `web/src/config.ts`.
+- [x] Rewrite both ABIs: `src/chain.ts` and `web/src/lib.ts`. Done 2026-08-28.
+- [x] Point both `registry.ts` bodies at `getJob`/`getProvider`. Done
+      2026-08-28, and it was as prepared: no call site changed.
+- [x] Addresses: `.env`, `.env.node2`, `web/src/config.ts` and the three e2e
+      scripts. Done 2026-08-28. **The nodes still have to be restarted to pick
+      this up, and they must be, because the v1 contract has no four-argument
+      `registerProvider` for them to call.**
 
 **B. Without these you take v2's costs and none of its benefit.**
 
-- [ ] **`host.ts` must publish checkpoints inside `settle`.** This is the big
-      one. Until it does, `requireCheckpoints` has to stay false and the
+- [x] **`host.ts` publishes checkpoints inside `settle`.** Done 2026-08-28.
+      One thing the scoping missed: a settle covering only reasoning cannot
+      publish, because `_checkpoint` requires a strict advance in visible
+      tokens and job#93 billed 1,631 reasoning against 20 visible. The node
+      settles without a checkpoint in that case rather than reverting the
+      stream. Was: Until it does, `requireCheckpoints` has to stay false and the
       published-progress bound -- the headline guarantee, the thing that makes
       "worst case one settlement" true -- is opt-in and switched off. `serveJob`
       already tracks `prefix`, `produced` and the billed delta, so it is a
@@ -278,7 +287,11 @@ warning and the legal contact addresses, not this.
       currently budgets per v1 settle. Different jobs in different storage
       states, so treat it as indicative rather than exact, but v2 with the
       guarantee on does not look more expensive than v1 with it off.
-- [ ] **Call `commitPlan`.** Nothing does. The plan ceiling built last session
+- [x] **Call `commitPlan`.** Done 2026-08-28. `PlanPanel` commits before the
+      first step runs and refuses to run if the commitment fails, and the hash
+      is computed in the browser from the plan on screen rather than taken
+      from the node. The ceiling is `paid + run cost`, not the run alone,
+      because planning is billed before the plan exists. Was: The plan ceiling built last session
       is dead code: `web/src/components/PlanPanel.tsx` has the guest approve a
       plan and its cost in the browser and never writes that approval to chain,
       which is the difference between a promise a web page makes and a limit the
@@ -286,7 +299,10 @@ warning and the legal contact addresses, not this.
 
 **C. Value that must be moved before the switch, or it strands.**
 
-- [ ] `refund()` the guest's **1.306 MON** sitting in v1 deposits.
+- [~] `refund()` the guest's **1.306 MON** sitting in v1 deposits.
+      `scripts/drain-v1.mjs` does this and every other item in section C.
+      Dry run 2026-08-28 confirms **3.8756995575 MON** across the three keys.
+      Not sent: it moves value and wants the operator's word.
 - [ ] `withdraw()` node 1's **2.559 MON** of unwithdrawn earnings, and node 2's
       0.0022 MON. Roughly **3.87 MON in total** across both.
       Not lost if skipped -- v1 stays callable forever -- but it is real money
@@ -296,7 +312,11 @@ warning and the legal contact addresses, not this.
 
 **D. `DinnerRatings` has to be redeployed, and it loses history.**
 
-- [ ] Its `IDinnerNode` interface hard-codes v1's six-field `jobs()`, and both
+- [x] Interface switched to `getJob` 2026-08-28, with the stub in
+      `DinnerRatings.t.sol` carrying non-zero middle fields so the v1 decode
+      would fail the test rather than pass it silently. **Still needs the
+      redeploy**, and the new address goes in `VITE_RATINGS_ADDRESS`.
+      Previously: its `IDinnerNode` hard-coded v1's six-field `jobs()`, and both
       `node` and `groupId` are `immutable`, so it cannot be repointed. A v2
       ratings deploy needs the interface switched to `getJob` and creates a
       **new Semaphore group**: existing memberships and ratings do not carry

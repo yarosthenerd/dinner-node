@@ -4,18 +4,32 @@ pragma solidity ^0.8.28;
 import {ISemaphore} from "semaphore/packages/contracts/contracts/interfaces/ISemaphore.sol";
 import {ISemaphoreGroups} from "semaphore/packages/contracts/contracts/interfaces/ISemaphoreGroups.sol";
 
+/// @dev DinnerNodeV2's job accessor, and it must stay `getJob` rather than the
+///      public `jobs` mapping. v2's Job has eleven fields where v1 had six, and
+///      the positional tuple a mapping returns decodes wrong against the old
+///      shape: `open` would read a rate, which is non-zero, so every closed job
+///      would have passed the check below. `getJob` returns a single struct,
+///      which cannot drift positionally at all.
+///
+///      Only the fields this contract reads are declared. The struct is
+///      declared in full because a partial one would decode wrong for the same
+///      reason the v1 interface did.
 interface IDinnerNode {
-    function jobs(uint256 jobId)
-        external
-        view
-        returns (
-            address requester,
-            address provider,
-            uint256 escrow,
-            uint256 paid,
-            uint256 tokens,
-            bool open
-        );
+    struct Job {
+        address requester;
+        address provider;
+        uint256 escrow;
+        uint256 paid;
+        uint256 tokens;
+        uint256 ratePerMillion;
+        uint256 maxTokensPerSecond;
+        uint64 openedAt;
+        uint64 lastSettleAt;
+        bool open;
+        bool requireCheckpoints;
+    }
+
+    function getJob(uint256 jobId) external view returns (Job memory);
 }
 
 /// @notice Anonymous ratings from guests who actually paid for inference.
@@ -81,10 +95,10 @@ contract DinnerRatings {
     /// @param jobId A closed job of yours with a non-zero `paid`.
     /// @param identityCommitment The Semaphore commitment, generated in the browser.
     function join(uint256 jobId, uint256 identityCommitment) external {
-        (address requester,,, uint256 paid,, bool open) = node.jobs(jobId);
-        if (requester != msg.sender) revert JobNotYours();
-        if (open) revert JobStillOpen();
-        if (paid == 0) revert JobUnpaid();
+        IDinnerNode.Job memory j = node.getJob(jobId);
+        if (j.requester != msg.sender) revert JobNotYours();
+        if (j.open) revert JobStillOpen();
+        if (j.paid == 0) revert JobUnpaid();
         if (joinedWithJob[jobId]) revert JobAlreadyUsed();
 
         joinedWithJob[jobId] = true;

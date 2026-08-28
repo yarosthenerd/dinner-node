@@ -9,10 +9,12 @@
  * the app would have gone on passing, silently, on closed jobs and
  * deregistered providers.
  *
- * Reading through these two functions makes that a single edit rather than a
- * hunt. When v2 is deployed, the bodies below switch to `getJob` and
- * `getProvider`, which return a named struct and cannot drift at all, and no
- * call site changes.
+ * Reading through these two functions made that a single edit rather than a
+ * hunt, and 2026-08-28 is when it was made: the bodies below now call `getJob`
+ * and `getProvider` on DinnerNodeV2, which return a named struct and cannot
+ * drift at all. No call site changed. The extra v2 fields are carried on the
+ * returned types so a caller can read them, and every field the v1 shape had
+ * still means what it meant.
  *
  * src/registry.ts is the same file for the node build. The two are duplicated
  * rather than shared because the daemon and the web app are separate builds;
@@ -27,6 +29,15 @@ export type Job = {
   paid: bigint;
   tokens: bigint;
   open: boolean;
+  /// v2. Locked at open, so a provider re-registering cannot reprice a job in
+  /// flight.
+  ratePerMillion: bigint;
+  maxTokensPerSecond: bigint;
+  openedAt: bigint;
+  lastSettleAt: bigint;
+  /// v2. When true, settle() refuses to pay for tokens with no published
+  /// checkpoint behind them.
+  requireCheckpoints: boolean;
 };
 
 export type Provider = {
@@ -37,32 +48,23 @@ export type Provider = {
   tokensServed: bigint;
   jobs: bigint;
   active: boolean;
+  /// v2. The throughput this node claims; the per-settlement bound is derived
+  /// from it and it is capped by MAX_TOKENS_PER_SECOND on chain.
+  maxTokensPerSecond: bigint;
+  /// v2. Reputation, arm's-length work only, never zeroed by withdraw().
+  lifetimeEarned: bigint;
 };
 
 /** @param address the DinnerNode contract, not the provider. */
+/** @param address the DinnerNode contract, not the provider. */
 export async function readJob(address: `0x${string}`, jobId: bigint): Promise<Job> {
-  const j = await pub.readContract({ address, abi: ABI, functionName: 'jobs', args: [jobId] }) as unknown as readonly unknown[];
-  return {
-    requester: j[0] as `0x${string}`,
-    provider: j[1] as `0x${string}`,
-    escrow: j[2] as bigint,
-    paid: j[3] as bigint,
-    tokens: j[4] as bigint,
-    open: j[5] as boolean,
-  };
+  const j = await pub.readContract({ address, abi: ABI, functionName: 'getJob', args: [jobId] }) as Job;
+  return j;
 }
 
 export async function readProvider(address: `0x${string}`, provider: `0x${string}`): Promise<Provider> {
-  const p = await pub.readContract({ address, abi: ABI, functionName: 'providers', args: [provider] }) as unknown as readonly unknown[];
-  return {
-    model: String(p[0]),
-    hw: String(p[1]),
-    ratePerMillion: p[2] as bigint,
-    earned: p[3] as bigint,
-    tokensServed: p[4] as bigint,
-    jobs: p[5] as bigint,
-    active: p[6] as boolean,
-  };
+  const p = await pub.readContract({ address, abi: ABI, functionName: 'getProvider', args: [provider] }) as Provider;
+  return p;
 }
 
 /** Is this job open, and is it this guest's, against this provider? The check

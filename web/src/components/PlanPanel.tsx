@@ -10,7 +10,7 @@
 // and the same job carries the run.
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { formatEther, keccak256, parseEther, parseEventLogs, toHex } from 'viem';
-import { runPlan, requestPlan, waves, type ExecEvent, type PlanResult } from '../lib/plan-client';
+import { runPlan, requestPlan, waves, planHash, planMaxTokens, type ExecEvent, type PlanResult } from '../lib/plan-client';
 import { isOursAndOpen, readJob, remaining } from '../lib/registry';
 
 type Props = {
@@ -51,6 +51,9 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
   const [wave, setWave] = useState(0);
   const [summary, setSummary] = useState<{ ok: boolean; tokens: number; failed: string[] } | null>(null);
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  /// What actually landed on chain, so the panel can show the guest the
+  /// transaction rather than asserting the commitment happened.
+  const [committed, setCommitted] = useState<{ hash: `0x${string}`; ceiling: bigint; version: bigint; tx: string } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const plannedWaves = useMemo(() => (result ? waves(result.plan) : []), [result]);
@@ -79,7 +82,13 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
     // does it. The goal is the guest's text and must not reach the chain.
     const salt = toHex(crypto.getRandomValues(new Uint8Array(32)));
     const tag = keccak256(new TextEncoder().encode(salt + '|' + goal));
-    const h = await wallet.writeContract({ address: nodeAddress, abi: nodeAbi, functionName: 'openJob', args: [provider, PLAN_BUDGET, tag], gas: 300000n, maxFeePerGas: maxFee });
+    // requireCheckpoints is FALSE here, and this is the one place in the app
+    // that passes false. A plan is not one growing answer: it is a set of
+    // steps whose outputs are separate, so there is no single prefix to hash
+    // and settle() would have nothing to publish. The plan's cost guarantee
+    // comes from commitPlan instead, which is a ceiling the chain holds rather
+    // than a prefix it verifies.
+    const h = await wallet.writeContract({ address: nodeAddress, abi: nodeAbi, functionName: 'openJob', args: [provider, PLAN_BUDGET, tag, false], gas: 300000n, maxFeePerGas: maxFee });
     const rc = await pub.waitForTransactionReceipt({ hash: h });
     // `nodeAbi` arrives as `any` from the caller, so viem cannot infer the
     // event's argument shape and types the log without `args`.
@@ -92,7 +101,7 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
   async function plan() {
     if (!goal.trim()) return;
     setPhase('planning');
-    setResult(null); setSteps({}); setSummary(null); setWave(0);
+    setResult(null); setSteps({}); setSummary(null); setWave(0); setCommitted(null);
     setPlanning({ reasoning: 0, visible: 0 });
     const ac = new AbortController();
     abortRef.current = ac;
@@ -111,10 +120,61 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
     }
   }
 
+  /**
+   * Write the approved plan and its ceiling to the chain, before a step runs.
+   *
+   * This is the difference between a promise a web page makes and a limit the
+   * chain holds. Until it landed, the panel showed the guest a ceiling and
+   * then asked the node to execute with nothing enforcing it; commitPlan makes
+   * settle() unable to take this job's `paid` above the number below, whatever
+   * the escrow is, and raising it costs the guest a transaction they sign.
+   *
+   * Three details the contract forces, each of which is a revert if ignored:
+   *
+   *  - The ceiling has to cover work ALREADY paid for. Planning is billed
+   *    before the plan exists, so the ceiling is what the job has spent on
+   *    planning PLUS what the run may spend, not the run alone.
+   *  - It cannot exceed the escrow, which settle would stop at anyway.
+   *  - The version must strictly advance, so it is read from the chain rather
+   *    than taken from `plan.version`, which is a format number and would be
+   *    the same 1 on every re-plan of the same job.
+   *
+   * The hash committed is computed HERE from the plan on screen, not taken
+   * from the node's response. A node returning a hash of text other than what
+   * it displayed would otherwise have the guest sign for it.
+   */
+  const commit = useCallback(async (id: bigint, plan: PlanResult['plan']) => {
+    const hash = planHash(plan);
+    const j = await readJob(nodeAddress, id);
+    const runCost = (planMaxTokens(plan) * j.ratePerMillion) / 1_000_000n;
+    const want = j.paid + runCost;
+    const ceiling = want > j.escrow ? j.escrow : want;
+    const prev = await pub.readContract({ address: nodeAddress, abi: nodeAbi, functionName: 'getPlan', args: [id] }) as { version: bigint };
+    const version = prev.version + 1n;
+    setNote(`committing the plan and a ${formatEther(ceiling)} MON ceiling on chain…`);
+    const h = await wallet.writeContract({
+      address: nodeAddress, abi: nodeAbi, functionName: 'commitPlan',
+      args: [id, hash, version, ceiling], gas: 200000n, maxFeePerGas: maxFee,
+    });
+    await pub.waitForTransactionReceipt({ hash: h });
+    setCommitted({ hash, ceiling, version, tx: String(h) });
+  }, [pub, wallet, nodeAddress, nodeAbi, maxFee]);
+
   async function run() {
     if (!result || jobId === null) return;
     setPhase('running');
     setNote('');
+    try {
+      await commit(jobId, result.plan);
+    } catch (e: any) {
+      // Not recoverable by running anyway. The whole claim of this panel is
+      // that the ceiling is enforced, and running after failing to commit it
+      // would quietly serve the guest the version of this feature that does
+      // not have that property.
+      setPhase('review');
+      setNote(`could not commit the plan on chain, so nothing was run: ${e?.shortMessage ?? e?.message ?? e}`);
+      return;
+    }
     const init: Record<string, StepState> = {};
     for (const s of result.plan.steps) init[s.id] = { status: 'waiting', text: '', tokens: 0, visible: 0 };
     setSteps(init);
@@ -185,6 +245,7 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
 
   const busy = phase === 'planning' || phase === 'running';
   const costMon = result ? formatEther(BigInt(result.costWei)) : null;
+  const localHash = useMemo(() => (result ? planHash(result.plan) : '0x'), [result]);
 
   return (
     <div className="card">
@@ -245,7 +306,24 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
             <span>ceiling</span><span>{costMon} MON</span>
           </div>
           <div className="rrow dim">
-            <span>plan hash</span><span>{result.planHash.slice(0, 10)}…{result.planHash.slice(-6)}</span>
+            <span>plan hash</span>
+            <span>
+              {localHash.slice(0, 10)}…{localHash.slice(-6)}
+              {/* The node returns its own hash of the plan. It should equal the
+                one computed here from the plan on screen; when it does not,
+                the guest is looking at different text from the one the node
+                is quoting, and that is worth saying out loud rather than
+                silently preferring either number. */}
+              {localHash !== result.planHash && <span className="bad"> · node disagrees</span>}
+            </span>
+          </div>
+          <div className="rrow dim">
+            <span>ceiling on chain</span>
+            <span>
+              {committed
+                ? <>{formatEther(committed.ceiling)} MON, v{committed.version.toString()} · <a href={`${explorer}/tx/${committed.tx}`} target="_blank" rel="noreferrer">tx</a></>
+                : 'not committed yet — written when you approve'}
+            </span>
           </div>
           {plannedWaves.map((ids, i) => (
             <div key={i}>

@@ -16,6 +16,9 @@ import {
   type PlanStep,
 } from '../plan.js';
 import { normalizeIds, normalizeTokens } from '../planner.js';
+// The browser copy. A separate build with its own tsconfig, imported here
+// precisely because nothing else makes the two agree.
+import * as browser from '../../web/src/lib/plan-client';
 
 const step = (id: string, over: Partial<PlanStep> = {}): PlanStep => ({
   id, title: `step ${id}`, prompt: `do ${id}`, maxTokens: 500, dependsOn: [], ...over,
@@ -282,5 +285,39 @@ describe('normalizeTokens', () => {
     // one the model wrote, or the escrow would not cover the run.
     const { p } = parse({ steps: [{ id: 'a', maxTokens: 10 }, { id: 'b', maxTokens: 20 }] });
     expect(planCostWei(p as any, 1_000_000n)).toBe(BigInt(PLAN_LIMITS.minTokensPerStep * 2));
+  });
+});
+
+describe('the browser commits the same hash the node quotes', () => {
+  // web/src/lib/plan-client.ts carries its own canonicalize, so the guest can
+  // hash the plan they were SHOWN rather than trust the node's figure. Two
+  // implementations of one commitment are worth nothing if they disagree, and
+  // the disagreement would be invisible: commitPlan would succeed and store a
+  // hash matching no plan anyone has.
+  const plan = {
+    version: 1,
+    goal: 'Compare a home GPU against a rented one, and say which is cheaper.',
+    steps: [
+      { id: 'gather', title: 'Gather costs', prompt: 'List the cost inputs.', maxTokens: 2048, dependsOn: [] },
+      // Deliberately out of order: canonicalize sorts dependencies, because
+      // two plans differing only in that order are the same plan. If one side
+      // sorted and the other did not, only a step with several dependencies
+      // would show it.
+      { id: 'compare', title: 'Compare', prompt: 'Compare them.', maxTokens: 4096, dependsOn: ['power', 'gather'] },
+      { id: 'power', title: 'Power draw', prompt: 'Estimate watts.', maxTokens: 2048, dependsOn: ['gather'] },
+    ],
+  };
+
+  it('canonicalizes byte for byte', () => {
+    expect(browser.canonicalize(plan)).toBe(canonicalize(plan));
+  });
+
+  it('hashes to the same commitment', () => {
+    expect(browser.planHash(plan)).toBe(planHash(plan));
+  });
+
+  it('prices the same ceiling', () => {
+    const rate = 26_700_000_000_000_000_000n;
+    expect((browser.planMaxTokens(plan) * rate) / 1_000_000n).toBe(planCostWei(plan, rate));
   });
 });

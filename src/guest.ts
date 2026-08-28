@@ -45,7 +45,11 @@ const salt = toHex(randomBytes(32));
 const tag = keccak256(stringToHex(salt + '|' + prompt));
 const openHash = await w.writeContract({
   address: ADDR, abi: ABI, functionName: 'openJob',
-  args: [provider, budget, tag],
+  // requireCheckpoints. This is one streaming answer, which is the shape the
+  // published-progress bound exists for: the node cannot be paid for tokens it
+  // has not published a checkpoint covering. A plan run passes false, because
+  // it has no single growing prefix to hash.
+  args: [provider, budget, tag, true],
   gas: 250000n, maxFeePerGas: MAX_FEE,
 });
 const jobId = await jobIdFromReceipt(openHash);

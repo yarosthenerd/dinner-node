@@ -14,13 +14,13 @@ import { randomBytes } from 'node:crypto';
 import { requestPlan, runPlan, waves, type ExecEvent } from '../web/src/lib/plan-client.js';
 
 const chain = defineChain({ id: 10143, name: 'Monad Testnet', nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 }, rpcUrls: { default: { http: ['https://testnet-rpc.monad.xyz'] } } });
-const ADDR = (process.env.DINNER_NODE_ADDRESS || '0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92') as `0x${string}`;
+const ADDR = (process.env.DINNER_NODE_ADDRESS || '0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd') as `0x${string}`;
 const ABI = [
   { name: 'deposit', type: 'function', stateMutability: 'payable', inputs: [], outputs: [] },
   { name: 'deposits', type: 'function', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] },
-  { name: 'openJob', type: 'function', stateMutability: 'nonpayable', inputs: [{ type: 'address' }, { type: 'uint256' }, { type: 'string' }], outputs: [{ type: 'uint256' }] },
+  { name: 'openJob', type: 'function', stateMutability: 'nonpayable', inputs: [{ type: 'address' }, { type: 'uint256' }, { type: 'string' }, { type: 'bool' }], outputs: [{ type: 'uint256' }] },
   { name: 'closeJob', type: 'function', stateMutability: 'nonpayable', inputs: [{ type: 'uint256' }], outputs: [] },
-  { name: 'jobs', type: 'function', stateMutability: 'view', inputs: [{ type: 'uint256' }], outputs: [{ type: 'address' }, { type: 'address' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'bool' }] },
+  { name: 'getJob', type: 'function', stateMutability: 'view', inputs: [{ type: 'uint256' }], outputs: [{ type: 'tuple', components: [{ name: 'requester', type: 'address' }, { name: 'provider', type: 'address' }, { name: 'escrow', type: 'uint256' }, { name: 'paid', type: 'uint256' }, { name: 'tokens', type: 'uint256' }, { name: 'ratePerMillion', type: 'uint256' }, { name: 'maxTokensPerSecond', type: 'uint256' }, { name: 'openedAt', type: 'uint64' }, { name: 'lastSettleAt', type: 'uint64' }, { name: 'open', type: 'bool' }, { name: 'requireCheckpoints', type: 'bool' }] }] },
   { name: 'JobOpened', type: 'event', inputs: [{ name: 'jobId', type: 'uint256', indexed: true }, { name: 'requester', type: 'address', indexed: true }, { name: 'provider', type: 'address', indexed: true }, { name: 'promptTag', type: 'string' }] },
 ] as const;
 const MAX_FEE = 2000000000000n;
@@ -47,7 +47,7 @@ if (dep < PLAN_BUDGET) {
 const salt = toHex(randomBytes(32));
 const goal = 'List the three biggest running costs of a home GPU, then say which dominates.';
 const tag = keccak256(stringToHex(salt + '|' + goal));
-const oh = await w.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [health.provider, PLAN_BUDGET, tag], gas: 300000n, maxFeePerGas: MAX_FEE });
+const oh = await w.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [health.provider, PLAN_BUDGET, tag, false], gas: 300000n, maxFeePerGas: MAX_FEE });
 const rc = await pub.waitForTransactionReceipt({ hash: oh });
 const jobId = (parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' })[0] as any).args.jobId as bigint;
 console.log(`\njob#${jobId} open, planning through the browser's own client…`);
@@ -85,10 +85,10 @@ check(!!done, 'plan_done arrived, which is what flips the panel to finished');
 check(JSON.stringify(ran) === JSON.stringify(drawn), 'the waves the node ran match the waves the panel drew before approval');
 check([...perStep.values()].every(v => v.text.length > 0), 'every step produced text for the panel to show');
 
-const j = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [jobId] }) as readonly any[];
-console.log(`\nchain: ${j[4]} tokens, ${formatEther(j[3] as bigint)} MON, open=${j[5]}`);
-check((j[3] as bigint) > 0n, 'the run settled on chain');
-if (j[5]) {
+const j = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'getJob', args: [jobId] }) as readonly any[];
+console.log(`\nchain: ${j.tokens} tokens, ${formatEther(j.paid as bigint)} MON, open=${j.open}`);
+check((j.paid as bigint) > 0n, 'the run settled on chain');
+if (j.open) {
   const h = await w.writeContract({ address: ADDR, abi: ABI, functionName: 'closeJob', args: [jobId], gas: 200000n, maxFeePerGas: MAX_FEE });
   await pub.waitForTransactionReceipt({ hash: h });
   console.log('closed, remainder returned');

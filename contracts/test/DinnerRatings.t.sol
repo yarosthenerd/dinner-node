@@ -11,18 +11,30 @@ import {SemaphoreVerifier} from "semaphore/packages/contracts/contracts/base/Sem
 /// A stand-in for the deployed DinnerNode, so the join gate can be tested
 /// against every job shape without opening real jobs.
 contract NodeStub is IDinnerNode {
-    struct J { address requester; address provider; uint256 escrow; uint256 paid; uint256 tokens; bool open; }
-    mapping(uint256 => J) private _jobs;
+    mapping(uint256 => Job) private _jobs;
 
     function set(uint256 id, address requester, uint256 paid, bool open) external {
-        _jobs[id] = J(requester, address(0xBEEF), 1 ether, paid, 100, open);
+        // The middle fields carry non-zero values on purpose. They are what a
+        // reader decoding this struct against v1's six-field shape would land
+        // on, and `open` reading a rate is exactly the silent failure the
+        // getJob switch exists to prevent.
+        _jobs[id] = Job({
+            requester: requester,
+            provider: address(0xBEEF),
+            escrow: 1 ether,
+            paid: paid,
+            tokens: 100,
+            ratePerMillion: 26.7e18,
+            maxTokensPerSecond: 400,
+            openedAt: 1,
+            lastSettleAt: 2,
+            open: open,
+            requireCheckpoints: true
+        });
     }
 
-    function jobs(uint256 id)
-        external view returns (address, address, uint256, uint256, uint256, bool)
-    {
-        J memory j = _jobs[id];
-        return (j.requester, j.provider, j.escrow, j.paid, j.tokens, j.open);
+    function getJob(uint256 id) external view returns (Job memory) {
+        return _jobs[id];
     }
 }
 

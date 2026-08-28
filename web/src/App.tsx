@@ -513,7 +513,15 @@ export default function App() {
               await pub.waitForTransactionReceipt({ hash: depHash });
             }
 
-            const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [health.provider, budget, promptTag], gas: 300000n, maxFeePerGas: MAX_FEE });
+            // The fourth argument is requireCheckpoints, and true is the whole
+            // point of v2 from the guest's side: the node cannot be paid for
+            // tokens it has not published a keccak checkpoint covering, so the
+            // most a failure can cost is one settlement's worth of work rather
+            // than the escrow. A chat turn is one growing answer, which is
+            // exactly the shape the bound is written for. PlanPanel passes
+            // false, because a plan has no single prefix to hash and takes its
+            // ceiling from commitPlan instead.
+            const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [health.provider, budget, promptTag, true], gas: 300000n, maxFeePerGas: MAX_FEE });
             const rc = await pub.waitForTransactionReceipt({ hash: h });
             const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
             jobId = log.args.jobId as bigint;

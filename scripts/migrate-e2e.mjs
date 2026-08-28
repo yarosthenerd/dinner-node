@@ -11,13 +11,13 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { randomBytes } from 'node:crypto';
 
 const chain = defineChain({ id: 10143, name: 'Monad Testnet', nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 }, rpcUrls: { default: { http: ['https://testnet-rpc.monad.xyz'] } } });
-const ADDR = process.env.DINNER_NODE_ADDRESS || '0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92';
+const ADDR = process.env.DINNER_NODE_ADDRESS || '0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd';
 const ABI = [
   { name: 'deposit', type: 'function', stateMutability: 'payable', inputs: [], outputs: [] },
   { name: 'deposits', type: 'function', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] },
-  { name: 'openJob', type: 'function', stateMutability: 'nonpayable', inputs: [{ type: 'address' }, { type: 'uint256' }, { type: 'string' }], outputs: [{ type: 'uint256' }] },
+  { name: 'openJob', type: 'function', stateMutability: 'nonpayable', inputs: [{ type: 'address' }, { type: 'uint256' }, { type: 'string' }, { type: 'bool' }], outputs: [{ type: 'uint256' }] },
   { name: 'closeJob', type: 'function', stateMutability: 'nonpayable', inputs: [{ type: 'uint256' }], outputs: [] },
-  { name: 'jobs', type: 'function', stateMutability: 'view', inputs: [{ type: 'uint256' }], outputs: [{ type: 'address' }, { type: 'address' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'bool' }] },
+  { name: 'getJob', type: 'function', stateMutability: 'view', inputs: [{ type: 'uint256' }], outputs: [{ type: 'tuple', components: [{ name: 'requester', type: 'address' }, { name: 'provider', type: 'address' }, { name: 'escrow', type: 'uint256' }, { name: 'paid', type: 'uint256' }, { name: 'tokens', type: 'uint256' }, { name: 'ratePerMillion', type: 'uint256' }, { name: 'maxTokensPerSecond', type: 'uint256' }, { name: 'openedAt', type: 'uint64' }, { name: 'lastSettleAt', type: 'uint64' }, { name: 'open', type: 'bool' }, { name: 'requireCheckpoints', type: 'bool' }] }] },
   { name: 'JobOpened', type: 'event', inputs: [{ name: 'jobId', type: 'uint256', indexed: true }, { name: 'requester', type: 'address', indexed: true }, { name: 'provider', type: 'address', indexed: true }, { name: 'promptTag', type: 'string' }] },
 ];
 const MAX_FEE = 2000000000000n;
@@ -39,7 +39,7 @@ async function openJob(provider) {
     await pub.waitForTransactionReceipt({ hash: h });
   }
   const tag = keccak256(stringToHex(toHex(randomBytes(32)) + '|' + PROMPT));
-  const h = await w.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [provider, BUDGET, tag], gas: 300000n, maxFeePerGas: MAX_FEE });
+  const h = await w.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [provider, BUDGET, tag, true], gas: 300000n, maxFeePerGas: MAX_FEE });
   const rc = await pub.waitForTransactionReceipt({ hash: h });
   return parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' })[0].args.jobId;
 }
@@ -101,8 +101,8 @@ const prefix = legA.text.slice(0, legA.cp.n === legA.visible ? legA.text.length 
 console.log(`[${el()}] local hash check: ${keccak256(stringToHex(prefix)) === legA.cp.h ? 'MATCHES' : 'MISMATCH'}`);
 
 await new Promise(r => setTimeout(r, 12000)); // let provider A settle what it produced
-const a1 = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [jobA] });
-console.log(`[${el()}] job#${jobA}: paid ${formatEther(a1[3])} for ${a1[4]} tokens, open=${a1[5]}`);
+const a1 = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'getJob', args: [jobA] });
+console.log(`[${el()}] job#${jobA}: paid ${formatEther(a1.paid)} for ${a1.tokens} tokens, open=${a1.open}`);
 
 // ---- leg 2: hand the checkpoint to a different provider ------------------
 const jobB = await openJob(cloudHealth.provider);
@@ -114,14 +114,14 @@ const legB = await stream(CLOUD + '/job', {
 console.log(`[${el()}] provider B produced ${legB.visible} tokens, finished=${legB.finished}`);
 
 await new Promise(r => setTimeout(r, 12000));
-const a2 = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [jobA] });
-const b2 = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [jobB] });
+const a2 = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'getJob', args: [jobA] });
+const b2 = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'getJob', args: [jobB] });
 
 console.log(`\n--- receipts ---`);
-console.log(`job#${jobA} provider A ${a2[1]}  ${a2[4]} tokens  ${formatEther(a2[3])} MON  open=${a2[5]}`);
-console.log(`job#${jobB} provider B ${b2[1]}  ${b2[4]} tokens  ${formatEther(b2[3])} MON  open=${b2[5]}`);
-console.log(`\nprefix handed over: ${legA.cp.n} tokens, and provider B billed ${b2[4]} for its own suffix.`);
-console.log(b2[4] > 0n && a2[4] > 0n && String(a2[1]).toLowerCase() !== String(b2[1]).toLowerCase()
+console.log(`job#${jobA} provider A ${a2.provider}  ${a2.tokens} tokens  ${formatEther(a2.paid)} MON  open=${a2.open}`);
+console.log(`job#${jobB} provider B ${b2.provider}  ${b2.tokens} tokens  ${formatEther(b2.paid)} MON  open=${b2.open}`);
+console.log(`\nprefix handed over: ${legA.cp.n} tokens, and provider B billed ${b2.tokens} for its own suffix.`);
+console.log(b2.tokens > 0n && a2.tokens > 0n && String(a2.provider).toLowerCase() !== String(b2.provider).toLowerCase()
   ? 'PASS: two different providers paid for disjoint ranges of one answer.'
   : 'FAIL: see the receipts above.');
 
@@ -136,7 +136,7 @@ if (process.argv.includes('--show')) {
 }
 
 for (const [id, j] of [[jobA, a2], [jobB, b2]]) {
-  if (j[5]) {
+  if (j.open) {
     const h = await w.writeContract({ address: ADDR, abi: ABI, functionName: 'closeJob', args: [id], gas: 200000n, maxFeePerGas: MAX_FEE });
     await pub.waitForTransactionReceipt({ hash: h });
     console.log(`closed job#${id}`);

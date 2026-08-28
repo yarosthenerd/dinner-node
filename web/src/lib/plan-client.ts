@@ -8,7 +8,10 @@
 //
 // Everything is transport, nothing is policy. Deciding whether a plan is worth
 // running belongs to the guest looking at it, and opening the job belongs to
-// the caller that holds the wallet.
+// the caller that holds the wallet. The one exception is canonicalize below,
+// which is policy on purpose: the guest has to be able to compute the hash it
+// commits without taking the node's word for it.
+import { keccak256, stringToHex } from 'viem';
 
 export type PlanStep = {
   id: string;
@@ -19,6 +22,43 @@ export type PlanStep = {
 };
 
 export type Plan = { version: number; goal: string; steps: PlanStep[] };
+
+/**
+ * The exact bytes a plan hashes to. A byte-for-byte copy of canonicalize() in
+ * src/plan.ts, and src/__tests__/plan.test.ts asserts the two agree on real
+ * plans, because a commitment computed two ways is worth nothing if the two
+ * ways differ.
+ *
+ * This exists in the browser so the guest commits a hash of the plan THEY were
+ * shown rather than a hash the node handed them. A node that returned a
+ * planHash for different text than it displayed would otherwise get that hash
+ * signed by the guest.
+ */
+export function canonicalize(plan: Plan): string {
+  return JSON.stringify({
+    version: plan.version,
+    goal: plan.goal,
+    steps: plan.steps.map(s => ({
+      id: s.id,
+      title: s.title,
+      prompt: s.prompt,
+      maxTokens: s.maxTokens,
+      // Sorted: dependency order is a set, and two plans differing only in the
+      // order they list the same dependencies are the same plan.
+      dependsOn: [...s.dependsOn].sort(),
+    })),
+  });
+}
+
+/** What commitPlan stores. Never hash a non-canonical form. */
+export function planHash(plan: Plan): `0x${string}` {
+  return keccak256(stringToHex(canonicalize(plan)));
+}
+
+/** Tokens a plan may burn at most, which is what the ceiling is priced from. */
+export function planMaxTokens(plan: Plan): bigint {
+  return plan.steps.reduce((n, s) => n + BigInt(s.maxTokens), 0n);
+}
 
 /// What /plan returns once it has a plan it is willing to stand behind.
 export type PlanResult = {

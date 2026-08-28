@@ -199,11 +199,126 @@ async function sendChecked(label: string, fn: string, args: readonly unknown[], 
   return h;
 }
 
+const ZERO_HASH = `0x${'00'.repeat(32)}` as const;
+
+/**
+ * What this node has published, and what it is about to.
+ *
+ * v2 pays a provider against its own published progress rather than against
+ * what it claims in the settle call, so this is no longer bookkeeping: a job
+ * this node never checkpoints earns nothing on a reassign, and a job the guest
+ * opened with `requireCheckpoints` cannot settle at all without one.
+ *
+ * Two counts, matching the Checkpoint struct, and they are NOT the same
+ * number. `visible` counts the answer text, which is what `prefix` holds and
+ * what a replacement provider is handed and must reproduce. `billed` is
+ * visible plus reasoning, and is what settle clamps payment against. Reasoning
+ * is streamed and charged for (terms 3.1) but is deliberately outside the hash
+ * chain, because the chain has to cover exactly the text a replacement gets.
+ *
+ * Both are CUMULATIVE FOR THE JOB, across every provider that has held it and
+ * every turn of a session, because that is the scope `_allowed` compares them
+ * against. `prefix` is scoped to the answer currently being written, since that
+ * is the text a replacement resumes. The two scopes differ on purpose: the
+ * counts bound payment, the text proves continuity.
+ */
+type Progress = {
+  /**
+   * The visible answer so far, hashed at settle time rather than on a token
+   * interval. Holding the text and not a periodic hash is what decouples
+   * settlement from CHECKPOINT_TOKENS: the value-triggered ticker can fire
+   * after nine visible tokens, and on a job that requires checkpoints a settle
+   * with nothing to publish does not revert, it publishes those nine.
+   */
+  prefix: string;
+  visible: number;
+  billed: number;
+  /** `visible` as of the last checkpoint that actually landed on chain. */
+  publishedVisible: number;
+  /** Read from the job at open. When true the chain refuses to pay for tokens
+   *  with no checkpoint behind them, so a settle that cannot publish is not
+   *  attempted at all. */
+  requireCheckpoints: boolean;
+};
+const progress = new Map<bigint, Progress>();
+
+/**
+ * Seed a job's cumulative counts from the chain before serving it.
+ *
+ * `billed` starts at the job's own paid-for token count and not at zero, even
+ * when no checkpoint exists. _allowed computes `proven = cp.billed - j.tokens`
+ * and clamps payment to it, so publishing a checkpoint whose `billed` sits
+ * below what the job has already paid for would clamp this node's own
+ * settlements to nothing. That case is real: it is every job handed over by a
+ * provider that settled without publishing.
+ */
+async function seedProgress(jobId: bigint, prefix: string): Promise<Progress> {
+  let visible = 0, billed = 0, requireCheckpoints = false;
+  try {
+    const [cp, job] = await Promise.all([
+      pub.readContract({ address: ADDR, abi: ABI, functionName: 'getCheckpoint', args: [jobId] }) as Promise<{ tokens: bigint; billed: bigint }>,
+      readJob(jobId),
+    ]);
+    visible = Number(cp.tokens);
+    billed = Math.max(Number(cp.billed), Number(job.tokens));
+    requireCheckpoints = job.requireCheckpoints;
+  } catch (e: any) {
+    console.log(`[job#${jobId}] could not read published progress, starting from zero:`, e?.shortMessage ?? e?.message);
+  }
+  const p: Progress = { prefix, visible, billed, publishedVisible: visible, requireCheckpoints };
+  progress.set(jobId, p);
+  return p;
+}
+
+/**
+ * Whether this job can be paid right now.
+ *
+ * On a job the guest opened with `requireCheckpoints`, settle() reverts unless
+ * it carries a checkpoint, and _checkpoint reverts unless the visible count
+ * strictly advances. A settlement covering reasoning alone satisfies neither,
+ * and that is a common shape rather than an edge case: job#93 billed 1,631
+ * reasoning tokens against 20 visible. Attempting it would revert, and a
+ * reverted settle loses the tokens it was flushed with.
+ *
+ * So it waits instead. The tokens stay in the ledger and are paid by the next
+ * settlement that has visible progress to publish.
+ */
+const canSettle = (jobId: bigint) => {
+  const p = progress.get(jobId);
+  if (!p || !p.requireCheckpoints) return true;
+  return p.visible > p.publishedVisible;
+};
+
 const settle = (jobId: bigint, delta: number) => {
+  const p = progress.get(jobId);
+  // Publish only when the visible answer has actually advanced since the last
+  // checkpoint that landed. _checkpoint requires a strict advance, so a settle
+  // covering reasoning alone would revert and strand the stream, and that is
+  // not a rare case: job#93 billed 1,631 reasoning tokens against 20 visible.
+  // A plan run takes this branch permanently, which is correct: it has no
+  // single growing prefix and its ceiling comes from commitPlan instead.
+  const publish = !!p && p.visible > p.publishedVisible;
+  // Hashed here, over the prefix as it stands at this instant, so the height
+  // published and the text hashed are the same moment. Reading a hash computed
+  // on a token interval would publish a count from now against a hash from up
+  // to CHECKPOINT_TOKENS ago, and a replacement handed that text would compute
+  // a different hash and refuse to continue.
+  const args = publish
+    ? [jobId, BigInt(delta), keccak256(stringToHex(p!.prefix)), BigInt(p!.visible), BigInt(p!.billed)]
+    : [jobId, BigInt(delta), ZERO_HASH, 0n, 0n];
+  // Claimed before the call rather than after it, because settles are queued
+  // and the stream keeps producing while one is in flight. Leaving it until
+  // the receipt lets a second settle publish the same height, which reverts on
+  // "checkpoint must advance". Restored below if the transaction fails.
+  const claimed = publish ? p!.publishedVisible : 0;
+  if (publish) p!.publishedVisible = p!.visible;
   queue = queue.then(() =>
-    sendChecked('settle', 'settle', [jobId, BigInt(delta)], 150000n)
-      .then(h => console.log(`  [settle] job#${jobId} +${delta} tok  ${EXPLORER}/tx/${h}`))
-      .catch(e => console.log(`  [settle] FAILED job#${jobId}:`, (e as any).shortMessage ?? (e as any).message)));
+    sendChecked('settle', 'settle', args, 150000n)
+      .then(h => console.log(`  [settle] job#${jobId} +${delta} tok${publish ? ` cp@${p!.visible} vis` : ''}  ${EXPLORER}/tx/${h}`))
+      .catch(e => {
+        if (publish && p) p.publishedVisible = claimed;
+        console.log(`  [settle] FAILED job#${jobId}:`, (e as any).shortMessage ?? (e as any).message);
+      }));
 };
 // SETTLEMENT CADENCE.
 //
@@ -237,6 +352,19 @@ const settle = (jobId: bigint, delta: number) => {
 // end. A measured 900 word briefing is about 4,290 billable tokens now, so a
 // long job settles mid-stream again and the guest sees value moving while the
 // answer is still being written.
+// What this node claims it can produce per second, written on chain at
+// registration and locked into every job at openJob. v2 derives bound 1 from
+// it: one settlement can never be paid for more than `elapsed * this` tokens,
+// whatever `tokensDelta` says, which is what stops a compromised or buggy node
+// draining a whole escrow in a single call.
+//
+// The default is roughly twice the fastest decode ever measured here (215.5
+// tok/s on llama3.2:1b, see src/earnings.ts), so a real stream never trips it
+// while a runaway settlement is still bounded to seconds of plausible work.
+// Both visible and reasoning tokens count against it, because both are billed.
+// The contract caps it at MAX_TOKENS_PER_SECOND = 10,000 regardless.
+const MAX_TOKENS_PER_SECOND = BigInt(process.env.MAX_TOKENS_PER_SECOND ?? 400);
+
 const SETTLE_GAS_MULTIPLE = BigInt(process.env.SETTLE_GAS_MULTIPLE ?? 10);
 const SETTLE_MAX_MS = Number(process.env.SETTLE_MAX_MS ?? 60000);
 // SELF-CALIBRATING, because the hardcoded figure was wrong by 2.9x.
@@ -282,6 +410,10 @@ setInterval(() => {
     const worthIt = settleValueWei(j.delta) >= threshold;
     const waitedLongEnough = now - j.since >= SETTLE_MAX_MS;
     if (!worthIt && !waitedLongEnough) continue;
+    // Held back rather than attempted on a job that requires checkpoints and
+    // has produced nothing visible since the last one. The tokens stay in the
+    // ledger and the next settlement with visible progress pays for them.
+    if (!canSettle(id)) continue;
     settle(id, flush(j, now));
   }
 }, 1000);
@@ -354,6 +486,9 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
   const e = await engineP;
   const hb = setInterval(() => { try { res.write(': hb\n\n'); } catch {} }, 1000);
   active.set(jobId, newLedger());
+  // Read before a token is produced, so the first settlement of the stream
+  // already carries a checkpoint the contract will accept.
+  const prog = await seedProgress(jobId, resume?.text ?? '');
 
   // On a resume the earlier text is replayed as context but is never charged
   // again: this node only settles the tokens it actually produces.
@@ -368,7 +503,6 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
   console.log(`[job#${jobId}] serving ${estTokens(String(prompt))} tok in via ${e.kind}/${e.model}${resume ? ` (resume from ${resume.n} tok)` : ''}`);
 
   let produced = 0;
-  let prefix = resume?.text ?? '';
   let sinceCp = 0;
   // Unbilled reasoning, accumulated only to report the ratio. This node
   // performs roughly twice the compute it invoices and nothing measured it
@@ -393,6 +527,7 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
         // frame is one token here exactly as it is on the visible path, so it
         // increments the same counter.
         active.get(jobId)!.delta++;
+        prog.billed++;
         // It is still NOT appended to `prefix` and NOT counted in `produced`.
         // The checkpoint chain covers the visible answer only, because that is
         // the text a replacement provider is handed and must reproduce. What
@@ -405,14 +540,20 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
       }
       const tok = c.t;
       res.write(`data: ${JSON.stringify({ t: tok })}\n\n`);
-      prefix += tok;
+      prog.prefix += tok;
       produced++;
       active.get(jobId)!.delta++;
+      prog.visible++;
+      prog.billed++;
       if (++sinceCp >= CHECKPOINT_EVERY) {
         sinceCp = 0;
         // A checkpoint lets a different provider pick the answer up from here
         // and prove it has the same prefix, rather than starting over.
-        res.write(`data: ${JSON.stringify({ cp: { n: (resume?.n ?? 0) + produced, h: keccak256(stringToHex(prefix)) } })}\n\n`);
+        // The frame the browser and a failover client read. The chain gets
+        // the same hash from the same text at settle time, inside a
+        // settlement this node is making anyway: 6,293 gas once the four slots
+        // are warm, against a whole transaction for commitCheckpoint.
+        res.write(`data: ${JSON.stringify({ cp: { n: (resume?.n ?? 0) + produced, h: keccak256(stringToHex(prog.prefix)) } })}\n\n`);
       }
       const t = throttleMs();
       if (t) await sleep(t);
@@ -427,12 +568,20 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
     console.log(`[job#${jobId}] ${produced} tok visible + ~${th} tok reasoning, both billed (${Math.round((th / (th + produced || 1)) * 100)}% reasoning)`);
   }
   if (!res.writableEnded) {
-    res.write(`data: ${JSON.stringify({ cp: { n: (resume?.n ?? 0) + produced, h: keccak256(stringToHex(prefix)), final: true } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ cp: { n: (resume?.n ?? 0) + produced, h: keccak256(stringToHex(prog.prefix)), final: true } })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
   }
   const j = active.get(jobId);
-  if (j && j.delta > 0) settle(jobId, flush(j));
+  if (j && j.delta > 0) {
+    // A job that requires checkpoints and produced no visible token at all has
+    // nothing publishable, so there is nothing the chain will pay for. That is
+    // the same policy as a plan step that spent its ceiling on reasoning and
+    // returned nothing: this node ate the compute. Writing it off is honest and
+    // it is also the only option, since the settle would revert.
+    if (canSettle(jobId)) settle(jobId, flush(j));
+    else console.log(`[job#${jobId}] ${flush(j)} tok written off: the job requires checkpoints and no visible token was produced`);
+  }
 
   // A session job stays open across turns, so one conversation pays openJob and
   // closeJob once instead of once per turn. Measured over a real ten turn
@@ -454,13 +603,21 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
 // idle timer.
 function closeNow(jobId: bigint) {
   const j = active.get(jobId);
-  if (j && j.delta > 0) settle(jobId, flush(j));
+  if (j && j.delta > 0) {
+    if (canSettle(jobId)) settle(jobId, flush(j));
+    else console.log(`[job#${jobId}] ${flush(j)} tok written off at close: checkpoints required, none publishable`);
+  }
   const t = idleTimers.get(jobId);
   if (t) { clearTimeout(t); idleTimers.delete(jobId); }
   queue = queue.then(() => sendChecked('closeJob', 'closeJob', [jobId], 120000n)
     .then(h => console.log(`[job#${jobId}] closed  ${EXPLORER}/tx/${h}`))
     .catch(e => console.log(`[job#${jobId}] close FAILED:`, (e as any).shortMessage ?? (e as any).message)));
   active.delete(jobId);
+  // Deleted here and not at end of stream: a session job serves many turns on
+  // one jobId and the published height has to survive between them, or the
+  // next turn's first checkpoint claims a height the chain already holds and
+  // reverts on "checkpoint must advance".
+  progress.delete(jobId);
 }
 
 // Restart the idle countdown for a session job. Every turn pushes it back; a
@@ -597,7 +754,7 @@ async function register(e: Engine): Promise<void> {
     try {
       const h = await w.writeContract({
         address: ADDR, abi: ABI, functionName: 'registerProvider',
-        args: [e.model, describeHardware(HW), RATE], gas: 250000n, maxFeePerGas: 2000000000000n,
+        args: [e.model, describeHardware(HW), RATE, MAX_TOKENS_PER_SECOND], gas: 250000n, maxFeePerGas: 2000000000000n,
       });
       await pub.waitForTransactionReceipt({ hash: h });
       console.log(`registered ${e.kind}/${e.model}\n  tx: ${EXPLORER}/tx/${h}`);
@@ -804,7 +961,7 @@ http.createServer(async (req, res) => {
       // personal data at the moment it is written. Do not claim the carve-out.
       const salt = toHex(randomBytes(32));
       const tag = keccak256(stringToHex(salt + '|' + String(prompt)));
-      const h = await w.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [me, budget, tag], gas: 250000n, maxFeePerGas: 2000000000000n });
+      const h = await w.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [me, budget, tag, true], gas: 250000n, maxFeePerGas: 2000000000000n });
       const rc = await pub.waitForTransactionReceipt({ hash: h });
       const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
       return serveJob(log.args.jobId as bigint, prompt, res);

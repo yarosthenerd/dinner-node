@@ -16,13 +16,13 @@ const chain = defineChain({
   nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
   rpcUrls: { default: { http: ['https://testnet-rpc.monad.xyz'] } },
 });
-const ADDR = process.env.DINNER_NODE_ADDRESS || '0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92';
+const ADDR = process.env.DINNER_NODE_ADDRESS || '0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd';
 const ABI = [
   { name: 'deposit', type: 'function', stateMutability: 'payable', inputs: [], outputs: [] },
   { name: 'deposits', type: 'function', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] },
-  { name: 'openJob', type: 'function', stateMutability: 'nonpayable', inputs: [{ type: 'address' }, { type: 'uint256' }, { type: 'string' }], outputs: [{ type: 'uint256' }] },
+  { name: 'openJob', type: 'function', stateMutability: 'nonpayable', inputs: [{ type: 'address' }, { type: 'uint256' }, { type: 'string' }, { type: 'bool' }], outputs: [{ type: 'uint256' }] },
   { name: 'closeJob', type: 'function', stateMutability: 'nonpayable', inputs: [{ type: 'uint256' }], outputs: [] },
-  { name: 'jobs', type: 'function', stateMutability: 'view', inputs: [{ type: 'uint256' }], outputs: [{ type: 'address' }, { type: 'address' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'bool' }] },
+  { name: 'getJob', type: 'function', stateMutability: 'view', inputs: [{ type: 'uint256' }], outputs: [{ type: 'tuple', components: [{ name: 'requester', type: 'address' }, { name: 'provider', type: 'address' }, { name: 'escrow', type: 'uint256' }, { name: 'paid', type: 'uint256' }, { name: 'tokens', type: 'uint256' }, { name: 'ratePerMillion', type: 'uint256' }, { name: 'maxTokensPerSecond', type: 'uint256' }, { name: 'openedAt', type: 'uint64' }, { name: 'lastSettleAt', type: 'uint64' }, { name: 'open', type: 'bool' }, { name: 'requireCheckpoints', type: 'bool' }] }] },
   { name: 'JobOpened', type: 'event', inputs: [{ name: 'jobId', type: 'uint256', indexed: true }, { name: 'requester', type: 'address', indexed: true }, { name: 'provider', type: 'address', indexed: true }, { name: 'promptTag', type: 'string' }] },
 ];
 const MAX_FEE = 2000000000000n;
@@ -87,7 +87,7 @@ if (dep < BUDGET) {
 const salt = toHex(randomBytes(32));
 const tag = keccak256(stringToHex(salt + '|' + goal));
 console.log(`[${el()}] opening job…`);
-const oh = await w.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [health.provider, BUDGET, tag], gas: 300000n, maxFeePerGas: MAX_FEE });
+const oh = await w.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [health.provider, BUDGET, tag, false], gas: 300000n, maxFeePerGas: MAX_FEE });
 const rc = await pub.waitForTransactionReceipt({ hash: oh });
 const jobId = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' })[0].args.jobId;
 console.log(`[${el()}] job#${jobId} open with ${formatEther(BUDGET)} MON`);
@@ -127,13 +127,13 @@ console.log(`[${el()}] run finished in ${((Date.now() - tRun) / 1000).toFixed(1)
 
 // ---- what the chain says ------------------------------------------------
 await new Promise(r => setTimeout(r, 8000)); // let the final settle land
-const j = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [jobId] });
-console.log(`\njob#${jobId} on chain: escrow ${formatEther(j[2])} paid ${formatEther(j[3])} tokens ${j[4]} open=${j[5]}`);
-if (j[5]) {
+const j = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'getJob', args: [jobId] });
+console.log(`\njob#${jobId} on chain: escrow ${formatEther(j.escrow)} paid ${formatEther(j.paid)} tokens ${j.tokens} open=${j.open}`);
+if (j.open) {
   console.log('closing to recover the remainder…');
   const ch = await w.writeContract({ address: ADDR, abi: ABI, functionName: 'closeJob', args: [jobId], gas: 200000n, maxFeePerGas: MAX_FEE });
   await pub.waitForTransactionReceipt({ hash: ch });
-  const j2 = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [jobId] });
-  console.log(`closed: paid ${formatEther(j2[3])} for ${j2[4]} tokens`);
+  const j2 = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'getJob', args: [jobId] });
+  console.log(`closed: paid ${formatEther(j2.paid)} for ${j2.tokens} tokens`);
 }
 console.log(failures.length ? `\nFAILURES: ${failures.map(f => f.id + '/' + f.code).join(', ')}` : '\nno step failures');
