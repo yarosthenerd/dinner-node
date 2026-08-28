@@ -68,25 +68,25 @@ catch { _pk = generatePrivateKey(); } // private mode: ephemeral only
 export const burnerAddress = privateKeyToAccount(_pk).address;
 export const burnerWallet = createWalletClient({ account: privateKeyToAccount(_pk), chain: monadTestnet, transport: http() });
 // Takes the address rather than reading the burner's, because with a wallet
-// connected the address that needs funding is the guest's own. The endpoint
-// decides whether to grant; see the threat model in web/api/topup.js.
-export const faucet = async (address: `0x${string}`) => {
-  try {
-    const r = await fetch(`/api/topup?address=${address}`);
-    // A 200 is not necessarily a grant. The endpoint returns
-    // {ok:false, reason:'already funded'} with a 200, and treating that as
-    // success would tell a caller funds are coming when none are.
-    if (r.ok) {
-      const body = await r.json().catch(() => ({ ok: true }));
-      if (body.ok !== false) return true;
-      console.warn('faucet declined:', body.reason);
-    }
-  } catch {}
-  return fetch('https://agents.devnads.com/v1/faucet', {
+// connected the address that needs funding is the guest's own.
+//
+// The house faucet is GONE. `web/api/topup.js` was a serverless endpoint that
+// sent MON from a key the operator controls to any address that asked, and it
+// was deleted 2026-08-28 rather than left disabled, because `TOPUP_DISABLED`
+// is an environment variable and a deploy that forgets it is a one-variable
+// mistake with regulatory consequences. It had already granted nothing since
+// the variable was set. Do not reintroduce it: an operator-run dispenser is
+// the most legally exposed mechanic this project ever shipped, and on mainnet
+// it is a transfer service.
+//
+// What is left is the public testnet faucet, which is not ours, is rate
+// limited per IP, and can refuse. A false return means the guest funds their
+// own wallet.
+export const faucet = async (address: `0x${string}`) =>
+  fetch('https://agents.devnads.com/v1/faucet', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ chainId: 10143, address }),
-  }).then(r => r.ok);
-};
+  }).then(r => r.ok).catch(() => false);
 export const fmt = (w: bigint) => {
   let s = formatEther(w);
   if (s.includes('.')) s = s.slice(0, s.indexOf('.') + 9).replace(/0+$/, '').replace(/\.$/, '');

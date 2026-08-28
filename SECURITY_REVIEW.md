@@ -392,11 +392,14 @@ Applied to every `writeContract` and `sendTransaction` site.
 - [x] Explicit `gas` on every write, including `src/guest.ts`, which previously
       had none at all. Monad charges gas_limit, not gas_used. See the item below
       on which of these are actually tight.
-- [x] `maxFeePerGas` capped at 2000 gwei in `src/host.ts`, `src/guest.ts`,
-      `web/api/p/*` and `web/api/topup.js`.
+- [x] `maxFeePerGas` capped at 2000 gwei in `src/host.ts` and `src/guest.ts`.
+      The `web/api/p/*` and `web/api/topup.js` sites this also covered no longer
+      exist; both were deleted, `web/api/p/*` in `fd86fb8` and the faucet on
+      2026-08-28.
 - [x] `maxFeePerGas` cap on the `web/src` guest writes.
-- [x] Gas estimated per call for `settle` and `closeJob`, in `src/host.ts` and
-      both serverless endpoints. A fixed limit reverted after every key rotation.
+- [x] Gas estimated per call for `settle` and `closeJob` in `src/host.ts`. A
+      fixed limit reverted after every key rotation. The two serverless
+      endpoints this also covered are deleted.
 - [ ] `deposit`, `openJob` and `registerProvider` still use fixed padded limits
       in `src/host.ts`, `src/guest.ts` and `web/src/App.tsx`. Measured with
       Foundry: `deposit` 55094 against a 200000 limit (3.6x), `openJob` 166702
@@ -424,14 +427,17 @@ Blocking, in order:
 
 1. Deploy and independently review a fixed contract. Items 1.1 and 1.2 are
    exploitable by any registered provider against any guest.
-2. **Delete** `web/api/topup.js`, do not disable it (1.10). It is bounded now,
-   not safe, and boundedness is not the axis the mainnet question turns on.
-   `TOPUP_DISABLED` is an environment variable and is not a gate. On
-   mainnet an operator
-   sending native tokens of value to users on request, with no KYC, no limit,
-   and no sanctions screening, has regulatory exposure separate from the
-   drain risk. Users should fund their own wallets.
-3. Separate the faucet key from the provider key (2.2).
+2. ~~**Delete** `web/api/topup.js`~~. **Done 2026-08-28**, deleted rather than
+   disabled (1.10), because `TOPUP_DISABLED` is an environment variable and is
+   not a gate. The reasoning it was deleted for stands as a rule for anything
+   proposed later: on mainnet an operator sending native tokens of value to
+   users on request, with no KYC, no limit and no sanctions screening, has
+   regulatory exposure separate from the drain risk. Users fund their own
+   wallets. `web/src/lib.ts` `faucet()` now calls only the public testnet
+   faucet, which is not operated by us.
+3. ~~Separate the faucet key from the provider key (2.2).~~ Moot 2026-08-28:
+   there is no faucet and no serverless provider, so `HOUSE_PK` signs nothing a
+   guest can trigger.
 4. Legal review. See the separate legal findings: escrow-as-custody under MiCA
    and the Serbian Law on Digital Assets, and the house wallet as a possible
    transfer service, both need Serbian counsel before any value is real.

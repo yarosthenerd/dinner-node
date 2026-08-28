@@ -30,18 +30,16 @@ const TUNNEL_HEADERS = { 'bypass-tunnel-reminder': '1', 'ngrok-skip-browser-warn
 // can commit several MON. The daemons already cap every write; the browser did
 // not, which is where the guest's own wallet is spent.
 const MAX_FEE = 2000000000000n;
-// Coupled to TOPUP_AMOUNT and TOPUP_RECIPIENT_MAX in web/api/topup.js. See
-// the funding invariant comment in the balance effect below before changing.
+// The balance below which the app offers to fetch the guest more MON. See the
+// funding invariant comment in the balance effect below before changing.
 // Re-derived 2026-08-26 with the 0.30 MON escrow: a first order costs the guest
 // 0.30 of escrow plus about 0.06 of gas, so the trigger has to clear 0.36.
-// The invariant is unchanged and is what this number exists to satisfy: the
-// trigger must clear the cost of one full order, or the app loops asking for a
-// top-up it has already been given, and it must sit below TOPUP_RECIPIENT_MAX
-// in web/api/topup.js, or the faucet refuses every request the app makes.
-// Must clear the cost of one full order (1.00 escrow + ~0.06 gas) or a guest
-// is left holding a balance that cannot open a job. Moved with the escrow
-// raise that came with session jobs; see web/api/topup.js for the other two
-// constants in this invariant.
+// The half of the invariant that named house constants is gone with the house
+// faucet (deleted 2026-08-28, see lib.ts). What survives is the half that was
+// always the real one: the trigger must clear the cost of one full order, or a
+// guest sits above the threshold, below an order, and stuck. The public
+// testnet faucet's grant size is not ours to set, so there is no upper bound
+// to satisfy any more, only a lower one.
 const TOPUP_TRIGGER = parseEther('1.2');
 
 // How many jobs back the receipt walks. Each one is a sequential eth_call, so
@@ -229,22 +227,19 @@ export default function App() {
       try { bb = await pub.getBalance({ address: guestAddress }); setBal(bb); } catch {}
       try {
         if (bb === null) throw new Error('balance unavailable');
-        // FUNDING INVARIANT, and web/api/topup.js has to move with this file.
-        // Measured on testnet at a 100 gwei base fee, and Monad charges
+        // FUNDING INVARIANT. Measured on testnet at a 100 gwei base fee, and
+        // Monad charges
         // gas_limit rather than gas_used: openJob alone costs 0.03 MON, and a
         // first order that also deposits costs about 0.06. So every trigger
         // here must sit ABOVE the cost of one full order, or a guest holding
         // more than the threshold and less than an order is stuck forever with
-        // no way to move their own balance. It must also sit BELOW
-        // TOPUP_RECIPIENT_MAX (0.5), or the app asks for a top-up the faucet
-        // always refuses and loops. 0.1 satisfies both with a 5x margin, and a
-        // single 0.25 grant always clears it.
-        // Burner only. With the guest's own wallet connected, the house has
-        // no business pushing MON at an address it does not control: the
-        // faucet exists to make the burner demo openable, not to subsidise
-        // arbitrary wallets, and an automatic grant to a connected address is
-        // also the thing that makes every usage figure house-to-house flow.
-        // The manual button stays available in both modes.
+        // no way to move their own balance.
+        // Burner only, still, even though the money is no longer the house's.
+        // A guest with their own wallet connected did not ask us to go asking
+        // a third-party faucet on their behalf, and the per-IP cooldown is a
+        // shared resource: spending it on a wallet that does not need it is
+        // what leaves the next burner in the room unable to order. The manual
+        // button stays available in both modes.
         if (wallet.mode === 'burner' && bb < TOPUP_TRIGGER && !sessionStorage.getItem('dn_topped')) {
           // Flag set only on success. Set before the await, one 429 from the
           // shared per-IP cooldown permanently disabled the auto-path for the
