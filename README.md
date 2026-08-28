@@ -1,9 +1,9 @@
 # DinnerNode: your idle PC pays for dinner.
 
 Rent idle consumer hardware to serve local LLM inference. Providers stream tokens;
-requesters pay per token, **settled on Monad every ~2 seconds**.
+requesters pay per token, **settled on Monad as the work becomes worth settling**.
 
-**Live:** https://web-opal-sigma-55.vercel.app · **Contract:** [0xaF2c…3A92](https://testnet.monadvision.com/address/0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92) · Monad testnet (10143)
+**Live:** https://dinnernode.xyz · **Contract:** [0x2881…EbCd](https://testnet.monadvision.com/address/0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd) · Monad testnet (10143)
 
 Testnet only. MON here has no monetary value. See [terms](web/public/terms.html) and
 [acceptable use](web/public/acceptable-use.html).

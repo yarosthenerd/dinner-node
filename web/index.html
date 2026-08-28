@@ -4,7 +4,76 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>web</title>
+
+    <title>DinnerNode — rent idle GPUs for LLM inference</title>
+    <meta name="description" content="A marketplace for idle consumer GPUs. Run a node and get paid per token; buy inference with no account and no API key. If a provider dies mid-answer, another continues from an on-chain checkpoint and is paid only for what it writes." />
+    <link rel="canonical" href="https://www.dinnernode.xyz/" />
+
+    <!-- What a link preview shows in Slack, Discord, LinkedIn and X. Without
+         these the scrapers fall back to the <title>, which was literally the
+         word "web". -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="DinnerNode" />
+    <meta property="og:url" content="https://www.dinnernode.xyz/" />
+    <meta property="og:title" content="DinnerNode — rent idle GPUs for LLM inference" />
+    <meta property="og:description" content="Run a node and get paid per token. If a provider dies mid-answer, another continues from an on-chain checkpoint and is paid only for what it writes." />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="DinnerNode — rent idle GPUs for LLM inference" />
+    <meta name="twitter:description" content="Run a node and get paid per token. If a provider dies mid-answer, another continues from an on-chain checkpoint and is paid only for what it writes." />
+
+    <!--
+      Structured data.
+
+      Two things are described, because they are two things: the project as an
+      Organization, and the app itself as a SoftwareApplication. Search engines
+      and LinkedIn read the first; the second is what makes a rich result say
+      what this software does rather than guessing from body text.
+
+      Nothing here states current deployment status, price, or availability.
+      Schema is cached and re-crawled on someone else's schedule, so a figure
+      written here goes stale silently and there is no way to know it has. The
+      claims below are properties of what the software is, which do not expire.
+    -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "Organization",
+          "@id": "https://www.dinnernode.xyz/#organization",
+          "name": "DinnerNode",
+          "url": "https://www.dinnernode.xyz/",
+          "logo": "https://www.dinnernode.xyz/favicon.svg",
+          "description": "A marketplace for idle consumer GPUs running large language model inference, with per-token settlement and provider failover verified on chain."
+        },
+        {
+          "@type": "WebSite",
+          "@id": "https://www.dinnernode.xyz/#website",
+          "url": "https://www.dinnernode.xyz/",
+          "name": "DinnerNode",
+          "publisher": { "@id": "https://www.dinnernode.xyz/#organization" },
+          "inLanguage": "en"
+        },
+        {
+          "@type": "SoftwareApplication",
+          "@id": "https://www.dinnernode.xyz/#app",
+          "name": "DinnerNode",
+          "url": "https://www.dinnernode.xyz/",
+          "applicationCategory": "DeveloperApplication",
+          "operatingSystem": "Any modern web browser",
+          "publisher": { "@id": "https://www.dinnernode.xyz/#organization" },
+          "description": "Buy large language model inference from independently operated consumer GPUs, paying per token as the answer is written. Providers set their own price and serve their own model. If the machine writing an answer stops, another node resumes it from a checkpoint published on chain and is paid only for the tokens it produces itself, so the same text is never paid for twice.",
+          "featureList": [
+            "Per-token settlement as output is delivered",
+            "Mid-answer failover between independent providers",
+            "Checkpointed answers, verified on chain",
+            "Providers set their own model and their own price",
+            "No account, API key, or subscription"
+          ]
+        }
+      ]
+    }
+    </script>
   </head>
   <body>
     <div id="root"></div>
