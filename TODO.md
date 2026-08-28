@@ -66,12 +66,26 @@ the configuration, the pricing and the failover story.
       question rather than a hardware ceiling, but ollama divides the context
       across parallel slots and the machine has 11GB free. Measure before
       raising it again.
-- [ ] **`OLLAMA_MAX_LOADED_MODELS=1` breaks the session shape outright.** Both
+- [ ] **`OLLAMA_MAX_LOADED_MODELS=1` breaks the session shape outright. Needs
+      sudo, so it is the one item here left undone.** Confirmed live 2026-08-28:
+      after node 2 restarted, `ollama ps` showed only `llama3.2:1b` and node 1's
+      22GB model had been evicted. Worked around by restarting node 1 last so
+      the public provider is resident, which is a restart-order dependency, not
+      a fix. The command:
+      `sudo systemctl edit --full ollama` and set `OLLAMA_MAX_LOADED_MODELS=2`,
+      or drop it in `/etc/systemd/system/ollama.service.d/override.conf`, then
+      `sudo systemctl daemon-reload && sudo systemctl restart ollama` and
+      restart node 1 to reload its model. Both
       nodes share one ollama and serve different models, so every alternation
       between node 1 and node 2 EVICTS a 22GB model and the next request pays a
       full reload. This is where the reload times in the A1 sweep came from.
       Raise it to 2. Node 2's model is 1.3GB and there is room.
-- [ ] `OLLAMA_KEEP_ALIVE=-1` is already set and is correct. Do not change it.
+- [x] **`keep_alive` fixed 2026-08-28.** The systemd `OLLAMA_KEEP_ALIVE=-1` was
+      a red herring: `src/host.ts:818` and `src/engines.ts:50` send `keep_alive`
+      per request, which overrides the server default, and it defaulted to
+      `30m`. So a node went cold between sessions and paid a reload plus the
+      warm-up ramp. Now `24h` in both env files, confirmed in `ollama ps`. Not
+      `-1`, because a string is parsed as a Go duration and `"-1"` has no unit.
 - [ ] **Keep a node warm on purpose.** A cold node is 3x slower for its first
       requests, which lands entirely on the first guest of the session. Cheapest
       version is a periodic one-token self-request when idle. Weigh it against

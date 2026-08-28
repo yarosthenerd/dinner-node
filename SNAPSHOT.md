@@ -323,6 +323,58 @@ A2 is partial: 49.5W mean GPU draw under load, 61.7W peak. Still wants a wall
 meter, for a now-specific reason: at `gpuFraction` 0.43 the CPU does most of
 the work, so a GPU-only figure understates system draw.
 
+
+## 13. Deployed, and both nodes restarted onto the session shape
+
+Operator authorised both. Done and verified rather than reported.
+
+**Deployed.** `web-eqlxkuvnl`, bundle `index-CN5UhUbj.js`, matching the local
+build. Verified live rather than assumed:
+
+```
+/favicon.ico       200      /favicon.svg   404   (Monad's mark, gone)
+/icon-512.png      200      /api/topup     404   (the faucet, gone)
+/og.png            200
+```
+
+The corrected privacy notice is live: `terms.html` no longer contains "and to
+no one else", and does contain 2.9 and "part of the answer already produced".
+The bundle no longer contains "no ZK identity layer in this build".
+
+**Discovery is on v2.** `registry` now reads `0x2881...`, and its listing
+carries v2's figures. Both nodes announce with URLs.
+
+### Three defects found by restarting, all live, none in the roadmap
+
+1. **`keep_alive` was 30 minutes, not forever, and the systemd setting was a
+   red herring.** The ollama service has `OLLAMA_KEEP_ALIVE=-1`, but
+   `src/host.ts:818` and `src/engines.ts:50` send `keep_alive` on every request
+   and a per-request value OVERRIDES the server default. It defaulted to `30m`,
+   so a node went cold between sessions and paid a 16 to 114 second reload plus
+   the warm-up ramp from 20 tok/s back to about 58. **Fixed:**
+   `OLLAMA_KEEP_ALIVE=24h` in `.env` and `.env.node2`, confirmed by
+   `ollama ps` reading "24 hours from now". Not `-1`: a string is parsed as a
+   Go duration and `"-1"` has no unit.
+2. **Node 2 announced a LAN address the machine no longer has.** `PUBLIC_URL`
+   was `192.168.3.8`; the machine is on `192.168.5.98`. **Fixed.** Its first
+   announce after restart also 403'd, which is a benign race between its own
+   `registerProvider` landing and discovery reading `providers(addr)`; the four
+   minute re-announce timer recovers it, and it did.
+3. **`OLLAMA_MAX_LOADED_MODELS=1`, and this one is NOT fixed.** Both nodes share
+   one ollama with different models, so whichever warms last EVICTS the other.
+   Observed directly: after node 2 restarted, `ollama ps` showed only
+   `llama3.2:1b` and node 1's 22GB model was gone. Worked around for now by
+   restarting node 1 LAST, so the public provider is the resident one, which is
+   a restart-order dependency and not a fix.
+
+### Still blocking failover, unchanged by any of this
+
+`VITE_DISCOVERY_URL` is still unset in Vercel: the deployed bundle contains no
+`/providers` string. Discovery listens on `localhost:4175`, so there is nothing
+publicly reachable to point the variable at. Node 2's URL is also plain http on
+a LAN address, which an https page blocks. **Both want a tunnel, and that is an
+operator step.** Until then `?peer=` is the only way to exercise a handover.
+
 ---
 
 # Session snapshot, 2026-08-28 (evening)
