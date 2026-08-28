@@ -129,11 +129,14 @@ export default function App() {
   const [ratedProvider, setRatedProvider] = useState<`0x${string}` | null>(null);
   const [canResume, setCanResume] = useState(false);
   const [discoveryUp, setDiscoveryUp] = useState<boolean | null>(null);
-  // Whether the text on screen was produced by the hosted kitchen. The note
-  // above the composer disclosed this only when the guest had SELECTED the
-  // cloud endpoint, so an answer that failed over to it mid-order arrived as a
-  // canned passage with nothing on the page saying it was one.
-  const [servedByCloud, setServedByCloud] = useState(false);
+  // The record of a mid-answer handover, shown above the answer it happened
+  // inside. This is the differentiator made visible: without it the guest sees
+  // one uninterrupted answer and has no way to tell that the machine producing
+  // it changed halfway through, or that the first one was paid for its half.
+  const [handover, setHandover] = useState<{
+    job: string; from: string; to: string; tokens: number; paidOut: bigint;
+    tx: string; fresh?: boolean;
+  } | null>(null);
 
   // The last checkpoint published by whichever provider was streaming. This is
   // what lets a replacement continue the same answer instead of starting over
@@ -173,13 +176,6 @@ export default function App() {
     () => DOMPurify.sanitize(marked.parse(stream || '') as string),
     [stream],
   );
-  // The hosted cloud kitchen is gone. It settled real MON for a fixed passage
-  // of text, which was the one thing on this site that took payment for
-  // nothing, and a network built on idle consumer GPUs falling back to a
-  // serverless function undermined its own premise. Failover now goes to
-  // another real node or nowhere. See SNAPSHOT 2026-08-27 (evening).
-  const canned = false;
-
   // Provider discovery. The listener is primary; the on-chain read of the
   // known list is the fallback. Note that scanning ProviderRegistered logs is
   // NOT an option here: the public Monad RPC rejects any eth_getLogs wider
@@ -392,6 +388,87 @@ export default function App() {
     }
   }
 
+  /// Hand a live job to another provider on chain, and return the jobId the
+  /// order continues on.
+  ///
+  /// The happy path keeps the same job. `reassign` is callable only by the
+  /// requester, which is this browser, and it does three things the browser
+  /// cannot do for itself: it pays the outgoing provider up to what its own
+  /// published checkpoint evidences and no further, it refuses to let the
+  /// replacement's rate or throughput rise above what the guest locked at
+  /// open, and it leaves the checkpoint chain in place so the replacement's
+  /// first settle is clamped to the suffix it actually produced.
+  ///
+  /// The fallback opens a fresh job. It is needed because reassign can be
+  /// legitimately impossible: a provider on its way down may have called
+  /// closeJob, and a closed job cannot be handed anywhere. It is strictly
+  /// weaker, and the difference is the point of this function existing: a new
+  /// job carries no checkpoint the contract knows about, so on that path
+  /// "the replacement is not paid for the prefix it inherited" holds only
+  /// because the host chooses to settle what it produced. That is a promise
+  /// rather than a rule, which is why it is the fallback and not the path.
+  async function handOver(
+    id: bigint,
+    to: `0x${string}`,
+    budget: bigint,
+    promptTag: `0x${string}`,
+    opened: bigint[],
+  ): Promise<bigint> {
+    try {
+      // Estimated rather than padded. reassign's cost swings on whether the
+      // outgoing provider has a checkpoint to be settled out of, and Monad
+      // charges the gas limit rather than the gas used, so a fixed limit sized
+      // for the expensive case is a real overpayment on every cheap one.
+      const gas = await pub.estimateContractGas({
+        address: ADDR, abi: ABI, functionName: 'reassign', args: [id, to], account: guestAddress,
+      }).then(g => (g * 12n) / 10n).catch(() => 300000n);
+      const h = await guestWallet.writeContract({
+        address: ADDR, abi: ABI, functionName: 'reassign', args: [id, to], gas, maxFeePerGas: MAX_FEE,
+      });
+      const rc = await pub.waitForTransactionReceipt({ hash: h });
+      // writeContract resolves on acceptance, not on success. Without this a
+      // reverted handover reads as a completed one and the loop streams from a
+      // provider the contract never gave the job to, whose settle then reverts
+      // against a job that is not its own.
+      if (rc.status !== 'success') throw new Error('reassign reverted');
+      const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobReassigned' });
+      const settledOut = (log?.args as any)?.settledOut as bigint | undefined;
+      setHandover({
+        job: id.toString(),
+        from: String((log?.args as any)?.from ?? ''),
+        to,
+        tokens: cpRef.current?.n ?? 0,
+        paidOut: settledOut ?? 0n,
+        tx: h,
+      });
+      return id;
+    } catch (e) {
+      console.error('reassign failed, opening a fresh job instead', e);
+      setNote('the job could not be handed over on chain — opening a new one on the standby node…');
+      const dep = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'deposits', args: [guestAddress] }) as bigint;
+      if (dep < budget) {
+        const depHash = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: budget, gas: 200000n, maxFeePerGas: MAX_FEE });
+        await pub.waitForTransactionReceipt({ hash: depHash });
+      }
+      // requireCheckpoints stays true on the fallback job as well. It cannot
+      // bound the inherited prefix, since this job has never seen one, but it
+      // still bounds everything the replacement produces from here.
+      const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [to, budget, promptTag, true], gas: 300000n, maxFeePerGas: MAX_FEE });
+      const rc = await pub.waitForTransactionReceipt({ hash: h });
+      const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
+      const fresh = log.args.jobId as bigint;
+      opened.push(fresh);
+      setHandover({
+        job: fresh.toString(), from: '', to, tokens: cpRef.current?.n ?? 0,
+        paidOut: 0n, tx: h, fresh: true,
+      });
+      // The old job is not ours to keep holding. It is closed rather than
+      // abandoned so its unspent escrow returns to the guest's deposit.
+      await releaseJob(id);
+      return fresh;
+    }
+  }
+
   async function rent(resume = false) {
     if (overBudget) { setNote(`prompt is ${promptTokens} tokens, over this host's ${budgetTokens} limit — shorten it`); return; }
     setBusy(true);
@@ -399,7 +476,7 @@ export default function App() {
     // The transcript shows the prompt as submitted, so a guest editing the box
     // while an answer streams does not silently rewrite the question it was an
     // answer to. On a resume the original prompt stays; it is the same question.
-    if (!resume) { setStream(''); cpRef.current = null; liveRef.current = ''; setCanResume(false); setSentPrompt(prompt); setServedByCloud(false); }
+    if (!resume) { setStream(''); cpRef.current = null; liveRef.current = ''; setCanResume(false); setSentPrompt(prompt); setHandover(null); }
     setThinking(''); setThinkTokens(0);
     const opened: bigint[] = [];
     let finished = false;
@@ -478,60 +555,113 @@ export default function App() {
       const salt = toHex(crypto.getRandomValues(new Uint8Array(32)));
       const promptTag = keccak256(new TextEncoder().encode(salt + '|' + cleanPrompt));
 
-      // Try the selected host first, then the hosted kitchen. Each attempt
-      // gets its own job, and any job that does not finish is closed so its
-      // escrow comes back.
-      // One target until discovery serves reachable peers. The second entry
-      // used to be the hosted kitchen, which answered every failure with a
-      // canned passage and a real settlement, so a guest whose node died paid
-      // for text no model produced. Failing honestly is better than that.
-      // Restoring failover is a matter of putting a peer URL in here, which is
-      // what discovery exists to provide.
-      const targets = [url];
+      // Failover, and the thing that makes it the contract's business rather
+      // than a convention between two hosts.
+      //
+      // The first target is whatever the guest selected; the rest are the
+      // other live nodes discovery knows about. That list exists again because
+      // the second entry used to be the hosted kitchen, which answered every
+      // failure with a canned passage and a real settlement, so a guest whose
+      // node died paid for text no model produced. Deleting it in fd86fb8 was
+      // right and left the browser with no failover target at all.
+      //
+      // ONE job crosses every target. That is the whole difference from the
+      // loop this replaces, which opened a job per attempt: the escrow, the
+      // rate locked at open, the prompt commitment and the checkpoint chain
+      // all stay on the same jobId, and the handover is `reassign`, which
+      // settles the outgoing provider against its own published checkpoint
+      // before moving the job and clamps the replacement to the suffix it
+      // produces itself. A job per attempt can do neither, because the second
+      // job has no checkpoint history the contract knows about: "the
+      // replacement is not paid for the prefix it inherited" is then a promise
+      // the browser makes rather than a rule the chain holds.
+      const norm = (x: string) => x.replace(/\/+$/, '');
+      // Discovery is the source of peer URLs, because a provider's URL is not
+      // on chain: registerProvider records a model, a rate and a throughput
+      // figure and nothing about where to reach the machine. So when
+      // VITE_DISCOVERY_URL is unset, or the listener is unreachable, the
+      // fallback list has url:null on every row and there is no failover
+      // target at all. `?peer=` is the way to name one by hand, and it takes
+      // the same trust as the `?host=` parameter beside it, which has always
+      // decided who receives the prompt in the first place.
+      const named = new URLSearchParams(window.location.search).getAll('peer');
+      const peers = [
+        ...named,
+        ...providers.filter((p: any) => p.active && p.url).map((p: any) => String(p.url)),
+      ].filter((u, i, a) => norm(u) !== norm(url) && a.findIndex(x => norm(x) === norm(u)) === i);
+      // Two spares. Every failed attempt costs a health timeout plus a
+      // reassign, and a guest watching an answer stall does not sit through
+      // five of them.
+      const targets = [url, ...peers.slice(0, 2)];
       let finalJobId: bigint | null = null;
+      // Both survive the loop body: after one target has the job open, the
+      // next takes it over instead of opening its own.
+      let jobId: bigint | null = null;
+      let servedBy: string | null = null;
 
       for (const u of targets) {
-        let jobId: bigint | null = null;
+        const first = u === targets[0];
         try {
           const health = await attempt(async () => (await fetch(u + '/health', {
             signal: AbortSignal.timeout(9000), headers: TUNNEL_HEADERS,
-          })).json(), u === url ? 'warming the tunnel' : 'reaching the hosted kitchen');
-
-          // One job per session rather than one per turn. Reuse is always
-          // decided by reading the chain, never by trusting local state: the
-          // provider closes a session job when it goes idle, the cloud kitchen
-          // closes every job it serves, and settle() closes a job the moment
-          // its escrow is exhausted. Any of those can have happened since the
-          // last turn, so a job is only reused when the chain says it is open,
-          // belongs to this guest and this provider, and still has headroom.
-          jobId = await reusableJob(sessionRef.current, health.provider);
+          })).json(), first ? 'warming the tunnel' : 'reaching a standby node', first ? 8 : 3);
+          const nextProvider = String(health.provider) as `0x${string}`;
 
           if (jobId === null) {
-            const dep = await attempt(() => pub.readContract({ address: ADDR, abi: ABI, functionName: 'deposits', args: [guestAddress] }) as Promise<bigint>, 'checking your tab');
-            if (dep < budget) {
-              setNote(`depositing ${formatEther(budget)} MON…`);
-              const depHash = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: budget, gas: 200000n, maxFeePerGas: MAX_FEE });
-              await pub.waitForTransactionReceipt({ hash: depHash });
-            }
+            // One job per session rather than one per turn. Reuse is always
+            // decided by reading the chain, never by trusting local state: the
+            // provider closes a session job when it goes idle, and settle()
+            // used to close a job the moment its escrow was exhausted. Any of
+            // those can have happened since the last turn, so a job is only
+            // reused when the chain says it is open, belongs to this guest and
+            // this provider, and still has headroom.
+            jobId = await reusableJob(sessionRef.current, nextProvider);
 
-            // The fourth argument is requireCheckpoints, and true is the whole
-            // point of v2 from the guest's side: the node cannot be paid for
-            // tokens it has not published a keccak checkpoint covering, so the
-            // most a failure can cost is one settlement's worth of work rather
-            // than the escrow. A chat turn is one growing answer, which is
-            // exactly the shape the bound is written for. PlanPanel passes
-            // false, because a plan has no single prefix to hash and takes its
-            // ceiling from commitPlan instead.
-            const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [health.provider, budget, promptTag, true], gas: 300000n, maxFeePerGas: MAX_FEE });
-            const rc = await pub.waitForTransactionReceipt({ hash: h });
-            const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
-            jobId = log.args.jobId as bigint;
-            sessionRef.current = { jobId, provider: String(health.provider) };
-          } else {
-            setNote(`continuing job#${jobId} — this session's escrow is still open`);
+            if (jobId === null) {
+              const dep = await attempt(() => pub.readContract({ address: ADDR, abi: ABI, functionName: 'deposits', args: [guestAddress] }) as Promise<bigint>, 'checking your tab');
+              if (dep < budget) {
+                setNote(`depositing ${formatEther(budget)} MON…`);
+                const depHash = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: budget, gas: 200000n, maxFeePerGas: MAX_FEE });
+                await pub.waitForTransactionReceipt({ hash: depHash });
+              }
+
+              // The fourth argument is requireCheckpoints, and true is the
+              // whole point of v2 from the guest's side: the node cannot be
+              // paid for tokens it has not published a keccak checkpoint
+              // covering, so the most a failure can cost is one settlement's
+              // worth of work rather than the escrow. A chat turn is one
+              // growing answer, which is exactly the shape the bound is
+              // written for, and it is also what a replacement provider needs
+              // in order to be bounded at all. PlanPanel passes false, because
+              // a plan has no single prefix and takes its ceiling from
+              // commitPlan instead.
+              const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [nextProvider, budget, promptTag, true], gas: 300000n, maxFeePerGas: MAX_FEE });
+              const rc = await pub.waitForTransactionReceipt({ hash: h });
+              const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
+              jobId = log.args.jobId as bigint;
+            } else {
+              setNote(`continuing job#${jobId} — this session's escrow is still open`);
+            }
+            sessionRef.current = { jobId, provider: nextProvider };
+          } else if (servedBy && servedBy.toLowerCase() !== nextProvider.toLowerCase()) {
+            // THE HANDOVER. Same jobId, new provider, and the contract does
+            // the accounting: it pays the outgoing provider up to what its own
+            // published checkpoint evidences, bounded by exactly the rules a
+            // settle would have been, and a provider that published nothing is
+            // owed nothing. Then it moves the job, taking the replacement's
+            // rate and throughput only if they are LOWER than the ones the
+            // guest locked at open.
+            setNote(`${nextProvider.slice(0, 8)}… is taking over job#${jobId}${cpRef.current ? ` from token ${cpRef.current.n}` : ''}…`);
+            jobId = await handOver(jobId, nextProvider, budget, promptTag, opened);
+            sessionRef.current = { jobId, provider: nextProvider };
           }
+
           const jid = jobId; // stable binding: the closures below outlive the narrowing
-          opened.push(jid);
+          // Tracked once per distinct job rather than once per attempt. Under
+          // reassign there is normally exactly one for the whole order, and
+          // the only way to get a second is the fallback inside handOver.
+          if (!opened.includes(jid)) opened.push(jid);
+          servedBy = nextProvider;
           await onJobOpen(jid.toString());
           // Only now does a job binding exist, so this is the first moment the
           // staged template or custom engram can legally be stored. A failure
@@ -540,15 +670,14 @@ export default function App() {
           await applyPendingEngrams(pendingEngrams).catch(e => console.error('engram apply failed', e));
 
           const cp = cpRef.current;
-          setNote(u === url
-            ? `job#${jobId} open — prompt committed (${promptTag.slice(0, 10)}…) — streaming from ${health.model}…`
-            : `host dropped${cp ? ` after ${cp.n} tokens` : ''} — continuing on the hosted kitchen…`);
+          setNote(first
+            ? `job#${jid} open — prompt committed (${promptTag.slice(0, 10)}…) — streaming from ${health.model}…`
+            : `job#${jid} handed to ${health.model}${cp ? ` at token ${cp.n}` : ''} — continuing the same answer…`);
 
           // Show the committed prefix and nothing after it. Whatever this
           // provider sends either continues that prefix or replaces it, so
           // anything the previous provider streamed past the last checkpoint
           // must be dropped rather than concatenated with the new answer.
-          setServedByCloud(u !== url || canned);
           const base = cp?.h ? cp.text : '';
           liveRef.current = base;
           setStream(base);
@@ -683,7 +812,10 @@ export default function App() {
           throw new Error(streamErr ? 'provider errored mid-stream: ' + streamErr : 'stream ended without [DONE]');
         } catch (e) {
           console.error('provider attempt failed', u, e);
-          if (jobId !== null) { setNote('releasing escrow from the unfinished job…'); await releaseJob(jobId); }
+          // Deliberately does NOT release the job. The next target takes this
+          // one over, and closing it here would throw away the escrow, the
+          // locked rate and the checkpoint chain that make the handover worth
+          // anything. The finally below releases it if no target finishes.
         }
       }
 
@@ -826,7 +958,6 @@ export default function App() {
             <input value={url} onChange={e => setUrl(e.target.value)} />
 
           </div>
-          {canned && <div className="note">Note: the hosted kitchen returns a fixed demo passage, not model inference. Its on-chain settlements are real.</div>}
           {hostEngine?.engine === 'mock' && (
             <div className="note">
               Note: this host reports engine "mock". It returns canned text rather than model
@@ -886,8 +1017,20 @@ export default function App() {
                       stream markup, and the guest key sits in localStorage
                       under dn_pk. marked does not sanitize, so the output is
                       scrubbed before it is set. */}
-                  {servedByCloud && (
-                    <div className="note">Served by the hosted kitchen: this text is a fixed demo passage, not model inference. Its on-chain settlements are real.</div>
+                  {/* The handover, stated where the answer it interrupted is
+                      read. A guest who is told nothing sees one uninterrupted
+                      answer and cannot tell that the machine producing it
+                      changed, nor that the first one was paid for its half.
+                      Every figure here is on chain and the link goes to the
+                      transaction that moved the job. */}
+                  {handover && (
+                    <div className="note">
+                      {handover.fresh
+                        ? `the node serving this answer stopped${handover.tokens ? ` after ${handover.tokens} tokens` : ''} and the job could not be handed over on chain, so job#${handover.job} is a new one on ${handover.to.slice(0, 8)}…. it continues from the last published checkpoint.`
+                        : `job#${handover.job} changed hands mid-answer${handover.tokens ? ` at token ${handover.tokens}` : ''}: ${handover.from.slice(0, 8)}… was settled ${fmt(handover.paidOut)} MON for what it had published, and ${handover.to.slice(0, 8)}… continued the same answer under the same escrow.`}
+                      {' '}
+                      <a href={`${EXPLORER}/tx/${handover.tx}`} target="_blank" rel="noreferrer">receipt</a>
+                    </div>
                   )}
                   {/* Collapsed by default, and open on its own while nothing
                       visible has arrived yet. Before this existed the guest saw
