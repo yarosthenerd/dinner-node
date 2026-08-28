@@ -2,7 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- favicon.svg was Monad's mark, which this project does not own and
+         should not have been serving as its own. The set below is the real one:
+         a mint dot, the same one the header pulses and the one on og.png.
+         favicon.ico carries 16, 32 and 48 for the browsers that still ask for
+         it by convention, and every static page under public/ picks it up from
+         the root without a link tag of its own. -->
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
     <title>DinnerNode — rent idle GPUs for LLM inference</title>
@@ -53,7 +61,7 @@
           "@id": "https://www.dinnernode.xyz/#organization",
           "name": "DinnerNode",
           "url": "https://www.dinnernode.xyz/",
-          "logo": "https://www.dinnernode.xyz/favicon.svg",
+          "logo": "https://www.dinnernode.xyz/icon-512.png",
           "image": "https://www.dinnernode.xyz/og.png",
           "description": "A marketplace for idle consumer GPUs running large language model inference, with per-token settlement and provider failover verified on chain."
         },
