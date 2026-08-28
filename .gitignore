@@ -40,3 +40,6 @@ patch_engrams3.cjs
 /DinnerNode_deck_diligence.pdf
 /make_deck.py
 /make_deck_diligence.py
+
+# root tsc -b build artifact
+tsconfig.tsbuildinfo
