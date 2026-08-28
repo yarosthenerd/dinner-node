@@ -312,10 +312,15 @@ warning and the legal contact addresses, not this.
 
 **D. `DinnerRatings` has to be redeployed, and it loses history.**
 
-- [x] Interface switched to `getJob` 2026-08-28, with the stub in
-      `DinnerRatings.t.sol` carrying non-zero middle fields so the v1 decode
-      would fail the test rather than pass it silently. **Still needs the
-      redeploy**, and the new address goes in `VITE_RATINGS_ADDRESS`.
+- [x] Done 2026-08-28, interface and redeploy both. The stub in
+      `DinnerRatings.t.sol` carries non-zero middle fields so a v1 decode fails
+      the test rather than passing it silently. Redeployed against v2 for
+      1.616 MON: ratings `0xb418490c7679765ae5e05069c6ebedc132cba731`,
+      semaphore `0xa7d933dd5b80f6578c72be9962048a5c0e1857c8`, verified on chain
+      that `node()` returns the v2 address. `VITE_RATINGS_ADDRESS` updated in
+      Vercel production and confirmed in the deployed chunk. The old stack is
+      left on chain, unused; its group had no members so nothing was lost,
+      which is the argument for having done the cutover this week.
       Previously: its `IDinnerNode` hard-coded v1's six-field `jobs()`, and both
       `node` and `groupId` are `immutable`, so it cannot be repointed. A v2
       ratings deploy needs the interface switched to `getJob` and creates a
