@@ -1,7 +1,367 @@
-# Session snapshot, 2026-08-28 (afternoon)
+# Session snapshot, 2026-08-28 (night)
 
 > Newest first. Earlier snapshots follow below, unchanged.
 > `TODO.md` remains the roadmap; this is the build and defect state.
+
+## 1. Headline
+
+The four hygiene items the evening snapshot left open are closed, and the
+load-bearing item is built and not yet run against two live nodes.
+
+- **The faucet is deleted, and three documents that promised it were wrong.**
+  Section 2.
+- **Failover is a `reassign` now**, one job across providers rather than a job
+  per attempt. Section 3.
+- **Production cannot fail over**, whatever the code does, for two reasons that
+  are both operational. Section 4. **This is the blocker.**
+- **`HOUSE_PK` is still in the Vercel environment with nothing left to read
+  it.** Section 5.
+- Icons, footer, roadmap and the stray banner: done. Section 6.
+
+**Nothing in this session is deployed.** `npx vercel --prod` was refused by the
+harness, so the live site still serves the previous bundle.
+
+## 2. The faucet, deleted rather than disabled
+
+`web/api/topup.js` is gone (`a655668`). It had granted nothing since
+`TOPUP_DISABLED` was set on 2026-08-26, so no working behaviour was lost, and
+deletion rather than disablement was the point: an environment variable is not
+a gate.
+
+**`web/api/` no longer exists.** With `web/api/p/*` already deleted in
+`fd86fb8`, this project has no serverless code and no operator key in a
+serverless environment. Every transaction a guest causes is signed by the
+guest's own key or by a node on a machine.
+
+`web/src/lib.ts` `faucet()` now calls only the public testnet faucet at
+`agents.devnads.com`, which was already the fallback.
+
+**Three documents were making claims the deletion falsified**, and this is the
+part worth remembering, because the code change alone would have shipped a
+privacy notice that was wrong the moment it deployed:
+
+- `terms.html` 2.7 told the guest their address goes to "our testnet faucet
+  endpoint at `/api/topup`". It now goes to a third party. That is a disclosure
+  to a third party and is now written as one.
+- `terms.html` summary still described the cloud kitchen's fixed demo passage,
+  which section 5 of the same document already said was removed.
+- `acceptable-use.html` twice threatened withdrawal of faucet access, a power
+  that no longer exists.
+
+`SECURITY_REVIEW.md` section 4 items 2 and 3 are closed, item 3 as moot.
+
+## 3. Failover is a reassign
+
+`2e34835`. The loop in `web/src/App.tsx` opened a job per attempt. It now opens
+one job and hands it over:
+
+| | job per attempt | reassign |
+|---|---|---|
+| outgoing provider paid | by its own choice to settle | by the contract, up to its published checkpoint |
+| replacement bounded to the suffix | by the host's convention | by the checkpoint chain the job carries |
+| escrow, rate, prompt commitment | new ones | the ones opened with |
+| rate on handover | whatever the new node charges | never above the rate locked at open |
+
+`handOver` keeps a fresh-job fallback, because a provider on its way down may
+have called `closeJob` and a closed job cannot be reassigned. The fallback is
+labelled in the code with the guarantee it loses.
+
+Two supporting changes worth knowing about:
+
+- **The catch no longer releases the job.** Releasing it there was correct when
+  each attempt had its own job and is exactly wrong now: it throws away the
+  escrow, the locked rate and the checkpoint chain that the next provider needs.
+- **`servedByCloud`, its note and `const canned = false` are deleted.** They
+  described a cloud kitchen that has not existed since `fd86fb8`. In their
+  place is a handover note above the answer: which provider stopped, at which
+  token, what the contract paid it, who took over, and a link to the
+  transaction. An answer that changes machines halfway and says nothing about
+  it is indistinguishable from one that did not.
+
+**The host needed no change.** `seedProgress` already reads the on-chain
+checkpoint and job counts before serving, and `isMine` passes the moment
+`reassign` lands. Its comment already anticipated this case.
+
+## 4. Production cannot fail over, and the reason is not the code
+
+Both of these are operator steps and both block section 3 from being
+demonstrable to anyone:
+
+1. **`VITE_DISCOVERY_URL` is unset in Vercel.** Verified against the served
+   bundle `assets/index-3ycG3iMM.js`: it contains no `/providers` string at
+   all, so the deployed site has never called discovery. It falls back to
+   `KNOWN_PROVIDERS`, whose rows carry `url: null`, because a provider's URL is
+   not on chain. No URL means no target. Discovery itself is on
+   `localhost:4175` and needs a tunnel before an environment variable pointing
+   at it means anything.
+2. **Node 2 announces `http://192.168.3.8:4174`.** A browser on an https page
+   blocks that as mixed content. It needs its own tunnel.
+
+`?peer=<url>` was added as the manual lever, so the demo is recordable before
+either of those lands. It takes the same trust as the `?host=` parameter that
+has always decided who receives the prompt.
+
+## 5. `HOUSE_PK` outlived everything that read it
+
+`web/.envtmp`, pulled down by the Vercel CLI, still lists `HOUSE_PK`. Nothing
+in the repo reads it any more: the two consumers were `web/api/p/_lib.js` and
+`web/api/topup.js`, deleted in `fd86fb8` and `a655668`. It is gitignored and
+was never committed.
+
+A private key sitting in a deployment environment with no code left to use it
+is pure downside. Remove it from the Vercel project.
+
+## 6. The rest of the hygiene block
+
+- **Icons shipped** (`653d836`). `web/public/favicon.svg`, which was Monad's
+  mark being served as this project's own in both the tab and the JSON-LD, is
+  deleted.
+- **The footer** (`34d57e3`) no longer denies a ZK layer the bundle ships. It
+  now separates the paths: no ZK on ordering, Semaphore on ratings, group too
+  small to hide anyone.
+- **`TODO.md` reconciled** (`2576e54`). Items 5 and 7 were written against
+  files deleted a day earlier. Status claimed nothing was deployed and 36
+  tests; the site is live and there are 115.
+- The stray `linkedin-banner-1584x396.png` is back in `.context/design/`.
+- `tsconfig.tsbuildinfo` is gitignored.
+
+## 7. Still open, and what it is waiting on
+
+**Waiting on the operator:**
+
+1. **Deploy.** `cd ~/monad-synapse/web && npx vercel --prod --yes`. Refused by
+   the harness this session. Nothing above is live until this runs.
+2. **The two failover prerequisites** in section 4.
+3. **Remove `HOUSE_PK`** from Vercel, section 5.
+4. **`scripts/drain-v1.mjs`.** 3.8756995575 MON across three keys, dry run
+   confirmed 2026-08-28. It moves value and has wanted the operator's word
+   since the afternoon session.
+
+**Next in the code:**
+
+1. Run a real handover: order, kill node 1 mid-answer, watch node 2 continue,
+   then read `JobReassigned` and the two `StreamSettled` events for disjoint
+   token ranges. This is item 6 in `TODO.md` and the whole point of section 3.
+2. A4, long-tail demand, still the moat and still unmeasured.
+3. No tests for `src/**`. The settle path moves money and is exercised only by
+   running it.
+
+---
+
+# Session snapshot, 2026-08-28 (evening)
+
+> Newest first. Earlier snapshots follow below, unchanged.
+> `TODO.md` remains the roadmap; this is the build and defect state.
+
+## 1. Headline
+
+A short session, three of the four operator-blocked items from the afternoon
+snapshot closed, and one defect found by checking a claim rather than trusting
+it.
+
+- **The DeltaV weekly update is posted.** Section 2.
+- **There is an og:image**, built here rather than commissioned, deployed and
+  verified live. Section 3. Committed as `5f72003`.
+- **The logo set landed and is wired**, and the borrowed Monad favicon is
+  deleted. Section 4. **Not committed and not deployed.**
+- **`DinnerRatings` is correctly deployed and has done nothing**, because the
+  group is empty. Section 5.
+- **The site footer states a claim that is now false.** Section 6. Not fixed.
+
+Sitemap and indexing needed nothing: the operator confirmed the sitemap is
+valid and the URLs are indexed, so that item is closed without work.
+
+**Resuming work: read section 8 first.**
+
+## 2. The DeltaV update, posted
+
+Posted 2026-08-28T10:36:06Z. Response body:
+
+```
+id         cmtctges10001ic04665yf8ad
+startupId  cmt8jt70o0004i604tm3fbs54
+xLink      null
+```
+
+Content, as posted: the V2 cutover and the contract address, the three
+mechanisms that ran for the first time on a real job (checkpoint inside
+settle, plan hash and ceiling committed before the first step, settle refusing
+to pass published progress), the `DinnerRatings` redeploy, the site being live,
+and `reassign` between two live providers named as the next thing.
+
+The V1 drain line was cut at the operator's request before posting.
+
+**On the key.** `DELTAV_API_KEY` was not in the environment. The operator
+pasted it into the chat and it was used inline for the one curl, never written
+to `.env`, the repo, or any file; a `grep` over the tree confirms no trace. It
+is in the chat transcript, so rotating it is cheap insurance. A future session
+should still expect the variable to be unset and ask rather than hunt.
+
+## 3. og:image
+
+`web/public/og.png`, 1200x630, live and verified on both hosts:
+
+```
+https://dinnernode.xyz/og.png      200  116237 bytes
+https://www.dinnernode.xyz/og.png  200  116237 bytes  image/png
+```
+
+**It is baked, not drawn.** `scripts/og.html` is the source and the render
+command is in its header comment: headless chromium at exactly 1200x630. Fonts
+are named as Liberation Sans and DejaVu Sans Mono rather than inherited from
+the site stack, because nothing loads that file at request time and a missing
+JetBrains Mono would change the output silently. Palette is
+`web/src/index.css` `:root`, unchanged. Re-render after any edit; the PNG is
+the artefact, the HTML is not served.
+
+**The card states a checkable claim.** The hash on it is job#15's real prefix
+hash and 152 is the visible token count that job published, so a reader who
+follows the claim reaches the contract.
+
+`web/index.html` also gained `og:image:type`, `:width`, `:height` and `:alt`,
+`twitter:image`, `image` on the JSON-LD Organization node, and `twitter:card`
+promoted from `summary` to `summary_large_image`. All confirmed in the served
+HTML.
+
+X and LinkedIn cache previews aggressively. An existing post will not pick the
+card up without a forced re-fetch through their own inspector tools.
+
+## 4. The logo, wired but not shipped
+
+The operator produced the set in `.context/design/`. **`.context` is
+gitignored in full** (`.gitignore:15`), so those source assets are not in the
+repo and never will be; the copies under `web/public/` are the tracked ones. A
+future session should not expect to find the originals in version control.
+
+The mark is the mint dot, which is the same dot the site header already pulses
+and the same one already sitting beside the wordmark on `og.png`, so the card
+and the icon agree without either being changed to match.
+
+Copied into `web/public/`: `favicon.ico` (16, 32 and 48), `favicon-32.png`,
+`apple-touch-icon.png`, `icon-512.png`. `web/index.html` now links the set and
+its JSON-LD `logo` points at `icon-512.png`.
+
+**`web/public/favicon.svg` is deleted.** It was Monad's mark, and the project
+was serving it as its own in both the browser tab and the structured data.
+
+Side effect worth having: `hosting.html`, `terms.html` and
+`acceptable-use.html` carry no favicon link of their own, so they fell back to
+`/favicon.ico`, which did not exist. It does now, so those three pages get the
+icon for free.
+
+**Not wired, because they are not web assets.** `dinnernode-avatar-512.png` is
+the LinkedIn and X profile image, `linkedin-banner-1584x396.png` the cover.
+Both are manual uploads. The banner reads "your idle PC pays for dinner / pay
+per second on Monad", which is a different pitch line from the site's failover
+framing. Fine for a cover, worth knowing they diverge.
+
+A stray copy of `linkedin-banner-1584x396.png` is sitting untracked at the repo
+root. It is not ignored and does not belong there.
+
+## 5. DinnerRatings: correct, live, and empty
+
+Checked against `testnet-rpc.monad.xyz` rather than read out of a doc.
+`0xb418490c7679765ae5e05069c6ebedc132cba731`:
+
+```
+node()       0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd   V2, correct
+memberCount  0
+groupId      0
+codesize     4844
+```
+
+It is live in the browser and not merely deployed: `VITE_RATINGS_ADDRESS` is
+inlined in the lazily loaded `ProviderRating` chunk, and the chunk served from
+production is byte-identical to the local build (`md5 2d03eecc26...`). The
+`MAX_FEE` cap on `joinWithJob` and `rateProvider` is in place at
+`web/src/lib/ratings.ts:88` and `:120`, which closes that item from the morning
+snapshot.
+
+**What it has actually done: nothing.** `MIN_ANONYMITY_SET` is 3 and the group
+has 0, so the widget renders its own disclaimer, "a group this small hides
+nobody. your rating is verified, not anonymous, until more guests join." The
+join to rate path has never run end to end against a deployed instance, on V2
+or V1. It exists only in `contracts/test/DinnerRatings.t.sol`.
+
+**The friction on getting the first three members is structural**, not a bug:
+`join` requires a CLOSED job, and a session job stays open until the provider's
+idle timer closes it, so a guest cannot rate immediately after ordering.
+`ProviderRating.tsx` already scans stored session history for an eligible job
+rather than assuming the most recent one qualifies.
+
+Bootstrapping this from the operator's own browsers would make the anonymity
+set theatre. Three real guests is the only version of this that means anything.
+
+## 6. The footer claims there is no ZK in a build that ships ZK
+
+Live, in `web/src/App.tsx` at the end of the page:
+
+> every token is a tip. prompts are committed on-chain as salted hashes, never
+> as text. the guest wallet address is public on chain and is not anonymised:
+> **there is no ZK identity layer in this build.**
+
+The first half is still true: the ordering wallet is not anonymised. The last
+clause is false. Semaphore identity generation, proof generation and on-chain
+verification are all in the shipped bundle, in a 446 KB chunk the page loads.
+
+It was true when written and nothing updated it when ratings shipped. Given
+how carefully the rest of this project polices real versus mocked, this is the
+kind of line that has to be right. The accurate version separates the two
+paths: no ZK on the ordering path, Semaphore on the ratings path, and the group
+is too small to hide anyone yet.
+
+Not fixed. It is a one sentence edit and it wants the operator's wording.
+
+## 7. TODO.md is stale on the cloud kitchen
+
+`fd86fb8` (2026-08-27) deleted `web/api/p/job.js`, `health.js` and `_lib.js`.
+`TODO.md` has not caught up and still carries:
+
+- item 5, "make the cloud kitchen a real second provider", described as the
+  load-bearing item left
+- item 7, splitting the faucet key from the cloud-kitchen provider key
+- two P2 hardening findings written against `web/api/p/job.js`, a file that no
+  longer exists
+
+The real consequence of that deletion is in the commit message and not in the
+roadmap: **the browser has no failover target at all now.** An order against a
+dead node fails and returns its escrow. That is why V2 `reassign` between two
+live providers is the load-bearing item, not the cloud kitchen.
+
+## 8. Next session, start here
+
+### State of the tree, exactly
+
+- `5f72003` is committed on `session/2026-08-26-hardening-and-node-setup`, not
+  pushed. It is the og card and its meta tags, and it is what is deployed.
+- **Uncommitted and undeployed:** the whole icon change from section 4.
+  `web/index.html` modified, `web/public/favicon.svg` deleted, four icon files
+  added, plus the stray banner at the repo root.
+- Production currently serves the new og card and the OLD Monad favicon.
+
+### Finish first, both were offered and neither was answered
+
+1. Commit the icon set and deploy it. `cd ~/monad-synapse/web && npx vercel
+   --prod --yes`. Until then the tab icon is still Monad's mark.
+2. Rewrite the footer clause in section 6.
+
+### Then
+
+1. **V2 `reassign` between two live providers.** Still the load-bearing item,
+   still never run. Checkpoints are published and verified, which is the
+   precondition. Filming it wants a second machine.
+2. Reconcile `TODO.md` against the tree, per section 7.
+3. `web/api/topup.js` must be deleted before mainnet. Unchanged from every
+   previous snapshot.
+4. A4, long-tail demand, is still the moat and still unmeasured.
+
+### Not blocking, worth knowing
+
+- Ratings needs three real guests before its anonymity claim is true.
+- The DeltaV key should be rotated, see section 2.
+- The LinkedIn avatar and banner are still manual uploads.
+
+# Session snapshot, 2026-08-28 (afternoon)
 
 ## 1. Headline
 
