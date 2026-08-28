@@ -17,9 +17,19 @@
     <meta property="og:url" content="https://www.dinnernode.xyz/" />
     <meta property="og:title" content="DinnerNode — rent idle GPUs for LLM inference" />
     <meta property="og:description" content="Run a node and get paid per token. If a provider dies mid-answer, another continues from an on-chain checkpoint and is paid only for what it writes." />
-    <meta name="twitter:card" content="summary" />
+    <!-- Baked from scripts/og.html by headless chromium at exactly 1200x630, the
+         size every scraper crops to. The dimensions are declared so a preview
+         reserves the right box before the image loads, and og:image:alt is what
+         a screen reader gets instead of a filename. -->
+    <meta property="og:image" content="https://www.dinnernode.xyz/og.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="DinnerNode: rent idle GPUs for LLM inference. A provider dies mid-answer after 152 tokens it was paid for; an on-chain checkpoint hands the job to another, paid only for what it writes." />
+    <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="DinnerNode — rent idle GPUs for LLM inference" />
     <meta name="twitter:description" content="Run a node and get paid per token. If a provider dies mid-answer, another continues from an on-chain checkpoint and is paid only for what it writes." />
+    <meta name="twitter:image" content="https://www.dinnernode.xyz/og.png" />
 
     <!--
       Structured data.
@@ -44,6 +54,7 @@
           "name": "DinnerNode",
           "url": "https://www.dinnernode.xyz/",
           "logo": "https://www.dinnernode.xyz/favicon.svg",
+          "image": "https://www.dinnernode.xyz/og.png",
           "description": "A marketplace for idle consumer GPUs running large language model inference, with per-token settlement and provider failover verified on chain."
         },
         {

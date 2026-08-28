@@ -1,0 +1,87 @@
+<!doctype html>
+<meta charset="utf-8">
+<!--
+  Source for web/public/og.png, the 1200x630 link preview card.
+
+  Rendered with:
+    chromium --headless --screenshot=web/public/og.png --window-size=1200,630 \
+      --hide-scrollbars --force-device-scale-factor=1 file://$PWD/scripts/og.html
+
+  Fonts are named explicitly rather than inherited from the site's stack,
+  because a scraper never sees this file: the PNG is baked once here and a
+  missing JetBrains Mono would silently change the render. Liberation Sans and
+  DejaVu Sans Mono are both installed, so the output is reproducible.
+
+  Palette is web/src/index.css :root, unchanged.
+-->
+<style>
+  :root { --ink:#0B0E14; --panel:#10161F; --line:#1D2733; --mint:#9FEF00;
+          --ketchup:#FF5C4D; --text:#D7E0EA; --dim:#6B7A89; }
+  * { box-sizing:border-box; margin:0; }
+  html, body { width:1200px; height:630px; overflow:hidden; }
+  body { background:var(--ink); color:var(--text);
+         font:22px/1.5 'DejaVu Sans Mono', monospace;
+         padding:64px 72px; display:flex; flex-direction:column; }
+
+  /* A dim mint wash from the top left, so the card is not a flat rectangle at
+     preview size. Kept well under the wordmark's contrast. */
+  .glow { position:fixed; top:-260px; left:-180px; width:900px; height:620px;
+          background:radial-gradient(closest-side, rgba(159,239,0,.10), transparent);
+          pointer-events:none; }
+
+  h1 { font:800 96px/1 'Liberation Sans', Arial, sans-serif; color:var(--mint);
+       letter-spacing:-3px; display:flex; align-items:center; gap:20px; }
+  .dot { width:20px; height:20px; border-radius:50%; background:var(--mint);
+         box-shadow:0 0 0 12px rgba(159,239,0,.13); }
+  .tag { color:var(--text); font-size:30px; margin-top:20px; letter-spacing:-.3px; }
+
+  .diagram { margin-top:auto; display:flex; align-items:stretch; gap:22px; }
+  .node { flex:1; background:var(--panel); border:1px solid var(--line);
+          border-radius:14px; padding:20px 22px; }
+  .node .who { font-size:18px; color:var(--dim); text-transform:uppercase;
+               letter-spacing:.14em; margin-bottom:14px; }
+  .node .what { font-size:21px; line-height:1.35; }
+  .dead { border-color:rgba(255,92,77,.45); }
+  .dead .who { color:var(--ketchup); }
+  .live { border-color:rgba(159,239,0,.45); }
+  .live .who { color:var(--mint); }
+
+  /* The handover. An arrow reads as decoration; the hash is the mechanism, so
+     the hash is what gets the space. */
+  .link { flex:0 0 300px; display:flex; flex-direction:column;
+          justify-content:center; align-items:center; gap:10px; text-align:center; }
+  .link .rule { width:100%; height:1px; background:linear-gradient(
+      to right, rgba(255,92,77,.5), rgba(159,239,0,.5)); }
+  .link .label { font-size:17px; color:var(--dim); text-transform:uppercase;
+                 letter-spacing:.14em; }
+  .link .hash { font-size:17px; color:var(--text); }
+
+  .foot { margin-top:34px; display:flex; justify-content:space-between;
+          font-size:20px; color:var(--dim); }
+  .foot b { color:var(--text); font-weight:400; }
+</style>
+<div class="glow"></div>
+
+<h1>DinnerNode<span class="dot"></span></h1>
+<div class="tag">rent idle GPUs for LLM inference</div>
+
+<div class="diagram">
+  <div class="node dead">
+    <div class="who">provider dies</div>
+    <div class="what">mid-answer, 152 tokens<br>in and paid for</div>
+  </div>
+  <div class="link">
+    <div class="label">on-chain checkpoint</div>
+    <div class="rule"></div>
+    <div class="hash">0x7c7b9085&hellip;46f3fd4b</div>
+  </div>
+  <div class="node live">
+    <div class="who">another continues</div>
+    <div class="what">paid only for<br>what it writes</div>
+  </div>
+</div>
+
+<div class="foot">
+  <span>no account, no API key</span>
+  <span><b>dinnernode.xyz</b></span>
+</div>
