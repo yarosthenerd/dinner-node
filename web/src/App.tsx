@@ -991,7 +991,7 @@ export default function App() {
         </section>
       </main>
       <footer>
-        every token is a tip. · prompts are committed on-chain as salted hashes, never as text. the guest wallet address is public on chain and is not anonymised: there is no ZK identity layer in this build.
+        every token is a tip. · prompts are committed on-chain as salted hashes, never as text. ordering has no ZK layer: the guest wallet address is public on chain and is not anonymised. ratings do, through a semaphore group, and the group is still too small to hide anyone.
       </footer>
     </div>
   );
