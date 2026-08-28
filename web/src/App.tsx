@@ -90,6 +90,19 @@ export default function App() {
   const [bal, setBal] = useState(0n);
   const [sessionCost, setSessionCost] = useState(0n);
   const [url, setUrl] = useState(() => new URLSearchParams(window.location.search).get('host') || DEFAULT_HOST);
+  // Hosts named by the link rather than by the guest. `?host=` decides who
+  // receives the prompt on the first attempt and `?peer=` who receives it on a
+  // failover, and neither is verified: the browser reads an address out of the
+  // host's own /health and never checks that the machine controls it. A hostile
+  // host cannot be PAID, because settlement goes to a registered provider
+  // address on chain, but it does receive the prompt and the partial answer.
+  // So the guest is told, in the interface, before ordering. The real fix is
+  // the signed-nonce challenge already scoped for /announce, which closes this
+  // and discovery hijack in one change.
+  const linkNamedHosts = useMemo(() => {
+    const q = new URLSearchParams(window.location.search);
+    return [...(q.get('host') ? [q.get('host')!] : []), ...q.getAll('peer')];
+  }, []);
   const [prompt, setPrompt] = useState('How much is the cost of an average dinner in Belgrade?');
   const [stream, setStream] = useState('');
   // The model's reasoning, streamed as {th} frames. It IS billed, as output
@@ -954,6 +967,14 @@ export default function App() {
         <section>
           <h2>rent compute</h2>
           <div className="note">You are interacting with an AI system. Responses are machine generated and may be inaccurate.</div>
+          {linkNamedHosts.length > 0 && (
+            <div className="note">
+              this link names the {linkNamedHosts.length === 1 ? 'machine' : 'machines'} that will receive your prompt
+              {' '}({linkNamedHosts.map(h => { try { return new URL(h).host; } catch { return h; } }).join(', ')}).
+              {' '}chosen by whoever gave you the link, not by us, and not verified by us. don't send anything sensitive.
+              {' '}<a href="/terms.html#s29" target="_blank" rel="noreferrer">terms 2.9</a>
+            </div>
+          )}
           <div className="rowline">
             <input value={url} onChange={e => setUrl(e.target.value)} />
 
