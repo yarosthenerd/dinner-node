@@ -112,14 +112,26 @@ Vercel's DNS, so reverting is one field and one propagation wait.
 One tunnel per process that needs to be reachable. Today that is two: node 1
 and discovery. Node 2 joins the same way when it has its own tunnel.
 
+Installed 2026-08-31 as a user-local binary rather than from apt, because
+this machine has no passwordless sudo and a user systemd unit does not need
+root to run one. The units point at `/home/yaros/.local/bin/cloudflared`. The
+cost of this choice is that apt will not update it: re-run the download to
+upgrade.
+
 ```
-# install
-curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
-  | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
-echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
-  | sudo tee /etc/apt/sources.list.d/cloudflared.list
-sudo apt-get update && sudo apt-get install -y cloudflared
+# install, no root required
+curl -fsSL -o ~/.local/bin/cloudflared \
+  https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+chmod +x ~/.local/bin/cloudflared
 cloudflared --version
+
+# the apt route, if root is available and automatic updates are wanted. Change
+# ExecStart in both units in ops/ back to /usr/bin/cloudflared if you use it.
+# curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+#   | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+# echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main" \
+#   | sudo tee /etc/apt/sources.list.d/cloudflared.list
+# sudo apt-get update && sudo apt-get install -y cloudflared
 
 # authorise this machine against the zone, opens a browser
 cloudflared tunnel login
@@ -201,6 +213,40 @@ address that no longer resolves:
 ```
 systemctl --user disable --now dinnernode-tunnel.service
 ```
+
+## 7a. State after the install, 2026-08-31
+
+Both tunnels are installed, enabled and connected, with two QUIC connections
+each to `vie05`/`vie06` and `beg01`.
+
+```
+node1.dinnernode.xyz      -> tunnel 2da0573e-bf75-4d14-b02a-ea151ff902c1 -> localhost:4173
+discovery.dinnernode.xyz  -> tunnel 7243325d-e4e9-4124-84bb-6a13385bb0f4 -> localhost:4175
+```
+
+Verified from outside: `node1.dinnernode.xyz/health` 200,
+`discovery.dinnernode.xyz/providers` 200, `POST /challenge` signs a message
+whose `url` line is the new hostname, and `POST /lanjob` through the tunnel is
+refused with 403 because cloudflared sets `cf-connecting-ip`.
+
+`PUBLIC_URL` in `.env` is now `https://node1.dinnernode.xyz` and node 1
+announces it. `DISCOVERY_URL` stays `http://localhost:4175` on both nodes:
+they share the machine with the listener, so routing their announce out to
+Cloudflare and back would buy nothing.
+
+Two things did not land with this step:
+
+- **The ngrok unit is still running.** `dinnernode-tunnel.service` still
+  publishes port 4173, and nothing announces its hostname any more. Retire it
+  with `systemctl --user disable --now dinnernode-tunnel.service` once the
+  Vercel redeploy below is confirmed.
+- **Node 2 still has no public URL,** and its `PUBLIC_URL` in `.env.node2` is
+  a LAN address that is now also stale: the machine is `192.168.3.8` and the
+  file says `192.168.5.98`. It did not announce at all after the restart,
+  because `announce()` awaits the engine warm and node 2's warm is blocked
+  behind `OLLAMA_MAX_LOADED_MODELS=1` with node 1's 22GB model resident. So
+  the failover target needs the sudo item in `TODO.md` and a third tunnel,
+  created the same way as these two.
 
 ## 8. What changes in the project once the hostnames exist
 

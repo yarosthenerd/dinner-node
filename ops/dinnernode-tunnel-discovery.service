@@ -14,7 +14,7 @@ Environment=PATH=/usr/local/bin:/usr/bin:/bin
 # Named rather than quick: a quick tunnel gets a new hostname on every restart,
 # which is fine for a stranger's node and useless for one an aggregator, a
 # discovery record or a listing points at. See ops/cloudflare-migration.md.
-ExecStart=/usr/bin/cloudflared tunnel --config /home/yaros/.cloudflared/discovery.yml run
+ExecStart=/home/yaros/.local/bin/cloudflared --config /home/yaros/.cloudflared/discovery.yml tunnel run
 Restart=always
 RestartSec=10
 
