@@ -325,7 +325,15 @@ async function main() {
   if (publicUrl) {
     ok(`public url ${publicUrl}`);
   } else if (has('cloudflared')) {
-    ok('cloudflared installed — a tunnel will start with the node');
+    // It said "a tunnel will start with the node", and nothing in this
+    // codebase has ever started one. A checklist that reports a thing is
+    // handled when it is not is worse than one that says nothing.
+    warn('cloudflared installed but no PUBLIC_URL set');
+    console.log(`    ${C.d}quick tunnel, no account, random hostname each run:${C.x}`);
+    console.log(`    ${C.d}  cloudflared tunnel --url http://localhost:4173${C.x}`);
+    console.log(`    ${C.d}then put the https URL in .env as PUBLIC_URL=${C.x}`);
+    console.log(`    ${C.d}a named tunnel gives a hostname that survives a restart:${C.x}`);
+    console.log(`    ${C.d}  ops/cloudflare-migration.md${C.x}`);
   } else if (has('ngrok')) {
     warn('ngrok installed but no PUBLIC_URL set');
     console.log(`    ${C.d}start it yourself: ngrok http 4173${C.x}`);

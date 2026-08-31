@@ -32,7 +32,10 @@ the full escrow for a job, not one settlement.
 
 ## Privacy: what the chain actually sees
 Prompt text never touches the chain. What is written, permanently and publicly, is a
-**salted keccak256 commitment** of the sanitized prompt plus **the guest's wallet address**.
+**salted keccak256 commitment** of the prompt as sent plus **the guest's wallet address**.
+Client-side sanitization runs on the site's own order path and nowhere else: the LAN guest
+page a node serves, and `/v1/chat/completions`, both commit and send the prompt exactly as
+the caller wrote it.
 The address is `msg.sender` and is also an indexed topic on `JobOpened`, so guests are
 identified on chain by wallet address, not by a pseudonym.
 
@@ -41,8 +44,8 @@ After that the commitment cannot be checked against a candidate prompt by anyone
 what makes it functionally unlinkable. The earlier construction hashed the prompt against a
 stable per-user value and was brute-forceable from the public event; that is fixed.
 
-The provider sees the sanitized prompt in plaintext, because a model cannot answer text it
-cannot read. Client-side PII sanitization (`web/src/lib/engram-sanitizer.ts`) is regex pattern
+The provider sees the prompt in plaintext, sanitized on the site's order path and unmodified
+on the other two, because a model cannot answer text it cannot read. Client-side PII sanitization (`web/src/lib/engram-sanitizer.ts`) is regex pattern
 matching, best-effort, and not a guarantee.
 
 ### What is stored in your browser
@@ -53,18 +56,24 @@ because it is never stored at all: it is generated, used to build the hash, and 
 |---|---|---|---|
 | `dn_pk` | `localStorage` | the generated guest wallet private key, used when no wallet is connected | never, until you clear site data |
 | `dn_wallet_rdns` | `localStorage` | which browser wallet you last connected, so the page can reconnect without asking | on disconnect, or when you clear site data |
-| `dn_sessions` | `localStorage` | your session history: the **sanitized** prompt, the answer, job id and cost | never, until you clear site data |
+| `dn_sessions` | `localStorage` | your session history: the **sanitized** prompt, the answer, job id and cost. **Written only if you switch history on, which is off by default** | when you switch history off, the clear control, or site data |
+| `dn_keep_history` | `localStorage` | whether you switched history on. Absent until you do | when you switch it off, or clear site data |
+| `dn_zk_identity` | `localStorage` | your Semaphore identity secret, used to sign anonymous provider ratings. It is a long-lived private key | never, until you clear site data |
 | `dn_topped` | `sessionStorage` | a flag recording that the faucet was already called for this tab | on tab close |
 | `dn_engram_*`, `dn_job_binding`, `dn_session_nonce` | `sessionStorage` | any behaviour engrams and their job binding | on job close, tab close, and on a 30 minute TTL |
 
-`dn_sessions` is the one to know about: it survives a browser restart, holds the 20 most recent
-sessions, and anyone with access to that browser profile can read your past prompts and answers.
-It stores the sanitized prompt rather than the raw one, so whatever the sanitizer caught is not
-in there either. Measured recall is well short of complete, though, so assume bare names,
-non-Latin text and short number sequences are still in it. There is no server-side copy.
+`dn_sessions` is the one to know about, and it is **off unless you switch it on**. By default the
+orders on the receipt live in the page and close with the tab. Switched on, they survive a browser
+restart, hold the 20 most recent sessions, and anyone with access to that browser profile can read
+your past prompts and answers; switching it back off deletes them. Keeping them is not necessary to
+serve an order, which under ePrivacy Article 5(3) is what makes it a consent question rather than a
+delete-afterwards one. It stores the sanitized prompt rather than the raw one, so whatever the
+sanitizer caught is not in there either. Measured recall is well short of complete, though, so
+assume bare names, non-Latin text and short number sequences are still in it. There is no
+server-side copy.
 
 The accurate one-liner: **the chain sees a salted hash and the payer's address; the provider
-sees the prompt; your browser keeps the history.**
+sees the prompt; your browser keeps nothing unless you ask it to.**
 
 ### ZK: verified on chain, and anonymous only once the group is large
 `DinnerRatings.sol` is deployed at `0xeb0d…d87f`. Semaphore proofs are verified **on
@@ -86,6 +95,57 @@ this repo so it cannot be wired up by mistake. Treat that address as abandoned.
 
 Still roadmap, not built: Brevis ZK coprocessor, Phala TEE confidential inference, zkML
 proof-of-inference.
+
+## Calling a node
+
+Two ways in, and they differ in who pays rather than in what runs.
+
+**From the site**, with your own wallet or the burner it generates for you. You
+sign `openJob`, the escrow is yours, and the settlement records that you paid
+for what you received.
+
+**From any OpenAI client**, if the operator has set `API_KEYS`:
+
+```bash
+curl https://node1.dinnernode.xyz/v1/chat/completions \
+  -H "authorization: Bearer $DINNERNODE_KEY" \
+  -H "content-type: application/json" \
+  -d '{"model":"qwen3.8:27b","messages":[{"role":"user","content":"how much is dinner in Belgrade"}],"stream":true}'
+```
+
+Streaming and buffered both work, `GET /v1/models` lists what the node answers
+to, and the base URL drops into the OpenAI SDK unchanged. Sampling parameters
+are accepted and ignored; tools, `n` > 1 and image parts are refused by name
+rather than silently dropped.
+
+**What this path does not do, stated because it would otherwise be assumed:**
+a caller here holds a key, not a wallet, so the node fronts the escrow from its
+own deposit and settles against itself. The chain still records what was served
+and what it cost, checkpoint by checkpoint. It does not record who paid. For
+the same reason these jobs earn no on-chain reputation: `_credit` excludes
+self-dealt jobs from `tokensServed`, deliberately, because discovery ranks on
+it. The endpoint is off unless the operator sets keys, and capped by
+`V1_DAILY_TOKENS`.
+
+`GET /provider/models` publishes the same node in OpenRouter's provider schema:
+price per token from the market band, context and output ceiling, and measured
+generation capacity. It reports `is_ready: false` until an operator opts in,
+and `compliance.zdr: false`, because operators are asked not to retain prompts
+and an ask is not an attestation.
+
+## Who receives your prompt
+
+Discovery is off chain: the registry knows a provider exists and what it
+charges, not where to reach it. A node announces its URL, and that
+announcement is signed. Discovery issues a single-use nonce, the node signs a
+claim naming the registry, the chain, itself, its URL and its model, and an
+unsigned announcement is refused. Before the browser sends a prompt to a
+machine named by `?host=` or `?peer=`, it makes that machine sign a nonce it
+chose and checks the registry still calls it active.
+
+That proves the machine is the provider it claims to be. It does not say who
+that provider is, and a provider can put itself in a link, so the interface
+still tells you which machines a link named.
 
 ## Real vs. demo
 Real: the registry, escrow, and settlements; laptop inference via ollama; prompt commitments;

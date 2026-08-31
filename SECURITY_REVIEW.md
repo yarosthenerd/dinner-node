@@ -1,6 +1,9 @@
 # DinnerNode security review
 
-Status: in progress. Last updated 2026-08-25 (second pass).
+Status: in progress. Last updated 2026-08-31, from an audit of what is
+RUNNING rather than of what is written. Read section 0 first: the node-side
+controls in section 2c went live with a reboot on 2026-08-30, and the browser
+half of 2c.1 is still the old deployed bundle.
 
 This file is the checklist that P0-OPS gates on ("wallet and contract review
 before real wallets"). It was listed in `.context/HANDOFF.md` section 4 as an
@@ -10,6 +13,72 @@ is a first version rather than an update.
 Scope: `contracts/src/*.sol`, `src/chain.ts`, `src/host.ts`, `src/guest.ts`,
 `src/faucet.ts`, `src/discovery.ts`, `web/api/**`, and every `writeContract`
 call in `web/src/`.
+
+---
+
+## 0. Deployment state, audited 2026-08-31
+
+**The node-side controls in section 2c are now running.** The machine rebooted
+at 21:33:28 on 2026-08-30 and all four user units came back. `dinnernode.service`
+runs `npm run host` and `dinnernode2.service` runs `npx tsx src/host.ts`, both
+straight off the working tree rather than off a build artifact, so the
+2026-08-28 late session's work went live with the reboot. That was an accident
+of the restart, not a decision, and the 2026-08-29 audit below it is superseded.
+
+Probed on the live daemons on 2026-08-31:
+
+```
+POST /lanjob   (via ngrok)  -> 403  "the free LAN path serves this network only"
+POST /challenge             -> 400  on a malformed nonce, so the route exists
+GET  /provider/models       -> 200
+GET  /announce/nonce        -> 400, so the route exists (discovery, port 4175)
+GET  /v1/models             -> 501  endpoint_disabled, no API_KEYS set
+```
+
+### 0.1 CLOSED: `/lanjob` was an open faucet on the public internet
+
+Recorded here because it was live for about two days and the record should
+survive. `/lanjob` opens a job the NODE pays for, out of the node's own
+deposit, and the running build had no peer check of any kind. The endpoint was
+safe on the sole premise that nobody outside the flat could reach port 4173,
+and `dinnernode-tunnel.service` had been publishing that port to the internet
+through ngrok the whole time. A well-formed prompt would have escrowed 0.01 MON
+of the node's deposit per call, plus opening, settle and close gas, with no
+key, no wallet and no rate limit on the caller.
+
+Nobody found it. The journals showed inbound requests from external addresses
+and no `/lanjob` traffic, and node 1's on-chain totals were unchanged.
+
+`src/reach.ts` closes it, requiring both a private or loopback peer AND no
+forwarding header, and defaulting `LANJOB` to `lan`. It is running now:
+the probe above is a real request through the public tunnel, refused.
+
+The lesson worth keeping: the control was written on 2026-08-28 and the hole
+stayed open until a reboot happened to pick it up. Writing a fix is not
+shipping it, and neither this file nor `SNAPSHOT.md` noticed the reboot that
+shipped it.
+
+### 0.2 Half closed: the announce hijack is fixed, the browser is not
+
+The node and discovery halves of 2c.1 are live: discovery answers
+`/announce/nonce` and requires a signed announce, and the node answers
+`/challenge`. **The deployed client is still the old one.** The live bundle
+`assets/index-CN5UhUbj.js` contains no `challenge` and no `proveControl`, so a
+`?host=` or `?peer=` link is still trusted on the strength of the named
+machine's own `/health`.
+
+The published `terms.html` still carries the old 2.9, which tells the guest we
+do not verify the operator of a machine a link names, so the notice and the
+deployed code still agree and no published claim is false. The deploy of `web/`
+closes this and is no longer the hazard it was on 2026-08-29: the ordering
+warning in that audit assumed the nodes 404 on `/challenge`, and they do not.
+
+### 0.3 Not affected
+
+2c.3 and 2c.4 concern `/v1/chat/completions`, which is running but refuses
+every request with `endpoint_disabled` because no node sets `API_KEYS`. Before
+any node sets it, the API path needs its own notice; see `TODO.md`. Sections 1,
+2 and 2b are unaffected by the tree and production split.
 
 ---
 
@@ -370,6 +439,12 @@ guest, guest escrows, escrow pays house. Any "jobs", "settled total", or
 "earned" figure that includes this loop is house-to-house flow and must not be
 presented as usage or revenue.
 
+### 2.2 Model is not pinned — CLOSED 2026-08-28
+
+`MODEL` set to something not installed used to fall back to whatever was first
+in the local ollama list. It now refuses to start and prints what is installed.
+The original text follows.
+
 ### 2.2 Model is not pinned
 
 Severity: low. Status: OPEN.
@@ -418,6 +493,84 @@ what made it true, and `reassign` does not weaken it, since
 `DinnerNodeV2.sol:456` requires `msg.sender == j.requester`. Treat it as a rule
 for anything proposed later rather than as a closed item.
 
+## 2c. Closed in the tree 2026-08-28 (late), NOT deployed
+
+Four items, each verified by attacking it rather than by reading the fix.
+
+**Read with section 0.** These fixes are written, tested and uncommitted. The
+running node and discovery have none of them, and two of the four holes below
+are open in production today. The wording "closed" throughout this section
+means closed in the working tree.
+
+### 2c.1 `/announce` and `?peer=` accepted a machine's claim about itself
+
+`POST /announce` verified that an announced address was a registered provider
+and never that the announcer controlled it, so anyone could point a live
+provider's slot at their own host and be handed guests' prompts. They could not
+be paid, because settlement goes to the registered address on chain, but they
+read the prompt and the partial answer. The browser had the same hole through
+`?host=` and `?peer=`, where it read a provider address out of the named
+machine's own `/health`.
+
+Closed with one mechanism for both: a nonce the claimant did not choose, signed
+by the key the registry pays. `src/attest.ts` holds the format and the store,
+imports nothing, and is unit tested. The signed claim names purpose, registry,
+chain, provider, URL, model and nonce, so a signature cannot be replayed as a
+control proof, against another deployment, or lifted onto a different host. The
+nonce is single use, expires in 60 seconds, and is CONSUMED BEFORE the
+signature is checked so a wrong signature burns it rather than allowing
+grinding. The nonce must be exactly 64 hex characters, which is load bearing
+rather than tidy: the message is line-based and the nonce is the one
+caller-supplied field, so a newline in it would sign a claim the signer never
+saw.
+
+Attacked against a local anvil: a hijack signed by another key, an unsigned
+announce in the old shape, a valid signature replayed, and a valid signature
+moved onto a different URL. All four refused.
+
+**Still open in production, 2026-08-29.** See section 0.2. The live discovery
+404s `/announce/nonce`, and the deployed client has no `proveControl`.
+
+**Not backward compatible.** An old node announcing to a new discovery is
+rejected; a new node finds no nonce endpoint on an old discovery. Restart nodes
+and discovery together.
+
+### 2c.2 `/lanjob` was about to become an open faucet
+
+It opens a job the NODE pays for, which is the point of the LAN guest page, and
+it was safe for exactly one reason: nobody outside the network could reach the
+port. A tunnel ends that invisibly, because every tunnelled request arrives at
+the node from 127.0.0.1, so an address check alone reads "local" for the whole
+internet. `src/reach.ts` requires both halves, a private or loopback peer AND
+no forwarding header, and was verified against the exact shapes cloudflared and
+ngrok send. `LANJOB=off|lan|open`, default `lan`.
+
+**The tunnel did not end it invisibly at some future point. It had already
+ended it.** The running build has no peer check and is published through ngrok,
+so this is a live exposure rather than an anticipated one. See section 0.1,
+which records the probe.
+
+### 2c.3 A new endpoint that spends the node's own money
+
+`/v1/chat/completions` fronts jobs from the node's deposit, because an OpenAI
+client holds a key rather than a wallet. Controls, all of them defaults rather
+than options: the endpoint is OFF unless `API_KEYS` is set, keys are compared
+as SHA-256 digests in constant time so neither length nor a matching prefix
+leaks, `V1_DAILY_TOKENS` caps what it can bill in a rolling day, `max_tokens`
+is clamped to what the escrow can pay for, and the existing concurrency and
+pressure gates apply unchanged.
+
+### 2c.4 Two defects in the job-opening path, older than the endpoint
+
+Found by running four concurrent requests rather than by review. Every write
+from the provider key was serialized through `queue` except the one that opens
+a job, so an opening raced the previous job's `closeJob` on the nonce. And the
+deposit check was not atomic with the opening, so concurrent requests all saw
+enough float for one job and the rest reverted, reported as "cannot read
+properties of undefined" because the code read the event off a reverted
+receipt. Both halves now run inside one `serialized()` unit, and receipt status
+is checked before the event is read. `/lanjob` shared both and never hit them.
+
 ## 3. Monad transaction discipline checklist
 
 Applied to every `writeContract` and `sendTransaction` site.
@@ -458,6 +611,9 @@ Applied to every `writeContract` and `sendTransaction` site.
 
 Blocking, in order:
 
+0. Get the tree deployed, which is a prerequisite for every claim this file
+   makes about a fix being in place. Added 2026-08-29. Section 0 is the state,
+   and 0.1 is live and reachable today.
 1. Deploy and independently review a fixed contract. Items 1.1 and 1.2 are
    exploitable by any registered provider against any guest.
 2. ~~**Delete** `web/api/topup.js`~~. **Done 2026-08-28**, deleted rather than

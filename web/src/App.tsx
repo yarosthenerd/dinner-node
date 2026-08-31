@@ -3,6 +3,7 @@ import { formatEther, keccak256, parseEther, parseEventLogs, toHex } from 'viem'
 import { ABI, ADDR, EXPLORER, pub, faucet, fmt } from './lib';
 import { useWallet, connect, disconnect, switchChain } from './lib/wallet';
 import { isOursAndOpen, readJob, readProvider } from './lib/registry';
+import { proveControl } from './lib/attest';
 import { DISCOVERY, KNOWN_PROVIDERS } from './config';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -55,8 +56,22 @@ const FEED_WINDOW = 25n;
 const estTokens = (s: string) => Math.ceil(s.length / 4);
 
 type Session = { ts: number; prompt: string; answer: string; jobId: string; cost: string };
+
+// History is OPT IN, and off until the guest turns it on.
+//
+// Keeping prompts and replies on the device across restarts is not necessary
+// to serve an order, so under ePrivacy Article 5(3) it needs consent rather
+// than a control that deletes it afterwards. The receipt still lists what this
+// visit ordered, because that list lives in React state and nothing is
+// written; the switch decides only whether it survives the tab closing.
+const HISTORY_KEY = 'dn_sessions';
+const HISTORY_OPT_IN = 'dn_keep_history';
+const keepingHistory = (): boolean => {
+  try { return localStorage.getItem(HISTORY_OPT_IN) === '1'; } catch { return false; }
+};
 const loadSessions = (): Session[] => {
-  try { return JSON.parse(localStorage.getItem('dn_sessions') || '[]'); } catch { return []; }
+  if (!keepingHistory()) return [];
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
 };
 
 // Fenced blocks become downloadable files. Markdown first, then whatever the
@@ -92,13 +107,15 @@ export default function App() {
   const [url, setUrl] = useState(() => new URLSearchParams(window.location.search).get('host') || DEFAULT_HOST);
   // Hosts named by the link rather than by the guest. `?host=` decides who
   // receives the prompt on the first attempt and `?peer=` who receives it on a
-  // failover, and neither is verified: the browser reads an address out of the
-  // host's own /health and never checks that the machine controls it. A hostile
-  // host cannot be PAID, because settlement goes to a registered provider
-  // address on chain, but it does receive the prompt and the partial answer.
-  // So the guest is told, in the interface, before ordering. The real fix is
-  // the signed-nonce challenge already scoped for /announce, which closes this
-  // and discovery hijack in one change.
+  // failover.
+  //
+  // Both are now VERIFIED before anything is sent: `proveControl` makes the
+  // machine sign a nonce this browser chose and checks the registry still
+  // calls it active, so a host that merely claims an address in its own
+  // /health is skipped. What that proves is that the machine is the provider
+  // it says it is. It says nothing about who that provider is, and a provider
+  // can put itself in a link, so the guest is still told which machines a link
+  // named before ordering.
   const linkNamedHosts = useMemo(() => {
     const q = new URLSearchParams(window.location.search);
     return [...(q.get('host') ? [q.get('host')!] : []), ...q.getAll('peer')];
@@ -135,8 +152,47 @@ export default function App() {
   // discovered from a 404 after a job is already open and paid for.
   const [hostPlans, setHostPlans] = useState(false);
   const [hostProvider, setHostProvider] = useState<`0x${string}` | null>(null);
+  // Why the host was rejected, so a guest is told "this machine could not
+  // prove who it is" rather than being left to read "the kitchen is warming
+  // up" forever, which is the least useful thing to say about the one failure
+  // that is actually about their prompt going somewhere it should not.
+  const [hostUnproven, setHostUnproven] = useState<string | null>(null);
   const [mode, setMode] = useState<'answer' | 'plan'>('answer');
   const [sessions, setSessions] = useState<Session[]>(loadSessions);
+  const [keepHistory, setKeepHistory] = useState<boolean>(keepingHistory);
+  // Read at WRITE time, not captured when an order started. `rent()` is a long
+  // async call, so a guest who unticks the box mid-answer would otherwise have
+  // the finished order written to storage by a closure holding the old value:
+  // consent withdrawn, and the write happens anyway, invisibly, with no
+  // control left in the interface to remove it.
+  const keepHistoryRef = useRef(keepHistory);
+  const sessionsRef = useRef(sessions);
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  // Turning it off is a withdrawal of consent, so it deletes what was kept
+  // rather than merely stopping the next write.
+  const toggleHistory = (on: boolean) => {
+    setKeepHistory(on);
+    keepHistoryRef.current = on;
+    try {
+      if (on) {
+        localStorage.setItem(HISTORY_OPT_IN, '1');
+        // Overwritten with what is on screen, never left to merge with what
+        // was there. Otherwise switching on resurrects entries written by the
+        // build that stored history without asking, and the guest is shown
+        // prompts from before they consented to anything.
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(sessionsRef.current));
+      } else { localStorage.removeItem(HISTORY_OPT_IN); localStorage.removeItem(HISTORY_KEY); }
+    } catch { /* storage blocked: nothing is persisted either way */ }
+  };
+  // Anything written by the build that shipped before history was opt-in is
+  // deleted on first load. Those browsers hold up to 20 prompts and replies
+  // with no opt-in flag, which this app no longer reads, so without this they
+  // sit unreadable and unremovable: the receipt is empty, so the clear control
+  // never renders. Default off has to mean nothing stored, not nothing shown.
+  useEffect(() => {
+    if (keepingHistory()) return;
+    try { localStorage.removeItem(HISTORY_KEY); } catch { /* nothing to clean */ }
+  }, []);
   // The provider this browser has actually paid. Ratings are gated on a paid
   // job by the contract, so there is nothing to show before the first one.
   const [ratedProvider, setRatedProvider] = useState<`0x${string}` | null>(null);
@@ -313,13 +369,28 @@ export default function App() {
   // that host's real context window rather than a guess.
   useEffect(() => {
     let dead = false;
+    setHostUnproven(null);
     (async () => {
       try {
         const h = await (await fetch(url + '/health', { headers: TUNNEL_HEADERS, signal: AbortSignal.timeout(6000) })).json();
         if (!dead && h?.promptBudget) setBudgetTokens(Number(h.promptBudget));
         if (!dead) setHostEngine({ engine: h?.engine, model: h?.model });
         if (!dead) setHostPlans(!!h?.plans?.supported);
-        if (!dead && h?.provider) setHostProvider(h.provider as `0x${string}`);
+        // Proven before it is usable, not merely read. PlanPanel sends the
+        // goal and every step's output straight to this host, so a plan run
+        // against an unproven `?host=` would be the same disclosure the chat
+        // path just closed, through a door nobody looked at. Cleared on
+        // failure, and the plan panel renders only when it is set.
+        if (!dead && h?.provider) {
+          const p = h.provider as `0x${string}`;
+          try {
+            await proveControl(url, p, TUNNEL_HEADERS);
+            if (!dead) setHostProvider(p);
+          } catch (e) {
+            console.error('host could not prove itself', e);
+            if (!dead) { setHostProvider(null); setHostUnproven(String((e as any)?.message ?? e)); }
+          }
+        }
         // Plus five seconds for the settle transaction itself to land.
         if (!dead && h?.settleMaxMs) settleGraceRef.current = Number(h.settleMaxMs) + 5000;
       } catch {}
@@ -619,6 +690,13 @@ export default function App() {
             signal: AbortSignal.timeout(9000), headers: TUNNEL_HEADERS,
           })).json(), first ? 'warming the tunnel' : 'reaching a standby node', first ? 8 : 3);
           const nextProvider = String(health.provider) as `0x${string}`;
+          // Before the prompt goes anywhere. `/health` is the host describing
+          // itself, so a link naming a hostile machine would hand it the
+          // prompt on the strength of its own claim. This makes it sign a
+          // nonce we chose, and checks the registry still calls it active.
+          // A host that cannot do both is skipped like any dead node.
+          await attempt(() => proveControl(u, nextProvider, TUNNEL_HEADERS),
+            first ? 'checking who you are ordering from' : 'checking the standby node', 1);
 
           if (jobId === null) {
             // One job per session rather than one per turn. Reuse is always
@@ -871,8 +949,12 @@ export default function App() {
         jobId: finalJobId.toString(), cost: cost.toString(),
       };
       if (cost > 0n && sessionRef.current) setRatedProvider(sessionRef.current.provider as `0x${string}`);
-      const next = [entry, ...loadSessions()].slice(0, 20);
-      try { localStorage.setItem('dn_sessions', JSON.stringify(next)); } catch {}
+      // Both read through refs, so a list cleared or a switch turned off while
+      // this order was streaming is respected rather than overwritten by the
+      // values this closure started with.
+      const next = [entry, ...sessionsRef.current].slice(0, 20);
+      if (keepHistoryRef.current) { try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)); } catch {} }
+      sessionsRef.current = next;
       setSessions(next);
       reloadRef.current();
     } catch (e: any) {
@@ -984,11 +1066,20 @@ export default function App() {
         <section>
           <h2>rent compute</h2>
           <div className="note">You are interacting with an AI system. Responses are machine generated and may be inaccurate.</div>
+          {hostUnproven && (
+            <div className="note">
+              <strong>{(() => { try { return new URL(url).host; } catch { return url; } })()} could not prove it is the provider it claims to be</strong>,
+              {' '}so nothing has been sent to it. {hostUnproven}
+              {' '}<a href="/terms.html#s29" target="_blank" rel="noreferrer">terms 2.9</a>
+            </div>
+          )}
           {linkNamedHosts.length > 0 && (
             <div className="note">
               this link names the {linkNamedHosts.length === 1 ? 'machine' : 'machines'} that will receive your prompt
               {' '}({linkNamedHosts.map(h => { try { return new URL(h).host; } catch { return h; } }).join(', ')}).
-              {' '}chosen by whoever gave you the link, not by us, and not verified by us. don't send anything sensitive.
+              {' '}chosen by whoever gave you the link, not by us. each one has to prove it holds its
+              {' '}on-chain provider key before your prompt is sent, which says the machine is who it
+              {' '}claims, not who runs it. don't send anything sensitive.
               {' '}<a href="/terms.html#s29" target="_blank" rel="noreferrer">terms 2.9</a>
             </div>
           )}
@@ -1165,7 +1256,16 @@ export default function App() {
                     <span>{fmt(BigInt(s.cost))} MON</span>
                   </div>
                 ))}
-                <div className="rcost" onClick={() => { localStorage.removeItem('dn_sessions'); setSessions([]); }} style={{ cursor: 'pointer' }}>clear history</div>
+                <label className="rrow" style={{ cursor: 'pointer' }}>
+                  <span>
+                    <input type="checkbox" checked={keepHistory} onChange={e => toggleHistory(e.target.checked)} style={{ marginRight: 6 }} />
+                    keep history on this device{' '}
+                    <a href="/terms.html#s27" target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}>what this stores</a>
+                  </span>
+                  <span />
+                  <span>{keepHistory ? 'saved until you clear it' : 'this visit only'}</span>
+                </label>
+                <div className="rcost" onClick={() => { try { localStorage.removeItem(HISTORY_KEY); } catch {} sessionsRef.current = []; setSessions([]); }} style={{ cursor: 'pointer' }}>clear history</div>
               </div>
             </>
           )}

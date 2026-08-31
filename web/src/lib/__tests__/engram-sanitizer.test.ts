@@ -90,14 +90,105 @@ describe('item 8: the maximal privacy template broke the demo at balanced', () =
 });
 
 describe('item 4: engram statements were compiled into live regexes', () => {
-  it('returns immediately on a catastrophic-backtracking statement', () => {
-    const evil = engram({ id: 'evil', tags: ['sanitization'],
-      statement: 'replace (a+)+(a+)+(a+)+(a+)+(a+)+$ with [X]' });
-    const t0 = Date.now();
-    const r = sanitizePromptWithEngrams('a'.repeat(60) + 'b', [evil], 'balanced');
-    expect(Date.now() - t0).toBeLessThan(250);
-    expect(r.sanitized).toBe('a'.repeat(60) + 'b');
+  // Asserted on behaviour, not on elapsed time. A synchronous ReDoS blocks the
+  // event loop, so a timing assertion cannot fail: a regression hangs the whole
+  // run past testTimeout instead of reporting this test. These two assertions
+  // pin the actual fix, which is that the target is escaped and compiled as a
+  // literal, and they hold whether the machine is fast or loaded.
+  const EVIL_TARGET = '(a+)+(a+)+(a+)+(a+)+(a+)+$';
+  const evil = () => engram({ id: 'evil', tags: ['sanitization'], statement: `replace ${EVIL_TARGET} with [X]` });
+
+  // ORDER MATTERS. This one runs first because it is fast under a regression
+  // as well as under the fix: it asserts the target was escaped, and a
+  // regression fails it in milliseconds. The test below feeds the engine an
+  // input that a regressed build would backtrack on, which blocks the event
+  // loop and stops vitest reporting anything at all, so it must never be the
+  // first thing to fail.
+  it('treats that same statement as a literal, which is the fix itself', () => {
+    // If the target were still compiled as a regex this would NOT match, so
+    // the two tests together say escaping happened rather than that the rule
+    // was quietly dropped.
+    const r = sanitizePromptWithEngrams(`prefix ${EVIL_TARGET} suffix`, [evil()], 'balanced');
+    expect(r.sanitized).toBe('prefix [X] suffix');
+    expect(r.engramRulesApplied).toContain('evil');
   });
+
+  it('leaves a prompt that would trigger catastrophic backtracking untouched', () => {
+    // The input that hung the tab for 110 seconds when targets were compiled
+    // as user-authored regex. As a literal, it simply does not match.
+    const input = 'a'.repeat(60) + 'b';
+    expect(sanitizePromptWithEngrams(input, [evil()], 'balanced').sanitized).toBe(input);
+  });
+  it('ignores a target longer than the 128 character cap, and keeps the one at it', () => {
+    // The cap exists so a padded statement cannot expand a prompt into
+    // something far larger than the token estimate the guest was shown.
+    const at = 'x'.repeat(128);
+    const over = 'y'.repeat(129);
+    const e = engram({ id: 'cap', tags: ['sanitization'],
+      statement: `replace ${at} with [AT]. replace ${over} with [OVER]` });
+    const r = sanitizePromptWithEngrams(`${at} and ${over}`, [e], 'balanced');
+    expect(r.sanitized).toBe(`[AT] and ${over}`);
+  });
+
+  it('ignores a replacement longer than the 64 character cap, and keeps the one at it', () => {
+    // Both sides, or the test pins "some cap below 65" rather than 64: a
+    // mutation to MAX_REPLACEMENT_LENGTH = 32 survived the one-sided version.
+    const at = 'z'.repeat(64);
+    const over = 'z'.repeat(65);
+    const ok = engram({ id: 'r64', tags: ['sanitization'], statement: `replace secret with ${at}` });
+    expect(sanitizePromptWithEngrams('a secret here', [ok], 'balanced').sanitized).toBe(`a ${at} here`);
+    const bad = engram({ id: 'r65', tags: ['sanitization'], statement: `replace secret with ${over}` });
+    expect(sanitizePromptWithEngrams('a secret here', [bad], 'balanced').sanitized).toBe('a secret here');
+  });
+
+  it('treats $ in a replacement as a literal, not as a substitution pattern', () => {
+    // The 64 character cap bounds the literal length and not the expanded
+    // length. As a replacement STRING, `$'` re-inserts everything after the
+    // match, and 32 of them fit inside the cap: a 2,000 character prompt
+    // became 63,968,000, which is what gets hashed and sent to the provider
+    // against an escrow sized from the pre-sanitization estimate.
+    const payload = "$'".repeat(32);
+    expect(payload.length).toBe(64);
+    const evil = engram({ id: 'dollar', tags: ['sanitization'], statement: `replace a with ${payload}` });
+
+    // Small enough that the growth guard does not fire, so this measures the
+    // substitution behaviour itself: one `a` becomes the 64 literal characters
+    // and nothing more. As a replacement string it would have become the rest
+    // of the prompt, repeated 32 times.
+    const one = sanitizePromptWithEngrams('a', [evil], 'balanced').sanitized;
+    expect(one).toBe(payload);
+
+    // And on the size that actually hurt, the guard drops the rule outright:
+    // 2,000 characters stay 2,000 rather than becoming 63,968,000.
+    const many = sanitizePromptWithEngrams('a'.repeat(2000), [evil], 'balanced').sanitized;
+    expect(many).toBe('a'.repeat(2000));
+  });
+
+  it('drops a rule that would still blow the prompt up', () => {
+    // Belt and braces on the same class: whatever a future replacement path
+    // does, a rule that more than doubles the text is not applied.
+    const e = engram({ id: 'grow', tags: ['sanitization'], statement: `replace a with ${'z'.repeat(60)}` });
+    const out = sanitizePromptWithEngrams('a'.repeat(100), [e], 'balanced').sanitized;
+    expect(out).toBe('a'.repeat(100));
+  });
+
+  it('applies at most 16 rules from one engram', () => {
+    // Sixteen is the ceiling, so the seventeenth clause must not fire. The
+    // statement is period-separated because that is the shape every library
+    // template uses, and the shape that made this cap unreachable before the
+    // replacement pattern was bounded.
+    // Two digit tokens on purpose: with tok0..tok16, the rule for tok1 also
+    // matches the front of tok16 and the test would be measuring its own
+    // naming rather than the cap.
+    const tok = (i: number) => `tok${String(i).padStart(2, '0')}`;
+    const clauses = Array.from({ length: 17 }, (_, i) => `replace ${tok(i)} with [R${i}]`).join('. ');
+    const e = engram({ id: 'many', tags: ['sanitization'], statement: clauses });
+    const out = sanitizePromptWithEngrams(Array.from({ length: 17 }, (_, i) => tok(i)).join(' '), [e], 'balanced').sanitized;
+    for (let i = 0; i < 16; i++) expect(out, `rule ${i}`).toContain(`[R${i}]`);
+    expect(out).toContain(tok(16));
+    expect(out).not.toContain('[R16]');
+  });
+
   it('matches an engram target literally', () => {
     const e = engram({ id: 'lit', tags: ['sanitization'], statement: 'replace a.c with [X]' });
     expect(sanitizePromptWithEngrams('abc and a.c', [e], 'balanced').sanitized)

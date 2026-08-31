@@ -320,7 +320,21 @@ export function applyEngramSanitization(
     if (engram.contraindications?.some(c => c && sanitized.toLowerCase().includes(c.toLowerCase()))) continue;
 
     for (const rule of extractSanitizationRules(engram, strictness)) {
-      const next = sanitized.replace(fresh(rule.pattern), rule.replacement);
+      // The FUNCTION form, and this is a security fix rather than a style
+      // choice. Passing engram-authored text as the replacement string makes
+      // `$'`, `` $` ``, `$&` and `$1` substitution patterns rather than
+      // literals, and `$'` re-inserts everything after the match. Thirty-two
+      // of them fit inside the 64 character cap, so a replacement that passes
+      // every length check expanded a 2,000 character prompt to 63,968,000 and
+      // threw RangeError on a longer one. That expansion is what gets hashed
+      // and sent to the provider, against an escrow sized from the
+      // pre-sanitization estimate. The callback form does not interpret `$`.
+      const next = sanitized.replace(fresh(rule.pattern), () => rule.replacement);
+      // Second line of defence, because the first one is one character wide.
+      // A redaction rule replaces text with a short marker; nothing legitimate
+      // here doubles the prompt, and a rule that does is dropped rather than
+      // trusted.
+      if (next.length > sanitized.length * 2 + 256) continue;
       if (next !== sanitized) { sanitized = next; rulesApplied.add(engram.id); }
     }
   }

@@ -4,7 +4,7 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { formatEther, keccak256, parseEther, parseEventLogs, stringToHex, toHex } from 'viem';
-import { ABI, ADDR, EXPLORER, pub, wallet } from './chain';
+import { ABI, ADDR, EXPLORER, monadTestnet, pub, wallet } from './chain';
 import { isMine, readJob, readProvider, remaining } from './registry';
 import { mock, ollama, openai, SYSTEM_PROMPT, type Chunk } from './engines';
 import { describeHardware, probeHardware } from './hardware';
@@ -12,6 +12,11 @@ import { PLAN_LIMITS, planCostWei, planHash, validatePlan, type Plan } from './p
 import { describePlan, makePlan } from './planner';
 import { executePlan, type Dispatch } from './executor';
 import { bill, flush, hold, newLedger, writeOff, type Ledger } from './billing';
+import { authorize, chunk, completion, DONE, errorBody, errorChunk, modelsBody, parseChat, parseKeys, usage, usageChunk, type Finish } from './openai-api';
+import { announceMessage, controlMessage, originOf, validNonce } from './attest';
+import { reach } from './reach';
+import { startQuickTunnel } from './tunnel';
+import { catalogDocument } from './provider-catalog';
 import { DEFAULT_MON_USD, breakEvenTokens, cheaperThanCount, crossoverRatio, describeFreeInput, describeRate, resolveRate, usdPerMillion, type Policy, type Resolved } from './pricing';
 
 const w = wallet(process.env.PROVIDER_PK!);
@@ -49,6 +54,39 @@ const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT_JOBS ?? 2);
 // for the evening.
 const SESSION_IDLE_MS = Number(process.env.SESSION_IDLE_MS ?? 600_000);
 const idleTimers = new Map<bigint, ReturnType<typeof setTimeout>>();
+// What this node fronts per job it opens for a caller that holds no wallet.
+const FRONT_BUDGET = parseEther(process.env.FRONT_BUDGET_MON ?? '0.01');
+// What it deposits when the escrow float runs dry. Several jobs' worth, so a
+// busy endpoint is not paying a deposit transaction per request.
+const FRONT_TOPUP = parseEther(process.env.FRONT_TOPUP_MON ?? '0.1');
+// The OpenAI-compatible endpoint is OFF unless the operator sets keys. It is
+// the one path where a caller spends the node's own deposit rather than their
+// own, so an unset variable has to mean closed rather than open. Compare with
+// /lanjob, which fronts the same escrow but is reachable only from the LAN.
+const V1_KEYS = parseKeys(process.env.API_KEYS);
+// Who may spend the node's own MON through the free LAN path.
+//   lan  (default) machines on this network, talking to this node directly
+//   off            nobody, for an operator who wants the endpoint gone
+//   open           anyone who can reach the port, which from tomorrow is the
+//                  internet. Only sensible on a machine with no tunnel and a
+//                  deliberate decision behind it.
+const LANJOB = (process.env.LANJOB ?? 'lan').toLowerCase();
+// What the provider catalog says about where this machine is and whether it
+// wants routed traffic. Both default to the cautious answer: no location
+// declared, and not ready. An operator opts in to each.
+const DATACENTER_COUNTRY = process.env.DATACENTER_COUNTRY ?? null;
+const DATACENTER_REGION = process.env.DATACENTER_REGION ?? null;
+const PROVIDER_IS_READY = process.env.PROVIDER_IS_READY === '1';
+// A ceiling on what the endpoint can bill in a rolling day. In memory, so it
+// resets when the daemon restarts: this is a brake on a runaway client, not an
+// accounting system, and it is not a substitute for keys the operator trusts.
+const V1_DAILY_TOKENS = Number(process.env.V1_DAILY_TOKENS ?? 2_000_000);
+let v1WindowStart = Date.now();
+let v1Spent = 0;
+function v1Remaining(): number {
+  if (Date.now() - v1WindowStart > 86_400_000) { v1WindowStart = Date.now(); v1Spent = 0; }
+  return Math.max(0, V1_DAILY_TOKENS - v1Spent);
+}
 // Long enough to cover an ollama started alongside this daemon, short enough
 // that a machine with no engine at all fails while the operator is watching.
 const ENGINE_PROBE_ATTEMPTS = Number(process.env.ENGINE_PROBE_ATTEMPTS ?? 15);
@@ -110,6 +148,26 @@ const HW = probeHardware();
  * every job on it before a single token exists.
  */
 let firstTokenMs: number | null = null;
+/**
+ * Generation rate, from streams this node has actually served.
+ *
+ * Timed from the FIRST token rather than from the request, because model load
+ * dominates a cold start and does not scale with the work: 16s at num_ctx 16k
+ * and 114s at 40k, paid once. Folding that in would publish a capacity figure
+ * that says more about how recently the node was busy than about how fast it
+ * is. Null until something has been served, and published as absent rather
+ * than as a guess, since an absent capacity means undeclared and a wrong one
+ * means a router sending work this node cannot keep up with.
+ */
+let measuredTokensPerSecond: number | null = null;
+function recordThroughput(tokens: number, ms: number) {
+  // A handful of tokens is a sample of the scheduler, not of the model.
+  if (tokens < 32 || ms <= 0) return;
+  const rate = (tokens / ms) * 1000;
+  // Weighted to the past, so one throttled stream on a busy machine does not
+  // rewrite the figure a router is costing against.
+  measuredTokensPerSecond = measuredTokensPerSecond === null ? rate : measuredTokensPerSecond * 0.7 + rate * 0.3;
+}
 let gpuFraction: number | null = null;
 
 export type GenOptions = {
@@ -136,9 +194,29 @@ async function pickEngine(): Promise<Engine> {
     try {
       const tags = await (await fetch('http://localhost:11434/api/tags')).json() as any;
       const names: string[] = (tags.models ?? []).map((m: any) => m.name);
-      let model = process.env.MODEL ?? names[0];
-      if (model && !names.includes(model)) { console.log('model ' + model + ' not installed, falling back to ' + names[0]); model = names[0]; }
-      if (model) return { kind: 'ollama', model, gen: (p, s, o) => ollama(p, model, s, CONTEXT_TOKENS, undefined, o?.think !== false) };
+      // MODEL, when the operator set it, is a decision and not a preference.
+      // The fallback that used to sit here served whatever happened to be
+      // first in the local list, under a provider record that names the model
+      // on chain, at a rate resolved from that model's market band. Three ways
+      // to be wrong at once: the guest gets a model they did not choose, the
+      // price is derived from different weights, and the node could serve a
+      // restrictively licensed model by accident. A node that will not start
+      // is the cheaper failure.
+      const want = process.env.MODEL;
+      if (want && !names.includes(want)) {
+        console.error(`model ${want} is not installed on this machine.`);
+        console.error(`installed: ${names.join(', ') || '(none)'}`);
+        console.error('run `ollama pull ' + want + '`, or change MODEL in .env to one of the above.');
+        process.exit(1);
+      }
+      const model = want ?? names[0];
+      if (model) {
+        // Unset MODEL still takes the first tag, because a node with one model
+        // installed should just work. It says which, because this string is
+        // what registerProvider writes on chain and what a guest chooses from.
+        if (!want) console.log(`MODEL unset, serving ${model} and registering it on chain`);
+        return { kind: 'ollama', model, gen: (p, s, o) => ollama(p, model, s, CONTEXT_TOKENS, undefined, o?.think !== false) };
+      }
       lastErr = 'ollama is running but has no models installed';
     } catch (e: any) {
       lastErr = e?.message ?? String(e);
@@ -167,6 +245,30 @@ const active = new Map<bigint, Ledger>();
 let inFlight = 0;
 let queue: Promise<unknown> = Promise.resolve();
 
+/**
+ * Run a transaction behind everything else this wallet has in flight.
+ *
+ * Every other write from the provider key already goes through `queue`, for
+ * the reason settle documents: two transactions from one account, sent at
+ * once, race on the nonce and one of them is dropped. The job-opening path did
+ * not, because it had one caller and that caller was a guest on the LAN typing
+ * one prompt at a time. The OpenAI endpoint has concurrent callers by
+ * construction, and the race showed up on the second request of the first
+ * end-to-end run: `openJob` collided with the previous job's `closeJob` and
+ * came back as a 503.
+ *
+ * The cost is latency. An opening now waits for whatever settlement is in
+ * flight, which is a block or so on Monad. That is the right trade against a
+ * request that fails outright.
+ */
+function serialized<T>(f: () => Promise<T>): Promise<T> {
+  // `then(f, f)` rather than `then(f)`: a failed settlement must not stop the
+  // next job from opening.
+  const run = queue.then(f, f);
+  queue = run.catch(() => {});
+  return run;
+}
+
 // Monad charges gas_limit rather than gas_used, so a padded limit overpays on
 // every call and a tight one that reverts burns the whole limit for nothing.
 // A fixed 100000 was doing exactly that: settle needs about 118000 the first
@@ -175,9 +277,14 @@ let queue: Promise<unknown> = Promise.resolve();
 // of the new wallet reverted and the guest was never charged. Estimating per
 // call costs one round trip against a three second settlement interval and
 // keeps the limit both sufficient and tight.
-async function gasFor(fn: string, args: readonly unknown[], fallback: bigint): Promise<bigint> {
+async function gasFor(fn: string, args: readonly unknown[], fallback: bigint, value?: bigint): Promise<bigint> {
   try {
-    const g = await pub.estimateContractGas({ address: ADDR, abi: ABI, functionName: fn as any, args: args as any, account: w.account });
+    const g = await pub.estimateContractGas({
+      address: ADDR, abi: ABI, functionName: fn as any, args: args as any, account: w.account,
+      // Payable calls estimate to a revert without the value attached, which
+      // silently returned the padded fallback for every deposit this node made.
+      ...(value === undefined ? {} : { value }),
+    } as any);
     return (g * 120n) / 100n;
   } catch {
     return fallback;
@@ -421,7 +528,13 @@ setInterval(() => {
 // Announce to the discovery listener so the web app can find this node by URL.
 // The listener re-checks providers(me) on chain before it trusts any of this.
 const DISCOVERY = process.env.DISCOVERY_URL ?? '';
-const PUBLIC_URL = process.env.PUBLIC_URL ?? '';
+// Mutable, because a node with no URL of its own gets one at startup from a
+// quick tunnel. Set in .env it is a named tunnel or any other arrangement the
+// operator made, and nothing below touches it.
+let PUBLIC_URL = process.env.PUBLIC_URL ?? '';
+// off  never start one, for a node that is deliberately LAN only
+// auto (default) start one when PUBLIC_URL is unset and cloudflared exists
+const TUNNEL = (process.env.TUNNEL ?? 'auto').toLowerCase();
 // The listener expires an announced URL after DISCOVERY_TTL_MS, ten minutes by
 // default, and reverts that provider to url: null. announce() ran exactly once
 // at startup, so every node vanished from discovery's URL list ten minutes
@@ -438,9 +551,33 @@ async function announce() {
   if (!DISCOVERY || !PUBLIC_URL) return;
   try {
     const e = await engineP;
-    const r = await fetch(`${DISCOVERY.replace(/\/$/, '')}/announce`, {
+    const base = DISCOVERY.replace(/\/$/, '');
+    // Discovery now wants proof this machine holds the key the registry pays,
+    // and not merely that the address it names is registered. Two requests: it
+    // issues a nonce, this node signs a claim naming the registry, the chain,
+    // itself, its URL, its model and that nonce.
+    const nres = await fetch(`${base}/announce/nonce?address=${me}`, { headers: { 'ngrok-skip-browser-warning': '1' } });
+    if (!nres.ok) {
+      console.log(`[announce] no nonce: ${nres.status} ${(await nres.text()).slice(0, 120)}`);
+      announced = false;
+      return;
+    }
+    const { nonce, registry, chainId } = await nres.json() as { nonce: string; registry?: string; chainId?: number };
+    // The origin, because that is what discovery stores and therefore what it
+    // will rebuild the message from. Signing the raw string would produce a
+    // valid signature over a claim the verifier never sees.
+    const url = new URL(PUBLIC_URL).origin;
+    const claim = announceMessage({
+      // Discovery's own registry and chain rather than ours, so a mismatch
+      // fails as a rejected signature with both values visible instead of
+      // silently announcing into a table for a different deployment.
+      registry: registry ?? ADDR, chainId: chainId ?? monadTestnet.id,
+      address: me, url, model: e.model, nonce,
+    });
+    const signature = await w.signMessage({ message: claim });
+    const r = await fetch(`${base}/announce`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ address: me, url: PUBLIC_URL, model: e.model }),
+      body: JSON.stringify({ address: me, url, model: e.model, nonce, signature }),
     });
     const body = (await r.text()).slice(0, 120);
     // Only the first announce and any failure are worth a line. A success
@@ -481,10 +618,109 @@ st.textContent=' — order up. settlements live on Monad testnet.';}catch(e){st.
 b.disabled=false;upd();};
 </script>`;
 
-async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse, resume?: { text: string; n: number }, session = false) {
-  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' });
+/**
+ * Where a served stream is written.
+ *
+ * `serveJob` owns the billing, the checkpoint chain and the settlement, and it
+ * owned the wire format too until this node had a second kind of caller. The
+ * frames DinnerNode's own client reads are not the frames an OpenAI client
+ * reads, and duplicating the loop to say the same thing twice would have meant
+ * two copies of the money path. So the loop stays single and the format moves
+ * behind this interface: one billing path, two ways of writing it down.
+ */
+type Wire = {
+  head(): void;
+  hb(): void;
+  th(text: string): void;
+  tok(text: string): void;
+  cp(n: number, h: `0x${string}`): void;
+  err(message: string): void;
+  end(f: { n: number; h: `0x${string}`; visible: number; reasoning: number; finish: Finish }): void;
+};
+
+/** The native format, byte for byte what this node has always sent. */
+function nativeWire(res: http.ServerResponse): Wire {
+  return {
+    head() { res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'access-control-allow-origin': '*' }); },
+    hb() { try { res.write(': hb\n\n'); } catch {} },
+    th(text) { res.write(`data: ${JSON.stringify({ th: text })}\n\n`); },
+    tok(text) { res.write(`data: ${JSON.stringify({ t: text })}\n\n`); },
+    cp(n, h) { res.write(`data: ${JSON.stringify({ cp: { n, h } })}\n\n`); },
+    err(message) { res.write(`data: ${JSON.stringify({ err: message })}\n\n`); },
+    end(f) {
+      res.write(`data: ${JSON.stringify({ cp: { n: f.n, h: f.h, final: true }, bill: { visible: f.visible, reasoning: f.reasoning } })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    },
+  };
+}
+
+/**
+ * The OpenAI-compatible format, streaming or buffered.
+ *
+ * Checkpoints are dropped: an OpenAI client has no field for them and no use
+ * for one, since it is not the party that could hand the prefix to another
+ * provider. That is the cost of this wire and it is the reason the native one
+ * is still the default. Reasoning is forwarded as `reasoning`, which is what
+ * OpenRouter sends and what `src/engines.ts` already accepts on the way in.
+ */
+function openaiWire(res: http.ServerResponse, o: {
+  id: string; model: string; stream: boolean; includeUsage: boolean; promptTokens: number;
+}): Wire {
+  const created = Math.floor(Date.now() / 1000);
+  const headers = { 'access-control-allow-origin': '*', 'x-dinnernode-job': o.id };
+  let content = '';
+  let reasoning = '';
+  let wrote = false;
+  return {
+    head() {
+      if (!o.stream) return;
+      res.writeHead(200, { ...headers, 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+      // The role-only opening chunk. Stock clients read the role from it and
+      // never see it again on this stream.
+      res.write(chunk(o.id, created, o.model, { role: 'assistant', content: '' }));
+      wrote = true;
+    },
+    hb() { if (o.stream) { try { res.write(': hb\n\n'); } catch {} } },
+    th(text) { reasoning += text; if (o.stream) res.write(chunk(o.id, created, o.model, { reasoning: text })); },
+    tok(text) { content += text; if (o.stream) res.write(chunk(o.id, created, o.model, { content: text })); },
+    cp() { /* nothing to say on this wire */ },
+    err(message) {
+      if (o.stream) { res.write(errorChunk(message)); return; }
+      // Nothing has been sent yet on a buffered request, so the failure can
+      // still be a status code rather than a 200 carrying an error object.
+      if (!wrote) {
+        wrote = true;
+        res.writeHead(502, { ...headers, 'content-type': 'application/json' });
+        res.end(errorBody(message, 'server_error', 'engine_error'));
+      }
+    },
+    end(f) {
+      const u = usage(o.promptTokens, f.visible + f.reasoning);
+      if (o.stream) {
+        res.write(chunk(o.id, created, o.model, {}, f.finish));
+        if (o.includeUsage) res.write(usageChunk(o.id, created, o.model, u));
+        res.write(DONE);
+        res.end();
+        return;
+      }
+      if (wrote) { if (!res.writableEnded) res.end(); return; }
+      res.writeHead(200, { ...headers, 'content-type': 'application/json' });
+      res.end(completion(o.id, created, o.model, content, reasoning, u, f.finish));
+    },
+  };
+}
+
+async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse, resume?: { text: string; n: number }, session = false, opts: { wire?: Wire; maxTokens?: number; onBilled?: (tokens: number) => void } = {}) {
+  const wire = opts.wire ?? nativeWire(res);
+  // A caller that asked for fewer tokens than the engine would produce. The
+  // stream stops at the ceiling and the job settles for what it produced, so
+  // the cap costs the caller nothing beyond what it received.
+  const cap = opts.maxTokens ?? Infinity;
+  let finish: Finish = 'stop';
+  wire.head();
   const e = await engineP;
-  const hb = setInterval(() => { try { res.write(': hb\n\n'); } catch {} }, 1000);
+  const hb = setInterval(() => wire.hb(), 1000);
   active.set(jobId, newLedger());
   // Read before a token is produced, so the first settlement of the stream
   // already carries a checkpoint the contract will accept.
@@ -503,6 +739,9 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
   console.log(`[job#${jobId}] serving ${estTokens(String(prompt))} tok in via ${e.kind}/${e.model}${resume ? ` (resume from ${resume.n} tok)` : ''}`);
 
   let produced = 0;
+  // Set when the first frame of any kind arrives, so the rate below measures
+  // generation and not the model load in front of it.
+  let genStart = 0;
   // Reasoning frames BILLED, which is one per frame, the same increment the
   // ledger takes. Counted rather than estimated from the text: estTokens is
   // chars/4 and came out 84 tokens under the truth on job#15, so the figure the
@@ -526,6 +765,7 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
       // an engine wedged, which was aborting jobs before they produced a
       // single visible character.
       if (c.th !== undefined) {
+        if (!genStart) genStart = Date.now();
         thought += c.th;
         // Reasoning IS billed. It is compute this node performs and delivers,
         // it is what OpenRouter providers charge for as output tokens, and not
@@ -543,11 +783,12 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
         // be fully reconstructed from the published prefix, since part of it
         // paid for reasoning that was streamed but never checkpointed. The
         // claim narrows to the visible answer; see terms.html.
-        res.write(`data: ${JSON.stringify({ th: c.th })}\n\n`);
+        wire.th(c.th);
         continue;
       }
       const tok = c.t;
-      res.write(`data: ${JSON.stringify({ t: tok })}\n\n`);
+      if (!genStart) genStart = Date.now();
+      wire.tok(tok);
       prog.prefix += tok;
       produced++;
       active.get(jobId)!.delta++;
@@ -561,16 +802,39 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
         // the same hash from the same text at settle time, inside a
         // settlement this node is making anyway: 6,293 gas once the four slots
         // are warm, against a whole transaction for commitCheckpoint.
-        res.write(`data: ${JSON.stringify({ cp: { n: (resume?.n ?? 0) + produced, h: keccak256(stringToHex(prog.prefix)) } })}\n\n`);
+        wire.cp((resume?.n ?? 0) + produced, keccak256(stringToHex(prog.prefix)));
       }
+      // Checked after the checkpoint, so the last token the caller was given is
+      // covered by a published prefix like every other token in the stream.
+      //
+      // Reasoning counts, because reasoning is BILLED. Testing visible tokens
+      // alone let a caller asking for max_tokens 16 be charged for thousands
+      // on a reasoning model, and made usage.completion_tokens come back above
+      // the max_tokens the client sent, which an aggregator reads as a broken
+      // provider.
+      if (produced + reasoned >= cap) { finish = 'length'; break; }
       const t = throttleMs();
       if (t) await sleep(t);
     }
   } catch (err: any) {
     console.log(`[job#${jobId}] engine error:`, err?.message ?? err);
-    if (!res.writableEnded) res.write(`data: ${JSON.stringify({ err: String(err?.message ?? err) })}\n\n`);
+    finish = 'error';
+    if (!res.writableEnded) wire.err(String(err?.message ?? err));
   }
+  // Stopping the generator once the ceiling is reached rather than letting it
+  // run on unread. Done after the loop and outside the try, so the abort cannot
+  // surface as an engine error in a stream that ended normally.
+  if (finish === 'length') ac.abort();
   clearInterval(hb);
+  // Both counts, because both are compute this node performed and both are
+  // billed. The catalog publishes this as tokens per minute.
+  if (genStart) recordThroughput(produced + reasoned, Date.now() - genStart);
+  // Reported here rather than from the wire, because the wire's end() runs
+  // only when the response is still open. A client that hangs up mid-stream,
+  // and a buffered request whose engine failed, both settle on chain and both
+  // skipped the wire, so the daily ceiling never moved: a caller could hold
+  // the node's compute and gas open forever by disconnecting in a loop.
+  if (produced + reasoned > 0) opts.onBilled?.(produced + reasoned);
   if (reasoned > 0) {
     console.log(`[job#${jobId}] ${produced} tok visible + ${reasoned} tok reasoning, both billed (${Math.round((reasoned / (reasoned + produced || 1)) * 100)}% reasoning)`);
   }
@@ -580,9 +844,7 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
     // text. The browser cannot compute the reasoning figure honestly: the
     // frames are the billing unit and their token boundaries are not
     // recoverable from the concatenated string.
-    res.write(`data: ${JSON.stringify({ cp: { n: (resume?.n ?? 0) + produced, h: keccak256(stringToHex(prog.prefix)), final: true }, bill: { visible: produced, reasoning: reasoned } })}\n\n`);
-    res.write('data: [DONE]\n\n');
-    res.end();
+    wire.end({ n: (resume?.n ?? 0) + produced, h: keccak256(stringToHex(prog.prefix)), visible: produced, reasoning: reasoned, finish });
   }
   const j = active.get(jobId);
   if (j && j.delta > 0) {
@@ -670,30 +932,44 @@ function readBody(req: http.IncomingMessage, res: http.ServerResponse): Promise<
   });
 }
 
-function gate(res: http.ServerResponse, prompt: string, resumeText = ''): boolean {
+function gate(res: http.ServerResponse, prompt: string, resumeText = '', fmt?: (message: string, code: string) => string): boolean {
+  // One set of admission conditions, two ways of writing the refusal down.
+  // `fmt` renders the OpenAI error envelope for a /v1 caller, whose client
+  // parses that shape and nothing else. Without it the native bodies go out
+  // exactly as they always have, extra fields included, because the browser
+  // reads those fields.
+  // Backpressure is a 429 on the OpenAI path and a 503 on the native one, and
+  // the difference is not cosmetic. OpenRouter scores provider uptime as total
+  // requests minus 4xx, 429s and 403 geo-blocks, and asks providers to return
+  // early 429s under load rather than queueing. A 503 for "host busy" would be
+  // counted as downtime, so an honest refusal to overload the machine would
+  // read as a node that falls over. Running out of gas stays a 503 on both,
+  // because that one is this node failing rather than shedding load.
+  const busy = fmt ? 429 : 503;
+  const refuse = (status: number, retry: string | null, code: string, message: string, native: unknown) => {
+    res.statusCode = status;
+    if (retry) res.setHeader('retry-after', retry);
+    res.setHeader('content-type', 'application/json');
+    res.end(fmt ? fmt(message, code) : JSON.stringify(native));
+    return false;
+  };
   // Checked before pressure, because this one is not a wait-and-retry: no
   // amount of patience refills the wallet, and accepting the job would mean
   // producing tokens that can never be settled.
   if (brokeForGas()) {
-    res.statusCode = 503;
-    res.setHeader('retry-after', '300');
-    res.end(JSON.stringify({
-      error: 'provider out of gas', balanceWei: String(providerBalance ?? 0n),
-      needWei: String(gasFloorWei()), settles: MIN_GAS_SETTLES,
-    }));
-    return false;
+    return refuse(503, '300', 'provider_out_of_gas',
+      `provider out of gas: balance ${String(providerBalance ?? 0n)} wei against a floor of ${String(gasFloorWei())} wei`,
+      { error: 'provider out of gas', balanceWei: String(providerBalance ?? 0n), needWei: String(gasFloorWei()), settles: MIN_GAS_SETTLES });
   }
   if (pressure() > THRESHOLDS.hard) {
-    res.statusCode = 503;
-    res.setHeader('retry-after', '15');
-    res.end(JSON.stringify({ error: 'host busy', priority: PRIORITY, pressure: Number(pressure().toFixed(2)) }));
-    return false;
+    return refuse(busy, '15', 'host_busy',
+      `host busy: pressure ${pressure().toFixed(2)} with priority ${PRIORITY}`,
+      { error: 'host busy', priority: PRIORITY, pressure: Number(pressure().toFixed(2)) });
   }
   if (inFlight >= MAX_CONCURRENT) {
-    res.statusCode = 503;
-    res.setHeader('retry-after', '10');
-    res.end(JSON.stringify({ error: 'all burners in use', active: inFlight, max: MAX_CONCURRENT }));
-    return false;
+    return refuse(busy, '10', 'all_burners_in_use',
+      `all burners in use: ${inFlight} of ${MAX_CONCURRENT}`,
+      { error: 'all burners in use', active: inFlight, max: MAX_CONCURRENT });
   }
   // Resumed text is replayed into the engine as context, so it consumes the
   // same context window the prompt does. Gating on the prompt alone let a
@@ -701,9 +977,9 @@ function gate(res: http.ServerResponse, prompt: string, resumeText = ''): boolea
   // request was small, which is free compute and a prompt-injection path.
   const n = estTokens(prompt) + estTokens(resumeText);
   if (n > PROMPT_BUDGET) {
-    res.statusCode = 413;
-    res.end(JSON.stringify({ error: 'prompt exceeds context window', estimatedTokens: n, promptBudget: PROMPT_BUDGET, contextTokens: CONTEXT_TOKENS }));
-    return false;
+    return refuse(413, null, 'context_length_exceeded',
+      `prompt is about ${n} tokens against a budget of ${PROMPT_BUDGET} in a ${CONTEXT_TOKENS} token context`,
+      { error: 'prompt exceeds context window', estimatedTokens: n, promptBudget: PROMPT_BUDGET, contextTokens: CONTEXT_TOKENS });
   }
   inFlight++;
   return true;
@@ -764,9 +1040,13 @@ async function register(e: Engine): Promise<void> {
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
+      // Estimated rather than padded. Monad charges the gas LIMIT, not the
+      // usage, so a fixed 250000 against a measured 126392 first-time and
+      // 29665 warm was paying up to 8.4x for this call on every restart.
+      const rargs = [e.model, describeHardware(HW), RATE, MAX_TOKENS_PER_SECOND] as const;
       const h = await w.writeContract({
         address: ADDR, abi: ABI, functionName: 'registerProvider',
-        args: [e.model, describeHardware(HW), RATE, MAX_TOKENS_PER_SECOND], gas: 250000n, maxFeePerGas: 2000000000000n,
+        args: rargs, gas: await gasFor('registerProvider', rargs, 250000n), maxFeePerGas: 2000000000000n,
       });
       await pub.waitForTransactionReceipt({ hash: h });
       console.log(`registered ${e.kind}/${e.model}\n  tx: ${EXPLORER}/tx/${h}`);
@@ -857,10 +1137,139 @@ function measureFirstToken(model: string): void {
   }).catch(() => { /* a node that cannot measure still serves */ });
 }
 
+/**
+ * Open a job this node pays for itself, and return its id.
+ *
+ * Two callers, one shape. The LAN guest page, where the point is that someone
+ * on the wifi needs no wallet, and `/v1/chat/completions`, where the caller
+ * holds an API key instead of a key pair. In both the node fronts the escrow
+ * from its own deposit and settles against itself.
+ *
+ * That narrows what the chain proves for these jobs, and the narrowing is the
+ * part to keep straight: the settlement still records what was served and what
+ * was charged, checkpoint by checkpoint, but it no longer records who paid.
+ * A guest ordering from the browser signs their own openJob and that claim is
+ * unchanged. Nothing here should be described as the buyer paying on chain.
+ *
+ * It has a second consequence, found by running this against a local chain
+ * rather than by reading the contract. `_credit` excludes self-dealt jobs from
+ * `tokensServed` and `lifetimeEarned`, on purpose, because discovery ranks on
+ * `tokensServed` and a provider paying itself in a loop would climb it. Every
+ * job opened here is self-dealt, so traffic through this path earns real money
+ * into `earned` and builds no on-chain reputation at all. That is the contract
+ * behaving correctly. It does mean volume on the OpenAI endpoint is invisible
+ * to discovery, and any claim about tokens served has to say which path they
+ * came through.
+ */
+async function openFronted(prompt: string): Promise<bigint> {
+  const budget = FRONT_BUDGET;
+
+  // The prompt itself must never reach the chain. openJob's tag is a
+  // public event field, so it carries a commitment, not 40 characters of
+  // whatever the guest typed.
+  //
+  // Salted, for the same reason the browser path is salted. Prompts are
+  // low-entropy natural language, so an unsalted keccak of one is
+  // recoverable from the public event with a candidate dictionary. The
+  // salt is 32 random bytes, used once and discarded here, and matches
+  // web/src/App.tsx byte for byte.
+  //
+  // Precise wording matters here, because the term selects which rule
+  // applies. This is a SALTED HASH under EDPB Guidelines 02/2025 v2.0
+  // para 52, not a commitment under the para 53 carve-out: keccak is
+  // computationally hiding, and para 53 requires a perfectly hiding scheme
+  // (Pedersen and similar). Para 52's conditions are met, since the salt is
+  // CSPRNG and destroyed before this function returns, so the tag is not
+  // linkable to the prompt. But para 52 also says the hash is itself
+  // personal data at the moment it is written. Do not claim the carve-out.
+  const salt = toHex(randomBytes(32));
+  const tag = keccak256(stringToHex(salt + '|' + String(prompt)));
+  // The balance check and the opening are one serialized unit, and that is the
+  // whole point rather than a detail. Each opening escrows `budget` out of the
+  // deposit, so two openings that check the balance concurrently both see
+  // enough for one job and the second reverts. Found by firing four requests at
+  // once: three came back with no JobOpened event in the receipt.
+  return serialized(async () => {
+    const dep = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'deposits', args: [me] }) as bigint;
+    if (dep < budget) {
+      // Sized from the balance rather than fixed, and this is the difference
+      // between a float and an outage. `gate()` admits work on gas headroom
+      // alone and is blind to the native value the next step is about to
+      // spend, so a fixed 0.1 MON deposit from a wallet holding 0.2 could take
+      // the node below its own gas floor on ONE request and stop it accepting
+      // work until someone noticed. The money is not lost, it is escrowed, but
+      // the node is off.
+      const spare = (providerBalance ?? 0n) - gasFloorWei() - 200000n * gasPriceWei;
+      const topup = FRONT_TOPUP < spare ? FRONT_TOPUP : spare;
+      if (topup < budget) throw new Error(`provider balance too low to escrow a job: ${formatEther(providerBalance ?? 0n)} MON, and the gas floor is ${formatEther(gasFloorWei())}`);
+      const dh = await w.writeContract({
+        address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: topup,
+        // Measured at 55094 against the fixed 200000 this used to send, so 3.6x.
+        // The value has to reach the estimate or it prices a reverting call.
+        gas: await gasFor('deposit', [], 200000n, topup), maxFeePerGas: 2000000000000n,
+      });
+      const drc = await pub.waitForTransactionReceipt({ hash: dh });
+      if (drc.status !== 'success') throw new Error(`deposit reverted ${EXPLORER}/tx/${dh}`);
+    }
+    const oargs = [me, budget, tag, true] as const;
+    // Measured at 166702 against 250000 here and 300000 in the browser.
+    const h = await w.writeContract({
+      address: ADDR, abi: ABI, functionName: 'openJob', args: oargs,
+      gas: await gasFor('openJob', oargs, 250000n), maxFeePerGas: 2000000000000n,
+    });
+    const rc = await pub.waitForTransactionReceipt({ hash: h });
+    // Checked rather than assumed. A reverted opening still returns a receipt,
+    // and reading the event off it produced "cannot read properties of
+    // undefined" where the real answer was that the deposit was spent.
+    if (rc.status !== 'success') throw new Error(`openJob reverted ${EXPLORER}/tx/${h}`);
+    const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
+    if (!log) throw new Error(`openJob produced no JobOpened event ${EXPLORER}/tx/${h}`);
+    return log.args.jobId as bigint;
+  });
+}
+
+/**
+ * Every model id this node will accept on the OpenAI-compatible path.
+ *
+ * The engine's tag is what the machine actually runs. The market id is the
+ * OpenRouter listing the price was resolved from, which is the string an
+ * aggregator is likelier to send. Both name the same weights on this node.
+ */
+function servedIds(engineModel: string): string[] {
+  const ids = [engineModel];
+  if (pricing?.orId && pricing.orId !== engineModel) ids.push(pricing.orId);
+  return ids;
+}
+
+/**
+ * The key check for /v1.
+ *
+ * Unset keys mean closed. This is the one path where a caller spends the
+ * node's deposit rather than their own, so the failure mode of a missing
+ * variable has to be a node that serves nobody rather than a node that serves
+ * everybody. 501 rather than 401, because the endpoint is absent on this node
+ * rather than the credential wrong.
+ */
+function v1Auth(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+  res.setHeader('content-type', 'application/json');
+  if (!V1_KEYS.length) {
+    res.statusCode = 501;
+    res.end(errorBody('this node does not serve the OpenAI-compatible API: no API_KEYS are set', 'invalid_request_error', 'endpoint_disabled'));
+    return false;
+  }
+  if (!authorize(req.headers.authorization, V1_KEYS)) {
+    res.statusCode = 401;
+    res.setHeader('www-authenticate', 'Bearer');
+    res.end(errorBody('invalid or missing API key', 'authentication_error', 'invalid_api_key'));
+    return false;
+  }
+  return true;
+}
+
 http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'content-type, bypass-tunnel-reminder, ngrok-skip-browser-warning');
+  res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization, bypass-tunnel-reminder, ngrok-skip-browser-warning');
   if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
   if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
     res.setHeader('content-type', 'text/html'); return res.end(GUEST_HTML);
@@ -914,6 +1323,22 @@ http.createServer(async (req, res) => {
       // that only serves single prompts, rather than discovering it from a
       // 404 after opening a job.
       plans: { supported: true, limits: PLAN_LIMITS },
+      // Advertised for the same reason plans are: a client should be able to
+      // tell that this node takes a stock OpenAI request without discovering
+      // it from a 501. `supported` is false on a node whose operator has set
+      // no keys, which is the default.
+      openai: {
+        supported: V1_KEYS.length > 0,
+        path: '/v1/chat/completions',
+        models: servedIds(e.model),
+        maxCompletionTokens: OUTPUT_RESERVE,
+        dailyTokenCap: V1_DAILY_TOKENS,
+        dailyTokensLeft: v1Remaining(),
+        // Said plainly, because it is the part a buyer would otherwise assume
+        // wrongly: a job opened through this endpoint is escrowed by the node,
+        // so the settlement records what was served, not who paid.
+        settlement: 'fronted by the provider',
+      },
       priority: PRIORITY, pressure: Number(pressure().toFixed(2)),
       // null until the startup measurement lands, a few seconds in.
       firstTokenMs, gpuFraction, hardware: describeHardware(HW),
@@ -931,6 +1356,41 @@ http.createServer(async (req, res) => {
     }));
   }
 
+  // The aggregator's view of this node, in OpenRouter's provider schema.
+  //
+  // Unauthenticated on purpose, unlike /v1/models: it is a price list and a
+  // capability list, both of which a router has to be able to read before it
+  // holds a key, and neither of which is a secret. `is_ready` is false until
+  // the operator sets PROVIDER_IS_READY, so publishing this does not by itself
+  // invite traffic.
+  if (req.method === 'GET' && req.url === '/provider/models') {
+    const e = await engineP;
+    res.setHeader('content-type', 'application/json');
+    return res.end(catalogDocument(servedIds(e.model).map(id => ({
+      id,
+      name: `${e.model} on ${describeHardware(HW)}`,
+      // The price this node actually charges, resolved from the same public
+      // band a buyer would check, not a number typed into a listing.
+      usdPerMillion: pricing ? pricing.usdPerMillion : usdPerMillion(RATE, MON_USD),
+      contextTokens: CONTEXT_TOKENS,
+      maxOutputTokens: OUTPUT_RESERVE,
+      // Measured at startup, or null. firstTokenMs is a latency, so it is not
+      // the figure here: this is generation rate, which the node knows only
+      // once it has served something. Left null rather than guessed.
+      tokensPerSecond: measuredTokensPerSecond,
+      maxConcurrent: MAX_CONCURRENT,
+      countryCode: DATACENTER_COUNTRY,
+      region: DATACENTER_REGION,
+      isReady: PROVIDER_IS_READY,
+    }))));
+  }
+
+  if (req.method === 'GET' && (req.url === '/v1/models' || req.url === '/models')) {
+    if (!v1Auth(req, res)) return;
+    const e = await engineP;
+    return res.end(modelsBody(servedIds(e.model), me, Math.floor(Date.now() / 1000)));
+  }
+
   if (req.method !== 'POST') { res.statusCode = 404; return res.end(); }
   const body = await readBody(req, res);
   if (body === null) return;
@@ -943,40 +1403,156 @@ http.createServer(async (req, res) => {
   res.on('finish', release);
 
   try {
+    // The OpenAI-compatible path.
+    //
+    // It exists for one reason: no aggregator lists a provider it cannot call
+    // with a stock client, and distribution rather than mechanism is what this
+    // project lacks. What it costs is stated in `openFronted`: the caller holds
+    // a key, not a wallet, so these jobs settle the node against itself.
+    if (req.url === '/v1/chat/completions' || req.url === '/chat/completions') {
+      if (!v1Auth(req, res)) return;
+      const e = await engineP;
+      // The envelope a client of this endpoint can parse. gate() and the rest
+      // of this branch write refusals through it rather than in the native
+      // shape the browser reads.
+      const fmt = (m: string, c: string) => errorBody(m, 'invalid_request_error', c);
+      const room = v1Remaining();
+      if (room <= 0) {
+        res.statusCode = 429;
+        res.setHeader('retry-after', '3600');
+        res.setHeader('content-type', 'application/json');
+        return res.end(errorBody(`this node has billed its daily ceiling of ${V1_DAILY_TOKENS} tokens on this endpoint`, 'rate_limit_error', 'daily_token_cap'));
+      }
+      // The ceiling is the smaller of what the context reserves for output and
+      // what is left of the day, so a caller is never quoted a limit the node
+      // will not honour.
+      const parsed = parseChat(body, { maxTokensCeiling: Math.min(OUTPUT_RESERVE, room) });
+      if (!parsed.ok) {
+        res.statusCode = parsed.rej.status;
+        res.setHeader('content-type', 'application/json');
+        return res.end(parsed.rej.body);
+      }
+      const cr = parsed.req;
+      // A node serves one model. Answering a request for a different one with
+      // this model's output would be a silent substitution, so it is a 404
+      // naming what is actually served.
+      const ids = servedIds(e.model);
+      if (cr.model && !ids.includes(cr.model)) {
+        res.statusCode = 404;
+        res.setHeader('content-type', 'application/json');
+        return res.end(errorBody(`this node serves ${ids.join(' and ')}, not ${cr.model}`, 'invalid_request_error', 'model_not_found', 'model'));
+      }
+      if (!gate(res, cr.prompt, '', fmt)) return;
+      admitted = true;
+      // Opening the job is two transactions and can fail on its own: an RPC
+      // that is down, a deposit that will not land. Caught here so the caller
+      // gets the envelope its client parses rather than the plain string the
+      // outer handler ends with.
+      let jobId: bigint;
+      try {
+        jobId = await openFronted(cr.prompt);
+      } catch (err: any) {
+        res.statusCode = 503;
+        res.setHeader('content-type', 'application/json');
+        return res.end(errorBody(`could not open a job on chain: ${String(err?.shortMessage ?? err?.message ?? err)}`, 'server_error', 'chain_unavailable'));
+      }
+      return serveJob(jobId, cr.prompt, res, undefined, false, {
+        // The daily ceiling only means anything if every path that bills
+        // advances it, including the ones that never reach a clean end.
+        onBilled: tokens => { v1Spent += tokens; },
+        // The completion id carries the job id, so a caller holding a response
+        // can find the settlement that paid for it on chain. It is the only
+        // part of the on-chain rail this wire can expose.
+        wire: openaiWire(res, {
+          id: `chatcmpl-dn${jobId}`,
+          // The model that answered, not the model that was asked for. They
+          // are the same string by the check above, and where a client sent
+          // nothing this says what it got.
+          model: e.model,
+          stream: cr.stream, includeUsage: cr.includeUsage,
+          // Estimated, and charged at zero. The serving instruction is included
+          // because it occupies the context the same way the prompt does.
+          promptTokens: estTokens(cr.prompt) + SYSTEM_TOKENS,
+        }),
+        maxTokens: cr.maxTokens ?? undefined,
+      });
+    }
+
+    // Proof that this machine holds the provider key, for a caller that was
+    // handed this URL by something it does not trust. `?host=` and `?peer=`
+    // both name a machine and then read a provider address out of that
+    // machine's own /health, which is a claim checking itself. A hostile host
+    // can never be PAID, since settlement goes to a registered address on
+    // chain, but it receives the prompt and the partial answer, and that is
+    // the loss this closes.
+    //
+    // The caller chooses the nonce, so nothing here is replayable and this
+    // node keeps no state. It is a signing oracle over one fixed message
+    // shape, which is safe exactly because the shape is fixed: the nonce is
+    // the only caller-controlled field and it must be 64 hex characters, so
+    // no caller can insert a line into the claim.
+    //
+    // Outside the admission gate on purpose. Proving identity must not be
+    // refused because the burners are full, or a busy node looks like an
+    // impostor.
+    if (req.url === '/challenge') {
+      const { nonce } = JSON.parse(body || '{}');
+      res.setHeader('content-type', 'application/json');
+      if (!validNonce(nonce)) {
+        res.statusCode = 400;
+        return res.end(JSON.stringify({ error: 'nonce must be 0x and 64 lowercase hex characters' }));
+      }
+      // This node's OWN configured URL, and nothing derived from the request.
+      //
+      // The relay is the attack: a hostile host at evil.example forwards the
+      // browser's nonce here and returns the signature it gets. Signing the
+      // Host header would sign whatever the relay put in it, which is
+      // evil.example, and hand the attacker precisely the signature they
+      // asked for. Signing PUBLIC_URL instead means a relayed answer names
+      // THIS node, the browser compares it against the origin it dialed, and
+      // the mismatch skips the relay.
+      //
+      // A node with no PUBLIC_URL cannot prove anything to a remote browser
+      // and says so, rather than signing a claim it cannot stand behind. That
+      // is the correct answer for a LAN-only node reached through a link.
+      if (!PUBLIC_URL) {
+        res.statusCode = 409;
+        return res.end(JSON.stringify({
+          error: 'this node has no public URL, so it cannot prove which origin it answers on',
+          fix: 'set PUBLIC_URL, or let the node open a quick tunnel by leaving TUNNEL unset',
+        }));
+      }
+      const url = originOf(PUBLIC_URL);
+      const message = controlMessage({ registry: ADDR, chainId: monadTestnet.id, address: me, url, nonce });
+      const signature = await w.signMessage({ message });
+      return res.end(JSON.stringify({ address: me, registry: ADDR, chainId: monadTestnet.id, url, nonce, message, signature }));
+    }
+
     if (req.url === '/lanjob') {
+      // Checked before anything is parsed, because this endpoint opens a job
+      // the NODE pays for. It was safe for one reason only: nobody outside the
+      // flat could reach port 4173. A tunnel ends that, and it ends it
+      // invisibly, since every tunnelled request arrives from 127.0.0.1.
+      if (LANJOB !== 'open') {
+        const r = reach(req.socket.remoteAddress, req.headers);
+        if (LANJOB === 'off' || !r.local) {
+          console.log(`[lanjob] refused: ${LANJOB === 'off' ? 'disabled by LANJOB=off' : r.why}`);
+          res.statusCode = 403;
+          res.setHeader('content-type', 'application/json');
+          return res.end(JSON.stringify({
+            error: 'the free LAN path serves this network only',
+            reason: LANJOB === 'off' ? 'disabled by the operator' : r.why,
+            // Said plainly, because the person reading it is either a guest on
+            // the wrong network or an operator who has just put a tunnel in
+            // front of their node and wants to know why ordering stopped.
+            useInstead: '/v1/chat/completions with an API key, or order from the site with your own wallet',
+          }));
+        }
+      }
       const { prompt } = JSON.parse(body || '{}');
       if (!gate(res, String(prompt ?? ''))) return;
       admitted = true;
-      const budget = parseEther('0.01');
-      const dep = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'deposits', args: [me] }) as bigint;
-      if (dep < budget) {
-        const dh = await w.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: budget, gas: 200000n, maxFeePerGas: 2000000000000n });
-        await pub.waitForTransactionReceipt({ hash: dh });
-      }
-      // The prompt itself must never reach the chain. openJob's tag is a
-      // public event field, so it carries a commitment, not 40 characters of
-      // whatever the guest typed.
-      //
-      // Salted, for the same reason the browser path is salted. Prompts are
-      // low-entropy natural language, so an unsalted keccak of one is
-      // recoverable from the public event with a candidate dictionary. The
-      // salt is 32 random bytes, used once and discarded here, and matches
-      // web/src/App.tsx byte for byte.
-      //
-      // Precise wording matters here, because the term selects which rule
-      // applies. This is a SALTED HASH under EDPB Guidelines 02/2025 v2.0
-      // para 52, not a commitment under the para 53 carve-out: keccak is
-      // computationally hiding, and para 53 requires a perfectly hiding scheme
-      // (Pedersen and similar). Para 52's conditions are met, since the salt is
-      // CSPRNG and destroyed before this function returns, so the tag is not
-      // linkable to the prompt. But para 52 also says the hash is itself
-      // personal data at the moment it is written. Do not claim the carve-out.
-      const salt = toHex(randomBytes(32));
-      const tag = keccak256(stringToHex(salt + '|' + String(prompt)));
-      const h = await w.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [me, budget, tag, true], gas: 250000n, maxFeePerGas: 2000000000000n });
-      const rc = await pub.waitForTransactionReceipt({ hash: h });
-      const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
-      return serveJob(log.args.jobId as bigint, prompt, res);
+      return serveJob(await openFronted(String(prompt)), String(prompt), res);
     }
 
     if (req.url === '/job') {
@@ -1225,6 +1801,19 @@ http.createServer(async (req, res) => {
       : `warm failed: ollama ${r.status}`))
       .catch(err => console.log('warm failed (non-fatal):', err?.message ?? err));
     measureFirstToken(e.model);
+  }
+  // A public URL before the first announce, for the operator who installed
+  // cloudflared and nothing else. Awaited rather than fired and forgotten: the
+  // announce below has to carry the URL, and a signed announcement naming an
+  // empty one is worse than a late one.
+  if (!PUBLIC_URL && TUNNEL !== 'off') {
+    const t = await startQuickTunnel(PORT);
+    if (t) {
+      PUBLIC_URL = t.url;
+      console.log(`public url ${PUBLIC_URL} (quick tunnel, new hostname on every restart)`);
+      console.log('  for a hostname that survives a restart, see ops/cloudflare-migration.md');
+      if (!DISCOVERY) console.log('  DISCOVERY_URL is unset, so nothing will be told about it');
+    }
   }
   announce();
   // Unref'd: a re-announce timer should never be the reason this process stays

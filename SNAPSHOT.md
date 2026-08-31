@@ -1,3 +1,558 @@
+# Session snapshot, 2026-08-31
+
+> Prepended to the 2026-08-29 audit below, which is unchanged and is superseded
+> in its headline. Everything here was read off the running machine, live DNS
+> and the deployed bundle this morning.
+
+## 0. A reboot shipped the tree, and nothing recorded it
+
+The machine rebooted at 21:33:28 on 2026-08-30 and all four user units came
+back. `dinnernode.service` runs `npm run host`, `dinnernode2.service` runs
+`npx tsx src/host.ts`, and both read the working tree rather than a build
+artifact. So the 2026-08-28 late session's work has been live on the daemons
+since that reboot. The 2026-08-29 headline, "the tree is finished and none of
+it is live", stopped being true on the node side that evening.
+
+Probed this morning:
+
+```
+POST /lanjob   (via ngrok)  -> 403  "the free LAN path serves this network only"
+POST /challenge             -> 400  on a malformed nonce, so the route exists
+GET  /provider/models       -> 200
+GET  /announce/nonce        -> 400, so the route exists
+GET  /v1/models             -> 501  endpoint_disabled, no API_KEYS set
+```
+
+**Section 0a of the 2026-08-29 audit is closed by accident.** The open faucet
+was shut by a reboot rather than by a decision, and it was open for about two
+days after the fix was written. The record is kept in `SECURITY_REVIEW.md`
+section 0.1.
+
+## 1. What this session did
+
+- Committed the tree. It had been carrying 15 modified and 17 untracked files
+  since 2026-08-28, and since the reboot it was also what production ran, which
+  made the running node the only copy of a body of security work.
+- Deployed `web/`. See section 2.
+- Fixed the Cloudflare email-obfuscation problem in the published legal notices.
+  See section 3.
+
+## 2. The deploy ordering hazard inverted
+
+The 2026-08-29 audit warned that deploying `web/` alone would take every order
+down, because the new client demands a signed challenge and the live nodes
+answered `/challenge` with 404. The nodes answer it now, so that ordering
+constraint is gone and the web deploy is the unblocking step rather than the
+dangerous one.
+
+Before the deploy, the live bundle was `assets/index-CN5UhUbj.js`, with no
+`challenge`, no `proveControl` and no `dn_keep_history`, and the published
+`terms.html` still carried the old 2.9 with no 2.7a.
+
+## 3. The GDPR contact no longer depends on JavaScript
+
+The zone is proxied and Cloudflare's Email Address Obfuscation had rewritten
+every contact address in the published `terms.html` into
+`/cdn-cgi/l/email-protection` spans, four of them, so the Article 13 controller
+contact in a legal notice could only be read by a browser running a script.
+
+Fixed at the source rather than in the dashboard: each address is wrapped in
+Cloudflare's documented `<!--email_off-->` opt-out markers, four places in
+`web/public/terms.html` and three in `web/public/acceptable-use.html`. This
+survives a zone setting being changed back by someone else and needs no
+Cloudflare access to reproduce. The proxy question in `TODO.md` is now a
+performance and caching question only; the legal half of it is settled.
+
+## 4. Unchanged, and still the blockers
+
+- **The named tunnels are not installed.** No `cloudflared` process,
+  `ops/dinnernode-tunnel-node1.service` and `ops/dinnernode-tunnel-discovery.service`
+  are still only in the repo, and `node1.dinnernode.xyz` and
+  `discovery.dinnernode.xyz` resolve to nothing.
+- **Node 2 announces `http://192.168.5.98:4174`**, confirmed in the live
+  discovery listing, so there is still no failover target a guest's browser can
+  reach. Browser failover, the migration demo and the OpenRouter application
+  are all blocked on this one item.
+- The tree is green: root `tsc --noEmit` clean with 192 tests in 12 files,
+  `web/` clean with 130 tests in 6 files.
+
+# Session snapshot, 2026-08-29 (morning)
+
+> A state audit, not a work session. Nothing below was built today. Every claim
+> here was read off the running machine, live DNS or the deployed bundle this
+> morning. The sections that follow it are unchanged.
+
+## 0. Headline: the tree is finished and none of it is live
+
+The late session of 2026-08-28 ended with its work uncommitted, and that is
+still where it sits. `aa5bf59` at 16:50 on 2026-08-28 is the last commit; the
+tree carries 15 modified and 17 untracked files, +1682 lines against it. Then
+the audit found the part the late snapshot could not have known, because it was
+true only after that session stopped writing:
+
+**Production runs the build from before all of it.** The provider host, the
+second node and the discovery listener all started at 18:17:55 on 2026-08-28.
+`src/host.ts` was last written at 22:56, `src/attest.ts` at 22:54, `tunnel.ts`
+at 22:14. Nothing has restarted since. Probed on the live daemons:
+
+```
+POST /challenge          -> 404
+GET  /v1/models          -> 404
+GET  /provider/models    -> 404
+GET  /announce/nonce     -> 404   (discovery, port 4175)
+```
+
+So the announce hijack the late session closed is open in production, the
+browser cannot prove who it orders from, the OpenAI endpoint does not exist on
+the live node, and the provider catalog an aggregator would read is absent.
+
+**And one of those gaps is not waiting for an attacker to find a tunnel. It is
+already published through one.** See section 0a.
+
+## 0a. `/lanjob` is an open faucet on the public internet, right now
+
+The late session wrote `src/reach.ts` because a tunnel would make `/lanjob`
+reachable from outside the flat, and treated that as a hole about to open. It
+is already open. The running build has no peer check at all: `git show
+HEAD:src/host.ts` contains no `remoteAddress`, no private-range test, no
+`LANJOB` switch and no forwarding-header test, and `dinnernode-tunnel.service`
+has been publishing port 4173 to the internet through ngrok the whole time.
+
+Verified without causing a spend, using a prompt long enough that `gate()`
+refuses it before anything is opened:
+
+```
+POST https://litter-unfunded-improvise.ngrok-free.dev/lanjob
+-> 413 {"error":"prompt exceeds context window","estimatedTokens":75000,
+        "promptBudget":30634,"contextTokens":32768}
+```
+
+The route answers from the public internet. A well-formed prompt would have
+been served: 0.01 MON escrowed per call out of the node's own deposit, plus
+opening, settle and close gas, with no key, no wallet and no per-caller limit.
+The tunnel root serves the LAN guest page as well, so the endpoint is found by
+reading the HTML rather than by guessing it. Node 1 holds 26.98 MON.
+
+Nobody has found it: the journals show inbound requests from external addresses
+through the night and no `/lanjob` traffic, and node 1's on-chain totals are
+unchanged. That is luck rather than a control.
+
+Restarting the node onto the current tree closes it and closes section 0's
+other live gap in the same motion, which is why the deploy is now urgent rather
+than merely overdue. Stopping `dinnernode-tunnel.service` is the alternative
+and it takes node 1 off the internet entirely.
+
+**The deployed site is the same build.** `assets/index-CN5UhUbj.js` on
+`www.dinnernode.xyz` contains no `dn_keep_history`, no `challenge` and no
+`proveControl`. The published `terms.html` still carries the old 2.9, "we do
+not check who operates" the machine a link names, and has no 2.7a.
+
+That consistency is the one piece of good news. The corrected notice and the
+code that makes it true are both undeployed, so nothing published is false at
+this moment. The false-clause failure the last two sessions kept hitting is not
+live.
+
+## 1. A deployment ordering hazard that is new, and would break every order
+
+The late snapshot said node and discovery must deploy together. There is a
+third leg. Deploying `web/` on its own takes every order down: the new client
+demands a signed challenge before it sends a prompt, the live nodes answer that
+route 404, `proveControl` fails, and the client skips a failing host exactly as
+it skips a dead one. A guest would see no available kitchen at all.
+
+The order that works is nodes and discovery first, both together because the
+signed announce is breaking in both directions, and `web/` only once a live
+node answers `/challenge`. Between those two steps the published terms are
+correct and the client is the old one, which is the safe way round.
+
+## 2. The nameservers moved, the hostnames never arrived
+
+The DNS work the late session was waiting on is half done.
+
+- `dinnernode.xyz` is delegated to `desi.ns.cloudflare.com` and
+  `piers.ns.cloudflare.com`. The zone move in `ops/cloudflare-migration.md`
+  went through.
+- `node1.dinnernode.xyz` and `discovery.dinnernode.xyz` **do not resolve**.
+  No record of any kind.
+- The named-tunnel units are in `ops/` and are not installed. The only tunnel
+  unit under `~/.config/systemd/user` is the old `dinnernode-tunnel.service`,
+  which runs ngrok, and no `cloudflared` process is running.
+- So node1's public URL is still `https://litter-unfunded-improvise.ngrok-free.dev`,
+  and that is what discovery hands to a browser.
+
+Every claim in the late snapshot phrased as `https://node1.dinnernode.xyz` was
+read off an ad-hoc run against a hostname that has never existed in DNS.
+Steps 5 onward of the migration doc are the open work, and they are what the
+OpenRouter application is actually blocked on.
+
+## 3. The zone is proxied, which the migration doc told us not to do
+
+Section 2 of `ops/cloudflare-migration.md` requires every record to be DNS only.
+The apex and `www` both resolve to Cloudflare anycast addresses
+(`104.21.14.252`, `172.67.160.215`), and a response carries `cf-ray` and
+`server: cloudflare` in front of `x-vercel-cache: HIT`. The orange cloud is on.
+
+It has already changed what we publish. Cloudflare's email obfuscation has
+rewritten the contact addresses in the live `terms.html` into
+`/cdn-cgi/l/email-protection` spans that need JavaScript to read. The GDPR
+Article 13 controller contact in a legal notice is now conditional on a script
+running. That is the concrete cost; the second cache layer in front of Vercel
+is the one the doc warned about and has not bitten yet.
+
+Both `google-site-verification` TXT records survived the import, and
+`api.dinnernode.xyz` still resolves.
+
+## 4. What is healthy
+
+- The tree is green. Root: `tsc --noEmit` clean, **192 tests** in 12 files.
+  `web/`: `tsc --noEmit` clean, **130 tests** in 6 files. The late snapshot's
+  190 and 126 were counted before its last additions.
+- Both nodes and discovery have been up since 18:17 on 2026-08-28 with no
+  error, failure or revert in any of the three journals.
+- Discovery on 4175 lists both providers active. Node1 lifetime: 314,074
+  tokens, 17 jobs, 0.5723 MON earned. Node2: zero of everything.
+- Node1 gas balance 26.98 MON.
+- ngrok has kept serving through the night, including inbound from several
+  external addresses.
+
+## 5. Unchanged, and worth restating because nothing today moved it
+
+**Browser failover is still impossible.** Node2 announces
+`http://192.168.5.98:4174`, a LAN address a guest's browser cannot reach. This
+is the same block previous snapshots recorded, for the same reason, and the
+named tunnels are its fix as much as they are OpenRouter's.
+
+**The v1 escrow figures were not re-verified today.** 23 open jobs holding
+0.5044 MON, of which 0.019248 MON is recoverable, still stands as last measured
+on 2026-08-28. The burner `0x592244b5…` hunt is untouched.
+
+## 6. Next session, start here
+
+1. Close section 0a. Restart node 1 onto the current tree, or stop the ngrok
+   unit. Everything else on this list can wait a day and this cannot.
+2. Commit the tree. It typechecks, it passes 322 tests, and leaving a body of
+   security work uncommitted overnight is its own risk.
+3. Restart the nodes and discovery together, then re-probe the four routes in
+   section 0 and confirm they answer.
+4. Deploy `web/` only after step 3 answers `/challenge`.
+5. Install the named tunnels from `ops/`, create the two hostnames, and set
+   `PUBLIC_URL` on both nodes so node2 stops announcing a LAN address.
+6. Decide whether to un-proxy the zone or to keep the proxy and fix the terms
+   contact by hand.
+
+# Session snapshot, 2026-08-28 (late)
+
+> Follows the night snapshot below, which is unchanged.
+
+## 0. Four project agents run against the night's work, and what they caught
+
+Run at the end, against the uncommitted tree: chain, frontend, legal and the
+privacy auditor. **Three of them found defects in work this session had already
+called verified.** All of the following are fixed, and the fixes are in the
+sections below.
+
+**The identity proof this session shipped was defeatable by a relay, and two
+reviewers found it independently.** `controlMessage` named registry, chain,
+provider and nonce, and NOT the URL, while `POST /challenge` signs any
+well-formed nonce for anyone. So a hostile host at `evil.example` took the
+browser's nonce, forwarded it to a real provider's `/challenge`, and returned
+that provider's genuine signature. It verified, the registry said active, and
+the prompt went to the relay. `announceMessage` had bound the URL from the
+start; the control claim dropped it, and the comment above it claimed the
+binding for both.
+
+Worse than the bug: the terms and the in-app banner had already been rewritten
+to promise the protection. This session corrected a false clause in the morning
+and shipped a new one by the evening, in the more dangerous direction.
+
+Fixed by binding the origin into the claim and signing **`PUBLIC_URL`, never the
+request's Host header**, which the relay controls. A node with no public URL now
+answers 409 rather than signing something it cannot stand behind. Verified live:
+a challenge sent with `Host: evil.example` comes back signed
+`url: https://node1.dinnernode.xyz`.
+
+**Plan mode never checked the host at all.** `PlanPanel` takes the provider
+address straight from `/health` and sends it the goal and every step's output,
+so the terms sentence "before anything is sent" was false on that path even
+after the chat path was fixed. The proof now runs where `hostProvider` is set,
+and the panel does not render without it.
+
+**An engram replacement could expand a prompt 32,000-fold.** The 64 character
+cap bounds the literal, not the expansion: `$'` in a replacement STRING
+re-inserts everything after the match, 32 of them fit inside the cap, and a
+2,000 character prompt became 63,968,000 before the hash and before the wire,
+against an escrow sized from the pre-sanitization estimate. A longer prompt
+threw `RangeError` and surfaced to the guest as "the kitchen is still warming
+up". Reachable through the shipped engram upload path with no XSS. Fixed with
+the callback form of `replace`, which does not interpret `$`, plus a growth
+guard that drops any rule that more than doubles the text.
+
+**The daily token ceiling did not count two of the paths that bill.** `v1Spent`
+was incremented in the wire's `end()`, which runs only while the response is
+open, so a client that disconnected mid-stream, or a buffered request whose
+engine failed, settled on chain and never moved the counter. A caller could
+hold the node's compute and gas open indefinitely by hanging up in a loop.
+Counting moved into `serveJob`, where it sees every exit path.
+
+**`max_tokens` counted visible tokens only**, while reasoning is billed, so a
+caller asking for 16 could be charged thousands and `usage.completion_tokens`
+came back above the `max_tokens` the client sent, which an aggregator reads as
+a broken provider.
+
+**A fixed 0.1 MON deposit could take the node below its own gas floor** in one
+request, because `gate()` measures gas headroom and is blind to the native
+value the next step spends. The topup is sized from the balance now and refuses
+rather than stranding the node.
+
+Smaller: `close-v1-jobs.mjs --send` would have spent gas closing jobs that
+refund a wallet we do not hold, and now needs `--all` to do that; `CHAIN_ID=`
+empty in `.env` parsed to chain id 0 through `??`; the history switch could be
+overwritten by a closure from an order still streaming, and pre-existing
+`dn_sessions` from the old build was orphaned rather than deleted; the 64
+character replacement test pinned nothing, and the ReDoS test ordering meant a
+regression would hang the run before reporting.
+
+**What the reviews cleared:** the native billing, checkpoint and settle path is
+byte-identical to before the `Wire` refactor, `serialized()` has no lost
+rejections and cannot deadlock, the `close-v1-jobs` ABI matches v1, the ePrivacy
+consent reasoning for the history switch is sound, `zdr: false` is the right
+call, and no pre-sanitization text reaches storage.
+
+## 1. The announce hijack is closed, and the browser checks who it orders from
+
+The signed-nonce challenge, which `TODO.md` P2 has carried as open and which
+both the legal and the security reviews named. It was the precondition for
+making discovery publicly reachable, so it lands before the tunnels do.
+
+**What was wrong.** `POST /announce` verified that an announced address is a
+registered provider and never that the announcer runs it. Anyone could point a
+live provider's slot at their own machine and be handed guests' prompts. They
+could not be paid, because settlement goes to the registered address on chain,
+but they read the prompt and the partial answer. The same gap is reachable from
+the browser through `?host=` and `?peer=`, where a link names a machine and the
+client reads the provider address out of that machine's own `/health`, which is
+a claim checking itself.
+
+**The fix, in one shape for both.** A nonce the claimant did not choose, signed
+by the key the registry pays. `src/attest.ts` holds the message format and the
+nonce store, imports nothing, and is tested like `billing.ts`.
+
+- **Discovery issues, the node signs.** `GET /announce/nonce?address=` hands out
+  a single-use nonce with a 60 second life. `POST /announce` now requires a URL,
+  the nonce and a signature, and rebuilds the claim itself before recovering
+  the signer. The nonce is consumed BEFORE the signature is checked, so a wrong
+  signature burns it rather than letting a caller grind attempts.
+- **The claim names everything a verifier depends on**: purpose, registry,
+  chain, provider, URL, model, nonce. So a signature cannot be replayed as a
+  control proof, against another deployment or chain, or lifted onto a
+  different host.
+- **The nonce must be 64 hex characters**, and that is load bearing rather than
+  tidy. The format is line-based and the nonce is the one caller-supplied
+  field, so a newline in it would sign a claim the signer never saw.
+- **`POST /challenge` on the node** signs a nonce the caller chose, outside the
+  admission gate, because a busy node must not look like an impostor.
+- **The browser proves the host before the prompt goes anywhere.**
+  `web/src/lib/attest.ts` challenges the target, verifies the signature
+  recovers to the address in `/health`, and then checks the registry still
+  calls it active. A host that fails either is skipped like a dead node. The
+  message format is duplicated there, as the chain and the ABI already are, and
+  both copies are pinned by tests asserting the same literal.
+
+**Attacked, not just tested.** Against a local anvil with discovery and a node:
+a hijack signed by another key is refused 403, an unsigned announce in the old
+shape is refused, a valid signature replayed a second time is refused, and a
+valid signature moved onto a different URL is refused. 164 root tests and 119
+web tests pass, and the web bundle builds.
+
+**Deploy both together.** This is a breaking change between node and discovery:
+an old node announcing to a new discovery is rejected, and a new node finds no
+nonce endpoint on an old discovery. Neither loses money, both lose reachability
+until the other side restarts.
+
+## 2. Overnight batch, while the nameservers propagate
+
+Five items, none of which needed the operator. Every one verified against a
+local anvil or the real testnet rather than reasoned about.
+
+**`/lanjob` was about to become a faucet, and the tunnel is what would have
+done it.** That endpoint opens a job the NODE pays for, which is the point of
+the LAN guest page and was safe for exactly one reason: nobody outside the flat
+could reach port 4173. A tunnel ends that invisibly, because every tunnelled
+request arrives at the node from 127.0.0.1, so an address check alone says
+"local" for the entire internet. `src/reach.ts` requires both halves: a private
+or loopback peer AND no forwarding header (`x-forwarded-for`, `cf-connecting-ip`,
+`cf-ray`, `forwarded` and five more). Verified by replaying the exact shapes
+cloudflared and ngrok send. `LANJOB=off|lan|open`, defaulting to `lan`.
+
+**A node with no public URL now gets one.** `src/tunnel.ts` starts a cloudflared
+quick tunnel at boot when `PUBLIC_URL` is unset, parses the hostname out of the
+banner and announces it. That is the answer to how a stranger's node joins:
+they cannot have a `*.dinnernode.xyz` name and should not, and a quick tunnel
+is anonymous, disposable and needs no account. Missing binary, silent process
+and slow start all resolve to "serving the LAN only" rather than to a crash.
+Tested with a fake cloudflared and with none at all.
+
+**The provider catalog an aggregator reads.** `GET /provider/models` in
+OpenRouter's provider schema 2.4, built in `src/provider-catalog.ts` from
+numbers the project can defend: the price from `pricing.ts`, the context and
+output ceiling from configuration, and generation rate measured from streams
+the node actually served, timed from the first token so model load is excluded.
+Three deliberate refusals to overclaim. Input is priced at an explicit zero
+rather than omitted, because free input is the strongest claim here and a
+router that sees no field assumes a default. Capacity is absent until the node
+has measured itself, since an absent capacity means undeclared and a guess
+means routed work it cannot keep up with. And `compliance.zdr` is false: node
+operators are asked not to retain prompts, an ask is not an attestation, and
+zero data retention would be the most checkable false claim this project could
+make. `is_ready` is false until `PROVIDER_IS_READY=1`.
+
+**The stranded v1 escrow is enumerated, and the roadmap was wrong about it.**
+`scripts/close-v1-jobs.mjs`, read-only unless `--send`. 23 open jobs holding
+0.5044 MON. Four are closeable with keys we hold. **Only 0.019248 MON comes
+back to us**, because v1 `closeJob` credits the unspent escrow to the
+REQUESTER, not to the caller. `TODO.md` said job#63's 0.30 MON was worth a look
+because the house key is its provider; holding the provider key lets you close
+it and hands the money to `0x592244b5…`, a burner. That address is the
+requester on nine open jobs and is now the only thing worth hunting: if its
+browser profile still exists under `dn_pk`, most of the 0.5 MON is recoverable
+in one pass. If not, all of it is written off.
+
+**The four engram test gaps are closed.** The ReDoS case no longer asserts on
+elapsed time, which could not fail anyway since a synchronous ReDoS hangs the
+run past `testTimeout`; it asserts that the evil target is matched literally,
+which is the fix itself. Plus the 128 character target cap, the 64 character
+replacement cap, the 16 rule cap, TTL expiry removal, and the no-binding path
+with five engrams rather than one, since one passes even against the
+index-walking bug this file exists for.
+
+190 root tests, 126 web tests.
+
+## 3. Three backend items closed earlier the same evening
+
+None of these needed DNS, which is why they were the ones to take.
+
+**Gas: every provider transaction now prices itself.** `deposit`, `openJob` and
+`registerProvider` were sending fixed limits, and Monad charges the limit
+rather than the usage. All three go through `gasFor` now. It also takes a
+`value`, and without it a payable estimate prices a reverting call and quietly
+returns the padded fallback, which is exactly what `deposit` was doing. Read
+off every transaction of a local anvil run: each now sits at 1.20x of what it
+used, and `deposit` fell from a fixed 200000 to 54312.
+
+**The model is pinned.** `MODEL` set to something not installed used to fall
+back to whatever was first in the local ollama list. That is wrong three ways
+at once: the name goes on chain in the provider record, the rate is resolved
+from that model's market band, and a node could serve a restrictively licensed
+model by accident. It now refuses to start and prints what is installed.
+`MODEL` unset still takes the first tag and says which one it registered.
+
+**`setup.ts` stopped claiming something that was never true.** It reported
+"cloudflared installed, a tunnel will start with the node" and nothing in this
+codebase has ever started one. It now prints the quick-tunnel command and
+points at `ops/cloudflare-migration.md` for a hostname that survives a restart.
+
+## 4. A published clause the same night's work made false, and history is opt-in
+
+**`terms.html` 2.9 said we do not verify a machine named in a link.** As of the
+signed-nonce work in section 1, we do. The clause was true when it was written
+this morning and false by the evening, which is the same failure the legal
+review caught on 2026-08-28: a code change that falsifies a published notice.
+Found by grepping the documents against what shipped rather than by a review.
+
+Rewritten, and deliberately not upgraded into a bigger claim than the code
+supports. What the challenge proves is that the machine holds the provider key
+the registry pays. It does not say who that person is, and a provider can put
+itself in a link, so the guest is still told which machines a link named. The
+in-app banner and the `App.tsx` comment carried the same false line and were
+corrected with it.
+
+**Session history is opt-in and off by default.** `dn_sessions` wrote every
+sanitized prompt and full reply to localStorage, permanently, with a "clear
+history" control as the only defence. Deletion after the fact is not consent
+under ePrivacy Article 5(3). There is now a switch in the receipt, off until
+the guest turns it on, and turning it off deletes what was kept. The receipt
+still lists this visit's orders from React state, so declining costs the guest
+nothing until the tab closes. `terms.html` 2.7, its storage table and the new
+`dn_keep_history` key were updated in the same pass.
+
+**One item was already done.** `TODO.md` asked to correct the 158 tok/s
+cold-start comment and the watchdog budget derived from it. Both were fixed in
+the session that measured them: `App.tsx` divides by 300 now. Marked closed as
+stale rather than worked twice.
+
+## 5. The node speaks OpenAI now
+
+Asked what this project lacks against Darkbloom, the answer that survived
+inspection was distribution: Eigen Labs' network is a paid provider on
+OpenRouter and reached 4.5B tokens in four months, and no aggregator lists a
+provider it cannot call with a stock client. So the endpoint was built.
+
+**What exists.** `POST /v1/chat/completions`, streaming and buffered, and
+`GET /v1/models`. Bearer keys from `API_KEYS`, compared as digests so neither
+the length nor a matching prefix leaks. Sampling fields it does not implement
+are ignored rather than refused, because a client sending `temperature` should
+get an answer; the fields that would change what the answer means fail loudly
+instead, naming themselves: tools, `n` > 1, tool messages, image parts. Every
+refusal is in the OpenAI error envelope, admission checks included, so `gate`
+now renders either shape from one set of conditions.
+
+**One billing path, two wire formats.** `serveJob` owned the frames as well as
+the ledger, and a second caller would have meant a second copy of the money
+path. The format moved behind a `Wire` interface instead. The native frames are
+byte for byte what they were; `src/openai-api.ts` holds the OpenAI shapes and
+imports nothing from this project, so it is unit tested like `billing.ts`.
+21 tests, 154 in the suite, all passing.
+
+**Verified against a chain rather than a mock.** `RPC_URL` and `CHAIN_ID` now
+override the transport, so the whole daemon runs end to end against a local
+anvil with a deployed DinnerNodeV2. The settle and close transactions in that
+run were real, against a real registry. Checked: 401 on a bad key, 501 when the
+operator has set no keys, 404 naming the model actually served, 429 on the
+daily ceiling, `finish_reason: length` honoured to the exact token, usage in
+its own chunk, `[DONE]`, and the same request buffered. `/lanjob` still emits
+the native frames unchanged.
+
+**Two defects the end-to-end run exposed, both in the job-opening path and
+both older than this session.** `/lanjob` shared them and never hit them,
+because a guest on the wifi types one prompt at a time. An aggregator does not.
+
+1. **Every write from the provider key was serialized except the one that
+   opens a job.** The second request of the first run collided with the
+   previous job's `closeJob` on the nonce and came back a 503. `serialized()`
+   now puts openings in the same queue as settles and closes.
+2. **The deposit check and the opening were not atomic.** Each opening escrows
+   `FRONT_BUDGET` out of the deposit, so four concurrent requests all saw
+   enough for one job and three reverted, reported as "cannot read properties
+   of undefined" because the code read the event off a reverted receipt. Both
+   halves are inside one serialized unit now, the float is topped up several
+   jobs at a time, and receipt status is checked before the event is read.
+   Four concurrent requests, four jobs, four settles, four closes.
+
+**Two things it does not do, both written into the code.**
+
+1. **A caller holds a key, not a wallet.** These jobs are fronted from the
+   node's own deposit, so the settlement records what was served and what was
+   charged, not who paid. A guest ordering in the browser still signs their own
+   `openJob`, and that claim is unchanged. Nothing about this path should be
+   described as the buyer paying on chain.
+2. **Reputation does not accrue on it, and the contract is right.** `_credit`
+   excludes self-dealt jobs from `tokensServed` and `lifetimeEarned` because
+   discovery ranks on `tokensServed`. Every fronted job is self-dealt, so
+   volume here is invisible on chain. Found by running the thing, not by
+   reading the contract.
+
+The endpoint is off unless the operator sets `API_KEYS`. It is the one path
+where a caller spends the node's deposit rather than their own, so an unset
+variable has to mean closed. `/health` advertises it under `openai`, including
+`settlement: "fronted by the provider"`.
+
+Next in `TODO.md` under "Now", item 9: apply to OpenRouter, and decide what the
+endpoint bills, since today it gives tokens away at the node's own gas cost.
+
+Also done in the same pass: `/v1` sheds load with 429 rather than 503.
+OpenRouter scores uptime as requests minus 4xx, 429s and geo-blocks, so an
+honest "host busy" in the old shape would have been counted as downtime.
+
 # Session snapshot, 2026-08-28 (night)
 
 > Newest first. Earlier snapshots follow below, unchanged.

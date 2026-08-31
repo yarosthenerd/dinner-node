@@ -2,10 +2,18 @@ import 'dotenv/config';
 import { createPublicClient, createWalletClient, defineChain, http, parseAbi, parseEventLogs } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
+// RPC_URL and CHAIN_ID exist so the whole daemon can be run end to end against
+// a local anvil, with a deployed registry and real transactions, without
+// spending anything or touching the operator's testnet provider record. Unset,
+// which is the normal case, this is Monad testnet exactly as before.
 export const monadTestnet = defineChain({
-  id: 10143, name: 'Monad Testnet',
+  // `||` rather than `??`: a bare `CHAIN_ID=` line in .env is an empty string,
+  // which `??` passes through to Number('') === 0, and every transaction from
+  // this process would then be signed for chain id 0. Same for an empty
+  // RPC_URL, which resolves to no endpoint at all and fails on every read.
+  id: Number(process.env.CHAIN_ID || 10143), name: 'Monad Testnet',
   nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
-  rpcUrls: { default: { http: ['https://testnet-rpc.monad.xyz'] } },
+  rpcUrls: { default: { http: [process.env.RPC_URL || 'https://testnet-rpc.monad.xyz'] } },
 });
 // The deployed testnet registry. Defaulted rather than required: a node
 // operator has no way to know this value, and leaving it unset used to produce

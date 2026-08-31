@@ -75,6 +75,8 @@ describe('item 5: removal while iterating by index skipped entries', () => {
 describe('unreachable engrams are removed, not merely hidden', () => {
   beforeEach(() => { sessionStorage.clear(); });
 
+  const engramKeys = () => Object.keys(sessionStorage).filter(k => k.startsWith('dn_engram_'));
+
   it('clears storage when the job binding is gone', async () => {
     await setJobBinding('job-3');
     await storeEngram({ ...base, id: 'e1', statement: 'rule' });
@@ -83,6 +85,50 @@ describe('unreachable engrams are removed, not merely hidden', () => {
     expect(await getAllEngrams()).toEqual([]);
     // The point of the test: not just that nothing is returned, but that
     // nothing is left behind.
-    expect(Object.keys(sessionStorage).filter(k => k.startsWith('dn_engram_'))).toEqual([]);
+    expect(engramKeys()).toEqual([]);
+  });
+
+  it('clears every engram, not just the first, when the binding is gone', async () => {
+    // The single-engram case above passes even against a loop that removes one
+    // key and steps over the next, which is the bug this whole file exists
+    // for. Five entries is what distinguishes the two.
+    await setJobBinding('job-4');
+    for (let i = 0; i < 5; i++) await storeEngram({ ...base, id: `many-${i}`, statement: `rule ${i}` });
+    expect(engramKeys()).toHaveLength(5);
+
+    sessionStorage.removeItem('dn_job_binding');
+    expect(await getAllEngrams()).toEqual([]);
+    expect(engramKeys()).toEqual([]);
+  });
+
+  it('clears storage when the binding is unreadable rather than absent', async () => {
+    // A truncated or hand-edited value is not the same as a missing one, and
+    // "no usable binding" has to mean the same thing in both cases.
+    await setJobBinding('job-5');
+    await storeEngram({ ...base, id: 'e2', statement: 'rule' });
+    sessionStorage.setItem('dn_job_binding', '{not json');
+
+    expect(await getAllEngrams()).toEqual([]);
+    expect(engramKeys()).toEqual([]);
+  });
+
+  it('drops an engram once its TTL has passed, and keeps the ones that have not', async () => {
+    // The TTL is a promise to the guest that prompt-shaping text does not
+    // outlive the session, so an expired engram must not come back from
+    // getAllEngrams even while the binding is still valid.
+    await setJobBinding('job-6');
+    await storeEngram({ ...base, id: 'fresh', statement: 'fresh rule' });
+    await storeEngram({ ...base, id: 'stale', statement: 'stale rule' });
+
+    const key = engramKeys().find(k => k.includes('stale'))!;
+    const stored = JSON.parse(sessionStorage.getItem(key)!);
+    stored._sessionBinding.expiresAt = Date.now() - 1000;
+    sessionStorage.setItem(key, JSON.stringify(stored));
+
+    const found = await getAllEngrams();
+    expect(found.map(e => e.id)).toEqual(['fresh']);
+    // Removed, not merely filtered out of the answer.
+    expect(engramKeys().some(k => k.includes('stale'))).toBe(false);
+    expect(engramKeys().some(k => k.includes('fresh'))).toBe(true);
   });
 });

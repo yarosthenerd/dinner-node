@@ -2,9 +2,11 @@ import 'dotenv/config';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getAddress, isAddress } from 'viem';
-import { ABI, ADDR, pub } from './chain';
+import { getAddress, isAddress, recoverMessageAddress } from 'viem';
+import { randomBytes } from 'node:crypto';
+import { ABI, ADDR, monadTestnet, pub } from './chain';
 import { readProvider } from './registry';
+import { announceMessage, nonceStore, validNonce } from './attest';
 
 const PORT = Number(process.env.DISCOVERY_PORT ?? 4174);
 const REFRESH_MS = Number(process.env.DISCOVERY_REFRESH_MS ?? 15000);
@@ -37,6 +39,20 @@ export type ProviderEntry = {
   source: 'cache' | 'seed' | 'chain' | 'announce';
   lastSeen: number;
 };
+
+// An announcement is a claim about a machine, and until this existed the only
+// thing checked about it was that the address it named is a registered
+// provider. Anyone could therefore point a live provider's slot at their own
+// host and be handed guests' prompts. They could never be paid, because
+// settlement goes to the registered address on chain, but reading the prompt
+// is the part that matters.
+//
+// So an announcement now carries a signature over a nonce this process issued
+// and the exact claim being made. A minute is long enough for a node to
+// collect one and come back, short enough that a captured pair is stale before
+// it is useful, and single use makes a captured pair worthless anyway.
+const NONCE_TTL_MS = Number(process.env.DISCOVERY_NONCE_TTL_MS ?? 60_000);
+const nonces = nonceStore(NONCE_TTL_MS, () => `0x${randomBytes(32).toString('hex')}`);
 
 const table = new Map<string, ProviderEntry>();
 const known = new Set<string>();
@@ -165,6 +181,22 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({ ok: true, known: known.size, active: table.size, registry: ADDR, cursor: cursor ? String(cursor) : null, port: PORT }));
   }
 
+  // A nonce to sign. Issued to anyone who asks, because the nonce is not the
+  // secret: the key is. Handing one to a hostile caller gets them a string
+  // they cannot sign.
+  if (req.method === 'GET' && req.url?.startsWith('/announce/nonce')) {
+    const q = new URL(req.url, 'http://localhost').searchParams;
+    const a = q.get('address') ?? '';
+    if (!isAddress(a)) { res.statusCode = 400; return res.end('bad address'); }
+    res.setHeader('content-type', 'application/json');
+    return res.end(JSON.stringify({
+      nonce: nonces.issue(a), ttlMs: NONCE_TTL_MS,
+      // Published so a node builds the same message this process will verify,
+      // rather than hardcoding a registry and a chain that may not be ours.
+      registry: ADDR, chainId: monadTestnet.id,
+    }));
+  }
+
   if (req.method === 'POST' && req.url === '/announce') {
     let body = '';
     let over = false;
@@ -176,19 +208,39 @@ const server = http.createServer((req, res) => {
     req.on('end', async () => {
       if (over) return;
       try {
-        const { address, url, model } = JSON.parse(body || '{}');
+        const { address, url, model, nonce, signature } = JSON.parse(body || '{}');
         if (!isAddress(String(address))) { res.statusCode = 400; return res.end('bad address'); }
         const a = getAddress(String(address));
         const v = await verify(a);
         if (!v) { res.statusCode = 403; return res.end('not an active on-chain provider'); }
-        let clean: string | null = null;
-        if (url) {
-          const u = new URL(String(url));
-          if (u.protocol !== 'http:' && u.protocol !== 'https:') { res.statusCode = 400; return res.end('bad url scheme'); }
-          clean = u.origin;
+        // A URL is now required. An announcement exists to say where a node
+        // is, the URL is inside the signed claim, and a signature over an
+        // empty one would be a proof of nothing worth storing.
+        if (!url) { res.statusCode = 400; return res.end('url required'); }
+        const u = new URL(String(url));
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') { res.statusCode = 400; return res.end('bad url scheme'); }
+        const clean = u.origin;
+        const m = model ? String(model).slice(0, 80) : v.model;
+
+        // Order matters. The nonce is consumed BEFORE the signature is
+        // checked, so a wrong signature burns the nonce rather than letting a
+        // caller grind attempts against one live challenge.
+        if (!validNonce(nonce)) { res.statusCode = 400; return res.end('bad nonce'); }
+        if (!nonces.consume(a, nonce)) { res.statusCode = 403; return res.end('nonce unknown, spent or expired'); }
+        if (typeof signature !== 'string' || !/^0x[0-9a-fA-F]+$/.test(signature)) { res.statusCode = 400; return res.end('bad signature'); }
+        const claim = announceMessage({ registry: ADDR, chainId: monadTestnet.id, address: a, url: clean, model: m, nonce });
+        let signer: string;
+        try {
+          signer = await recoverMessageAddress({ message: claim, signature: signature as `0x${string}` });
+        } catch {
+          res.statusCode = 403; return res.end('signature does not recover');
+        }
+        if (signer.toLowerCase() !== a.toLowerCase()) {
+          console.log(`[announce] REJECTED ${a}: signed by ${signer}`);
+          res.statusCode = 403; return res.end('signature is not from this provider');
         }
         known.add(a.toLowerCase());
-        table.set(a.toLowerCase(), { ...v, model: model ? String(model).slice(0, 80) : v.model, url: clean, source: 'announce', lastSeen: Date.now() });
+        table.set(a.toLowerCase(), { ...v, model: m, url: clean, source: 'announce', lastSeen: Date.now() });
         saveCache();
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ ok: true, address: a, url: clean }));

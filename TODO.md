@@ -10,10 +10,12 @@ stale and marks several things done that never existed. Read alongside:
 Legend: `[x]` done and verified, `[~]` done but not verified against a live run,
 `[ ]` open.
 
-Last updated 2026-08-28 (evening). Now items 1 through 4 are closed, and 5 and
-7 are struck: the cloud kitchen they were written about was deleted in
-`fd86fb8`. The load-bearing item is item 5 as it now reads, `reassign` between
-two live providers, triggered from a browser.
+Last updated 2026-08-31. Now items 1 through 4 are closed, and 5 and 7 are
+struck: the cloud kitchen they were written about was deleted in `fd86fb8`.
+**Item 0 is closed as of today:** a reboot on 2026-08-30 put the tree on the
+daemons, this session committed it and deployed `web/`. The load-bearing
+product item remains item 5, `reassign` between two live providers, triggered
+from a browser, and it is blocked on the tunnels below.
 
 ---
 
@@ -23,7 +25,14 @@ P0 is closed. Every item the 2026-08-25 sessions opened has been fixed and
 verified: three live serverless exposures, the engram and privacy layer, a
 plaintext prompt path in the CLI, and thirteen further defects the verification
 agents found, several of which the fixes themselves had introduced. The root of
-the repo now typechecks, and `web/` has 115 regression tests.
+the repo now typechecks, and `web/` has 130 regression tests. The root has 192,
+measured 2026-08-29.
+
+**Status of the deployment, corrected 2026-08-31.** The 2026-08-28 late
+session's work is committed and live on both halves. The daemons picked it up
+at the 2026-08-30 reboot, which is how the `/lanjob` faucet closed, and this
+session committed the tree and deployed `web/`. See `SNAPSHOT.md` section 0 of
+the 2026-08-31 snapshot for the probes.
 
 The tree is deployed and the site is live at `dinnernode.xyz` on v2. **There is
 no serverless surface left at all:** `web/api/` is an empty path, because
@@ -121,6 +130,18 @@ tok/s. The throughput bound would clamp it. Settle that before writing code.
 
 Ordered. Everything here is ahead of every remaining defect in this file.
 
+0. ~~**Ship the 2026-08-28 late tree.**~~ Done 2026-08-31, and not in the
+   order this item planned. The 2026-08-30 reboot restarted all four units off
+   the working tree, so the node half shipped itself two days before the
+   commit: `/lanjob` through the tunnel now answers 403, `/challenge`,
+   `/provider/models` and `/announce/nonce` all answer, and `/v1/models`
+   answers 501 `endpoint_disabled` because no node sets `API_KEYS`. This
+   session then committed the tree and deployed `web/`. The ordering hazard
+   this item was built around inverted once the nodes answered `/challenge`.
+   The lesson is in `SECURITY_REVIEW.md` section 0.1: the faucet fix was
+   written on 2026-08-28 and the hole stayed open until a reboot happened to
+   pick it up.
+
 1. ~~**Deploy the current tree.**~~ Done 2026-08-26 evening. `web-okskdkmvt`,
    verified against the deployed bundle. The node now also streams reasoning as
    its own frame and bills it as output; escrow and the three faucet constants
@@ -160,6 +181,10 @@ Ordered. Everything here is ahead of every remaining defect in this file.
    button. Needs: a peer URL the client can fail over to, an automatic
    failover on stream death rather than a button, and a `reassign` call so the
    handover is the contract's and not a convention between two hosts.
+   **Blocked on the same thing as item 9, confirmed 2026-08-29:** node 2
+   announces `http://192.168.5.98:4174`, a LAN address no guest's browser can
+   reach, so there is no failover target on the public internet whatever the
+   client does. The named tunnels below are the unblock.
 6. **Record the migration demo.** Start a job, kill the laptop mid-answer, watch
    it continue elsewhere, with an on-chain receipt showing two providers paid
    for disjoint token ranges. Nobody in the competitive set can run this.
@@ -171,12 +196,147 @@ Ordered. Everything here is ahead of every remaining defect in this file.
    house-to-house flow, whatever the keys are.
 8. **Model list with per-model rates.** Cheapest way to look like a marketplace
    rather than a single-host demo, and it is what the long-tail thesis requires.
+9. **Distribution, which is the gap the Darkbloom comparison actually names.**
+   Eigen Labs' network went from research preview to 4.5B tokens in four months
+   on distribution, not on mechanism: it is a paid provider on OpenRouter, so
+   it sits inside a routing table buyers already use. We are in nobody's.
+   - [x] **An OpenAI-compatible endpoint on the node.** Done 2026-08-28.
+         `POST /v1/chat/completions` streaming and buffered, `GET /v1/models`,
+         bearer keys, the OpenAI error envelope on every refusal including the
+         admission checks. `src/openai-api.ts` is the wire format and is pure;
+         `src/host.ts` keeps the money. Verified end to end against a local
+         anvil with a deployed registry, so the settle and close transactions
+         in that run were real. See `SNAPSHOT.md` section 1 of the late
+         snapshot.
+   - [x] The provider catalog they read. Done 2026-08-28: `GET /provider/models`
+         in their schema 2.4, from `src/provider-catalog.ts`. Input priced at an
+         explicit zero, capacity absent until measured, `compliance.zdr` false,
+         `is_ready` false until `PROVIDER_IS_READY=1`.
+   - [x] Load-shed with 429 rather than 503 on `/v1`. Their uptime is total
+         requests minus 4xx, 429s and geo-blocks, so honest backpressure in the
+         old shape counted as downtime.
+   - [ ] Apply to be an OpenRouter provider. The form is at
+         `openrouter.ai/how-to-list`. Remaining blockers are not code: a public
+         hostname, and a way for them to pay us, which needs auto top-up or
+         invoicing and therefore an entity. **Corrected 2026-08-29:** the
+         hostname blocker is not the nameserver move, which is done. It is the
+         tunnels, which are not installed. See the DNS block below.
+   - [ ] Decide what the endpoint bills. A caller holds a key, not a wallet, so
+         these jobs are fronted from the node's own deposit and settle the node
+         against itself. There is no off-chain invoice, no account, and no way
+         to charge anyone. Until that exists the endpoint gives tokens away at
+         the node's own gas cost, which is fine for a pilot key and is not fine
+         for an aggregator listing.
+   - [ ] Reputation does not accrue on this path, and the contract is right to
+         refuse it. `_credit` excludes self-dealt jobs from `tokensServed` and
+         `lifetimeEarned`, discovery ranks on `tokensServed`, and every fronted
+         job is self-dealt. So volume through `/v1` is invisible on chain.
+         Either the caller opens their own job, or any tokens-served figure has
+         to say which path it came through.
+   - [ ] `V1_DAILY_TOKENS` is an in-memory brake that resets on restart. It
+         limits a runaway client and it is not an accounting system.
 
 One correctness note for the pitch: on the deployed V1 contract, "does not pay
 twice" is enforced by the host choosing to settle only what it produced, not by
 the contract. Claim "the replacement provider settles only the suffix it
 produced, verified against a keccak checkpoint chain", which is true today. Do
 not claim contract enforcement until the V2 items below land.
+
+## DNS and tunnels, state on 2026-08-29
+
+Audited this morning against live DNS and the running units. The zone move in
+`ops/cloudflare-migration.md` is done and nothing after it is.
+
+- [x] Move the zone to Cloudflare. `dinnernode.xyz` is delegated to
+      `desi.ns.cloudflare.com` and `piers.ns.cloudflare.com`. Both
+      `google-site-verification` TXT records survived, `www` and
+      `api.dinnernode.xyz` resolve, the site serves 200.
+- [ ] **Install the named tunnels.** `ops/dinnernode-tunnel-node1.service` and
+      `ops/dinnernode-tunnel-discovery.service` exist in the repo and are not
+      installed under `~/.config/systemd/user`. No `cloudflared` process is
+      running. The only tunnel unit in place is the old ngrok one.
+- [ ] **`node1.dinnernode.xyz` and `discovery.dinnernode.xyz` do not resolve.**
+      No record of any kind. Every "verified live at node1.dinnernode.xyz" line
+      in the late snapshot came from an ad-hoc run against a hostname DNS has
+      never carried. `cloudflared` writes these records itself, so they land
+      with the item above.
+- [ ] **Set `PUBLIC_URL` on both nodes** once the hostnames exist, and retire
+      `dinnernode-tunnel.service`. Until then node 1 announces
+      `litter-unfunded-improvise.ngrok-free.dev` and node 2 announces a LAN
+      address.
+- [x] **The legal half of the proxy question is settled.** Done 2026-08-31.
+      Cloudflare's Email Address Obfuscation had rewritten the contact
+      addresses in the live `terms.html` into `/cdn-cgi/l/email-protection`
+      spans that need JavaScript to read, so the GDPR Article 13 controller
+      contact in a legal notice depended on a script running. Fixed at the
+      source rather than in the dashboard: every address is wrapped in
+      Cloudflare's documented `<!--email_off-->` markers, four places in
+      `web/public/terms.html` and three in `web/public/acceptable-use.html`.
+      That holds whatever the zone setting is later changed to, and needs no
+      Cloudflare access to reproduce.
+- [ ] **Decide the proxy question, on caching grounds only now.** Section 2 of
+      the migration doc requires DNS-only records and the apex and `www` are
+      proxied: they resolve to Cloudflare anycast and responses carry `cf-ray`
+      and `server: cloudflare` ahead of `x-vercel-cache`. What remains is the
+      second cache layer, not a published-content problem. Either turn the two
+      records grey or accept the layer knowingly.
+- [ ] The second cache layer the doc warned about is now real and has not
+      caused a problem yet. If the site ever looks stale for reasons the repo
+      does not explain, purge the Cloudflare cache before debugging anything.
+
+## Open, from the reviews of 2026-08-28 (late)
+
+Everything the four agents raised that was NOT fixed the same night. Each is
+worth reading against `SNAPSHOT.md` section 0.
+
+- [ ] **Before setting `API_KEYS` on any node**, the OpenAI path needs its own
+      notice. A caller there has no terms, no privacy notice, no processor
+      agreement, and no warning that a salted commitment of every prompt goes
+      on a public chain permanently, nor that no sanitizer runs on that path.
+      Terms 2.1 is also incomplete for it: the on-chain requester is the node,
+      not the caller. The legal reviewer's smallest version is a short API
+      terms section plus an `x-dinnernode-terms` header and a line in
+      `/health`. This is the item that becomes expensive if deferred, because
+      the first paying caller creates the record.
+- [ ] **Prompts transit Cloudflare by default now**, since a node with no
+      `PUBLIC_URL` opens a quick tunnel at boot. `hosting.html` calls
+      cloudflared optional and terms 2.7 lists who sees the prompt without
+      naming a transit provider. One sentence in each.
+- [ ] **`hosting.html` settings table is stale in a way that touches money.**
+      It omits `API_KEYS`, `FRONT_BUDGET_MON`, `FRONT_TOPUP_MON`,
+      `V1_DAILY_TOKENS`, `LANJOB`, `DATACENTER_COUNTRY` and
+      `PROVIDER_IS_READY`, and states `OLLAMA_KEEP_ALIVE` default `30m` where
+      both live nodes run `24h`. An operator reading only that page would never
+      learn that setting `API_KEYS` lets a stranger spend their deposit.
+      `.env.example` now documents all of them and is the source to copy from.
+- [ ] **`DATACENTER_COUNTRY` is published unvalidated.** A node can declare
+      `DE` while running in Belgrade and nothing checks it. Validate against
+      ISO 3166-1 alpha-2 at startup, the way `MODEL` now refuses, and say in
+      `hosting.html` that the value is operator-declared and republished
+      verbatim.
+- [ ] **`proveControl` has no tests**, and it is the one function whose failure
+      mode is "sends the prompt anyway". Wants a bad signature, an inactive
+      provider, a non-2xx `/challenge`, and the relay case.
+- [ ] **`dn_wallet_rdns` is now the inconsistent one.** Having accepted that
+      cross-restart convenience is not strictly necessary for `dn_sessions`, it
+      is hard to argue it is for this. Cheapest fix is sessionStorage.
+- [ ] **Ratings are unreachable by default.** `ProviderRating` finds a rateable
+      job by scanning stored history, which is now off unless the guest opts
+      in, so the anonymity-set problem gets harder rather than easier.
+- [ ] `finish_reason: 'error'` is not in the OpenAI enum. A strict SDK will
+      reject the final chunk of a failed stream.
+- [ ] `gasFor` swallows a revert and then broadcasts the padded fallback,
+      burning the full limit for a call that was never going to succeed.
+      Distinguish a revert from an RPC failure and refuse to send on the first.
+- [ ] `openFronted` holds the transaction queue across two receipt waits, with
+      viem's default 180s timeout each, so a stalled opening delays every
+      settle. Bounded, not a deadlock. Wants an explicit timeout.
+- [ ] Duplicate announce timer in `host.ts`, both at 240s, which now costs two
+      nonces per interval.
+- [ ] `FRONT_TOPUP_MON` below `FRONT_BUDGET_MON` makes every `openJob` revert,
+      with no startup validation.
+- [ ] The LAN guest page performs no sanitization, and now says so nowhere. It
+      is a page this project serves to a guest who did not choose an API.
 
 ## Testnet, resolved
 
@@ -470,11 +630,23 @@ contract holds **3.678 MON**. Identified so far:
       since 1.21 MON is not nothing.
 - [ ] `withdraw()` the retired provider key `0xEadCAED4...`, if the operator
       still holds it. It is a pre-rotation key and is not in the script.
-- [ ] The 23 open v1 jobs hold about 0.55 MON of escrow. Twenty are 0.01 MON
-      demo jobs from the earliest sessions. Only the requester or the provider
-      can close a job, and the requesters are mostly those same burner wallets,
-      so most of this is stranded with the deposits above. Job#63's 0.30 MON is
-      the one worth a look: its provider is the house key, which is held.
+- [~] The 23 open v1 jobs hold **0.5044 MON**, enumerated 2026-08-28 with the
+      new `scripts/close-v1-jobs.mjs` (read-only unless `--send`). Four are
+      closeable with keys we hold. **Only 0.019248 MON of it comes back to us**,
+      and the reason corrects what this item used to say.
+      **Job#63's 0.30 MON is not ours to recover by holding the provider key.**
+      v1 `closeJob` admits the provider OR the requester, but it credits the
+      unspent escrow to the **requester's** deposit. Job#63's requester is
+      `0x592244b5…`, a burner. So closing it costs gas and hands 0.30 MON to a
+      wallet we may not have. `0x592244b5…` is also the requester on eight
+      other open jobs, which makes it the single wallet worth hunting for: if
+      that browser profile still exists under `dn_pk`, closing these and
+      calling `refund()` from it recovers most of the 0.5 MON at once. If it
+      does not, all of it is written off and there is nothing else to try.
+      - [ ] Look for the `0x592244b5…` browser profile. That one answer decides
+            whether 0.5 MON is recoverable or gone.
+      - [ ] Then, and only then, run `close-v1-jobs.mjs --send` followed by
+            `drain-v1.mjs --send`.
 - Roughly 1.89 MON of the contract's balance is still unaccounted for. It will
       be more deposits and more retired-provider earnings, and there is no
       cheap way to enumerate it: the public RPC caps `eth_getLogs` at 100
@@ -550,39 +722,89 @@ contract holds **3.678 MON**. Identified so far:
       context. Either long context becomes the product and the hardware
       requirement changes, or free input comes out of the pitch as a claim that
       only pays in a case we decline.
-- [ ] `deposit`, `openJob` and `registerProvider` still use fixed padded gas
-      limits. Measured with Foundry: `deposit` 55094 against 200000 (3.6x),
-      `openJob` 166702 against 250000 to 300000, `registerProvider` 126392 first
-      and 29665 warm against 250000 (up to 8.4x). Monad charges the limit.
-- [ ] `/announce` verifies the address is a registered provider but not that the
-      announcer controls it. Anyone can hijack a provider's URL and harvest guest
-      prompts under its on-chain reputation. Needs a signed nonce challenge.
-- [ ] `/lanjob` is unauthenticated and spends the host's gas per request.
-      `deposit`, `openJob` and `registerProvider` bypass the nonce queue.
+- [x] `deposit`, `openJob` and `registerProvider` used fixed padded gas limits.
+      Closed 2026-08-28: all three go through `gasFor`, which estimates and
+      pads 20 percent, the same path settle has used since the key rotation
+      bug. `gasFor` also takes a `value` now, without which a payable estimate
+      prices a reverting call and silently returns the padded fallback, which
+      is what `deposit` was doing. Verified on a local anvil by reading the
+      limit and the usage off every transaction: each one now sits at exactly
+      1.20x of what it used, and `deposit` fell from a fixed 200000 to 54312.
+      The browser's own `openJob` at 300000 in `web/src/App.tsx` is untouched
+      and is the remaining padded call.
+- [~] `/announce` verified the address was a registered provider but not that
+      the announcer controlled it. **Fixed in the tree, still open in
+      production as of 2026-08-29:** the live discovery answers
+      `/announce/nonce` with 404, so the running listener still accepts an
+      unsigned announce. Downgraded from `[x]` until Now item 0 ships.
+      Written and verified 2026-08-28 with the signed nonce challenge:
+      `src/attest.ts`, a single-use 60 second nonce from discovery, a
+      signature over a claim naming registry, chain, provider, url, model and
+      nonce, and `POST /challenge` on the node for the browser's half. The
+      browser now proves a `?host=` or `?peer=` target before sending the
+      prompt. Attacked against a local anvil: hijack, unsigned, replay and
+      url-substitution all refused. Node and discovery must be restarted
+      together, since the shape is not backward compatible.
+- [~] `/lanjob` is unauthenticated and spends the host's gas per request.
+      **Open in production and reachable from the internet as of 2026-08-29;
+      see Now item 0.** Closed in the tree 2026-08-28. The note written then
+      said a tunnel was about to make this much worse, since every tunnelled
+      request arrives from 127.0.0.1 and the implicit "only the LAN can reach
+      it" protection would end silently. The audit of 2026-08-29 found that
+      ngrok had already ended it. `src/reach.ts`
+      requires a private peer AND no forwarding header. `LANJOB=off|lan|open`,
+      default `lan`. `/v1/chat/completions` fronts the same escrow and is off
+      unless `API_KEYS` is set, capped by `V1_DAILY_TOKENS`.
+- [x] `deposit` and `openJob` bypassed the nonce queue. Closed 2026-08-28: both
+      run inside `serialized()` as one unit, which also fixed a second defect
+      found with them, that the balance check and the opening were not atomic
+      so concurrent requests all saw enough float for one job. Four concurrent
+      requests now produce four jobs. `registerProvider` still bypasses it and
+      runs once at startup before the node serves anything.
 - [ ] `watchContractEvent` will hit the 100-block RPC ceiling in a backgrounded
       tab. Self-recovers via `onError`, so this is low.
-- [ ] Pin or allowlist the served model. `src/host.ts` falls back to whatever is
-      first in the local ollama list, so a node could serve a restrictively
-      licensed model by accident.
-- [ ] Make `dn_sessions` opt-in, defaulted off. Storing prompts and answers on
-      the user's device across restarts is not strictly necessary for the
-      service, so under ePrivacy Art 5(3) it needs consent. The "clear history"
-      control is a deletion mechanism, not consent.
-- [ ] ngrok authtoken rotation. Manual dashboard step.
+- [x] Pin the served model. Closed 2026-08-28: `MODEL` set to something not
+      installed now refuses to start, naming what is installed, instead of
+      silently serving the first tag in the list. That fallback was wrong three
+      ways at once, since the model name goes on chain in the provider record,
+      the rate is resolved from that model's market band, and the node could
+      serve a restrictively licensed model by accident. `MODEL` unset still
+      takes the first tag, and now says which one it registered.
+- [x] Make `dn_sessions` opt-in, defaulted off. Done 2026-08-28. A switch in
+      the receipt, off until the guest turns it on, and turning it off deletes
+      what was kept rather than only stopping the next write. The receipt still
+      lists this visit's orders from React state, so nothing is lost by
+      declining; the switch decides only whether it survives the tab closing.
+      `terms.html` 2.7, its storage table and the new `dn_keep_history` key
+      updated with it.
+- [ ] ngrok authtoken rotation. Manual dashboard step, and moot once the
+      cloudflared named tunnels replace it. See `ops/cloudflare-migration.md`.
 
 ## Test coverage still missing
 
 `web/` has 115 tests across 5 files and a measured mutation score of 8 of 9 as
 of the pass that recorded it. Gaps, in the order worth adding:
 
-- [ ] The `>128` target cap and the 16-rule cap in `extractSanitizationRules`.
-- [ ] The no-binding path of `getAllEngrams` beyond the one case added.
-- [ ] TTL expiry removal.
-- [ ] Assert on the compiled pattern source rather than elapsed time for the
-      ReDoS case. A synchronous ReDoS blocks the event loop, so a revert hangs
-      the whole run past `testTimeout` instead of failing the assertion.
-- [ ] No tests at all for `web/api/**` or `src/**`. Both are now typechecked but
-      neither is exercised.
+- [x] The `>128` target cap, the 64 character replacement cap and the 16-rule
+      cap in `extractSanitizationRules`. Done 2026-08-28.
+- [x] The no-binding path of `getAllEngrams`, now with five engrams rather than
+      one, plus an unreadable binding. One engram passes even against the
+      index-walking bug this file exists for. Done 2026-08-28.
+- [x] TTL expiry removal, asserting the key is gone rather than merely absent
+      from the answer. Done 2026-08-28.
+- [x] The ReDoS case no longer asserts on elapsed time. It asserts the evil
+      target is matched LITERALLY, which is the fix itself, and that a prompt
+      which would trigger backtracking is untouched. Done 2026-08-28.
+- [~] `src/**` now has tests for every pure module: billing, plan, pricing,
+      engines, executor, models, earnings, and this session's `openai-api` and
+      `attest`. 164 root tests. What is still untested is the code that cannot
+      be imported without a key and a chain, chiefly `host.ts` and
+      `discovery.ts`, which this session exercised against a local anvil by
+      hand instead. `web/api/**` no longer exists.
+- [ ] `host.ts` and `discovery.ts` have no automated tests, because both open a
+      server and take a wallet at import. The pure parts have been extracted as
+      far as they usefully go; the rest wants a harness that boots them against
+      an anvil, which is what `scripts/` would hold.
 
 ## P3: before real users or mainnet
 
@@ -671,7 +893,10 @@ From `.context/REFRAME.md` section 10. Each is cheap to settle and none has been
       **Prefill is 460 to 490 tok/s and essentially flat to 95k.** The 158
       tok/s in the `web/src/App.tsx` cold-start comment is wrong and makes the
       browser wait longer than it needs to.
-      - [ ] Correct that comment and the watchdog budget derived from it.
+      - [x] Correct that comment and the watchdog budget derived from it. Was
+            already done in the same session that measured it: `App.tsx` now
+            carries the remeasured note and divides by 300 rather than 150.
+            Verified 2026-08-28, this item was stale rather than open.
 
       **95k context fits. It does not OOM.** So `CONTEXT_TOKENS=16384` on both
       live nodes is a configuration choice, not a hardware limit.

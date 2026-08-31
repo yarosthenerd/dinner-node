@@ -3,6 +3,10 @@ node_modules
 # Every per-node env, not just the default one. `.env` alone does not match
 # `.env.node2`, which carries a provider private key.
 .env.*
+# The documented template, which holds no key and is the one file here that
+# SHOULD be committed. It has to be un-ignored explicitly, because `.env.*`
+# above matches it.
+!.env.example
 out
 cache
 dist
