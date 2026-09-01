@@ -1,0 +1,22 @@
+[Unit]
+Description=Cloudflare named tunnel for DinnerNode node 2
+# cloudflared retries a dead origin, so it does not have to start after the
+# node. Ordering it that way only delays the tunnel when the node is slow.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The credentials JSON and cert.pem live here and are secrets. They are not in
+# the repo and must not be copied into it.
+WorkingDirectory=/home/yaros
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# Named rather than quick: a quick tunnel gets a new hostname on every restart,
+# which is fine for a stranger's node and useless for one an aggregator, a
+# discovery record or a listing points at. See ops/cloudflare-migration.md.
+ExecStart=/home/yaros/.local/bin/cloudflared --config /home/yaros/.cloudflared/node2.yml tunnel run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

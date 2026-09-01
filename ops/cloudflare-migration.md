@@ -240,13 +240,23 @@ Two things did not land with this step:
   publishes port 4173, and nothing announces its hostname any more. Retire it
   with `systemctl --user disable --now dinnernode-tunnel.service` once the
   Vercel redeploy below is confirmed.
-- **Node 2 still has no public URL,** and its `PUBLIC_URL` in `.env.node2` is
-  a LAN address that is now also stale: the machine is `192.168.3.8` and the
-  file says `192.168.5.98`. It did not announce at all after the restart,
-  because `announce()` awaits the engine warm and node 2's warm is blocked
-  behind `OLLAMA_MAX_LOADED_MODELS=1` with node 1's 22GB model resident. So
-  the failover target needs the sudo item in `TODO.md` and a third tunnel,
-  created the same way as these two.
+- **Node 2 got its tunnel on 2026-08-31.** `node2.dinnernode.xyz` ->
+  `c86a352e-3f91-40f1-a594-b1749eebb646` -> `localhost:4174`, unit
+  `ops/dinnernode-tunnel-node2.service`, and `PUBLIC_URL` in `.env.node2` is
+  the hostname rather than the stale `192.168.5.98` LAN address it carried.
+  Two things to know about it:
+  - **Its tunnel flaps and the other two do not.** Over the first night it
+    logged 546 `control stream encountered a failure while serving` against
+    zero for node 1 and discovery on the same machine and link. It reconnects
+    and it serves, verified 200 over DoH, but a failover demo recorded through
+    it may catch a reconnect. If it becomes a problem, pin
+    `protocol: http2` in `node2.yml`, which is the usual answer to QUIC
+    trouble on a flaky UDP path.
+  - **`announce()` awaits the engine warm**, and node 2's warm is blocked
+    behind `OLLAMA_MAX_LOADED_MODELS=1` whenever node 1's 22GB model is
+    resident. So node 2 announces minutes after a restart rather than at
+    startup, and it announces its previous URL until it does. The sudo item in
+    `TODO.md` is what fixes this.
 
 ## 8. What changes in the project once the hostnames exist
 
