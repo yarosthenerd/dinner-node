@@ -49,6 +49,13 @@ export const ABI = parseAbi([
   'function commitCheckpoint(uint256 jobId, bytes32 prefixHash, uint256 tokens, uint256 billed)',
   'function commitPlan(uint256 jobId, bytes32 planHash, uint256 version, uint256 ceiling)',
   'function reassign(uint256 jobId, address newProvider)',
+  // The unattended handover. The guest signs a ReassignAuth once at order
+  // time and the INCOMING provider submits it, so a node dying mid-answer
+  // does not wait for a human to confirm a wallet prompt. See
+  // DinnerNodeV2.reassignWithAuth for what the signature can and cannot do.
+  'function reassignWithAuth(uint256 jobId, address newProvider, uint256 maxReassigns, uint64 deadline, bytes signature)',
+  'function reassignCount(uint256 jobId) view returns (uint256)',
+  'function DOMAIN_SEPARATOR() view returns (bytes32)',
   'function closeJob(uint256 jobId)',
   'function withdraw()',
   'function refund()',

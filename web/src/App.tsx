@@ -1,9 +1,10 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { formatEther, keccak256, parseEther, parseEventLogs, toHex } from 'viem';
 import { ABI, ADDR, EXPLORER, pub, faucet, fmt } from './lib';
-import { useWallet, connect, disconnect, switchChain } from './lib/wallet';
+import { useWallet, connect, disconnect, switchChain, MONAD_CHAIN_ID } from './lib/wallet';
 import { isOursAndOpen, readJob, readProvider } from './lib/registry';
 import { proveControl } from './lib/attest';
+import { signReassignAuth, toWire, isLive, type ReassignAuth } from './lib/reassign-auth';
 import { DISCOVERY, KNOWN_PROVIDERS } from './config';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -414,6 +415,16 @@ export default function App() {
   // Held in a ref rather than state because the order flow reads it inside
   // closures that outlive a render.
   const sessionRef = useRef<{ jobId: bigint; provider: string } | null>(null);
+  // The guest's standing permission for this job to move providers without
+  // them. Signed once, held for the session, and handed to a standby rather
+  // than sent to the chain by this browser. See lib/reassign-auth.ts for what
+  // the guest is agreeing to.
+  const authRef = useRef<ReassignAuth | null>(null);
+  // Whether the deployed registry has reassignWithAuth at all. The older
+  // deployment does not, and against it every failover is a wallet prompt as
+  // before. Probed once, because the answer cannot change under a running
+  // page.
+  const authSupported = useRef<boolean | null>(null);
 
   // Escrow that must remain before a session job is reused. One measured turn
   // on this node bills between 788 and 4,508 tokens, so the floor is set above
@@ -475,6 +486,43 @@ export default function App() {
   /// Hand a live job to another provider on chain, and return the jobId the
   /// order continues on.
   ///
+  /// The guest's one signature for this job, or null if we cannot have one.
+  ///
+  /// Signing is free and is not a transaction, so this costs the guest a
+  /// wallet prompt at order time and buys them a night in which a dying node
+  /// does not stop their answer. With the burner there is no prompt at all.
+  ///
+  /// Every reason this can return null is a reason to fall back to the
+  /// wallet-prompt handover rather than to fail: an older registry with no
+  /// reassignWithAuth, a guest who declined the signature, or an
+  /// authorisation that has outlived its deadline.
+  async function ensureAuth(id: bigint): Promise<ReassignAuth | null> {
+    if (authSupported.current === null) {
+      authSupported.current = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'DOMAIN_SEPARATOR' })
+        .then(() => true)
+        .catch(() => false);
+      if (!authSupported.current) {
+        console.info('registry has no reassignWithAuth; failover will ask for a transaction');
+      }
+    }
+    if (!authSupported.current) return null;
+
+    const held = authRef.current;
+    if (held && held.jobId === id && isLive(held)) return held;
+    try {
+      setNote('sign once so this answer can survive a node going away — no gas, no transaction');
+      const auth = await signReassignAuth(guestWallet, MONAD_CHAIN_ID, ADDR, id);
+      authRef.current = auth;
+      return auth;
+    } catch (e) {
+      // Declining is a real choice and not an error. The order proceeds, and
+      // a handover will ask for a transaction the way it always did.
+      console.info('guest declined the failover authorisation', e);
+      authRef.current = null;
+      return null;
+    }
+  }
+
   /// The happy path keeps the same job. `reassign` is callable only by the
   /// requester, which is this browser, and it does three things the browser
   /// cannot do for itself: it pays the outgoing provider up to what its own
@@ -682,6 +730,10 @@ export default function App() {
       // next takes it over instead of opening its own.
       let jobId: bigint | null = null;
       let servedBy: string | null = null;
+      // Set for one attempt only: the authorisation this target should carry
+      // to the chain on the guest's behalf, or null when the browser did the
+      // handover itself.
+      let handoverAuth: ReassignAuth | null = null;
 
       for (const u of targets) {
         const first = u === targets[0];
@@ -734,6 +786,10 @@ export default function App() {
               setNote(`continuing job#${jobId} — this session's escrow is still open`);
             }
             sessionRef.current = { jobId, provider: nextProvider };
+            // Asked for once the job exists and before a token is streamed,
+            // which is the only moment the guest is certainly present. A
+            // failover at 3am cannot ask them for anything.
+            await ensureAuth(jobId);
           } else if (servedBy && servedBy.toLowerCase() !== nextProvider.toLowerCase()) {
             // THE HANDOVER. Same jobId, new provider, and the contract does
             // the accounting: it pays the outgoing provider up to what its own
@@ -743,7 +799,20 @@ export default function App() {
             // rate and throughput only if they are LOWER than the ones the
             // guest locked at open.
             setNote(`${nextProvider.slice(0, 8)}… is taking over job#${jobId}${cpRef.current ? ` from token ${cpRef.current.n}` : ''}…`);
-            jobId = await handOver(jobId, nextProvider, budget, promptTag, opened);
+            // Two ways to move the job, and the difference is who has to be
+            // awake. With an authorisation the standby submits the handover
+            // itself, using the signature this browser already holds, and the
+            // guest sends nothing: that is the whole point, because a node
+            // dying at 3am used to leave the answer stopped until somebody
+            // confirmed a wallet prompt. `auth` rides on the /job request
+            // below; the transaction is the standby's.
+            //
+            // Without one, this is the path it always was.
+            const held = authRef.current;
+            handoverAuth = held && held.jobId === jobId && isLive(held) ? held : null;
+            if (!handoverAuth) {
+              jobId = await handOver(jobId, nextProvider, budget, promptTag, opened);
+            }
             sessionRef.current = { jobId, provider: nextProvider };
           }
 
@@ -847,7 +916,15 @@ export default function App() {
             // The checkpoint travels with the request. Only a checkpoint with
             // a real hash is sendable: the host verifies keccak(text) === h and
             // rejects the request outright on a mismatch.
-            body: JSON.stringify({ jobId: jid.toString(), prompt: cleanPrompt, session: true, resume: cp?.h ? { text: cp.text, n: cp.n, h: cp.h } : undefined }),
+            // `auth` is present only on a handover this browser did not pay
+            // for. The host ignores it on a job that is already its own, so
+            // sending it on the first attempt would be harmless and sending
+            // it here is what moves the job.
+            body: JSON.stringify({
+              jobId: jid.toString(), prompt: cleanPrompt, session: true,
+              resume: cp?.h ? { text: cp.text, n: cp.n, h: cp.h } : undefined,
+              auth: handoverAuth ? toWire(handoverAuth) : undefined,
+            }),
           }), 'waking the GPU');
 
           if (!res.ok) { setNote(await res.text()); throw new Error('host refused'); }

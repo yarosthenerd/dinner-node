@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { formatEther, keccak256, parseEther, parseEventLogs, stringToHex, toHex } from 'viem';
 import { ABI, ADDR, EXPLORER, monadTestnet, pub, wallet } from './chain';
 import { isMine, readJob, readProvider, remaining } from './registry';
+import { authorises, parseAuth, refuseTakeover } from './takeover';
 import { mock, ollama, openai, SYSTEM_PROMPT, type Chunk } from './engines';
 import { describeHardware, probeHardware } from './hardware';
 import { PLAN_LIMITS, planCostWei, planHash, validatePlan, type Plan } from './plan';
@@ -508,6 +509,80 @@ setInterval(refreshGasPrice, 15000).unref?.();
 const settleCostWei = () => settleGasUnits * gasPriceWei;
 /** What `delta` unsettled tokens are worth, in wei. */
 const settleValueWei = (delta: number) => (BigInt(delta) * RATE) / 1_000_000n;
+
+// ---- taking a job over on the guest's signature --------------------------
+//
+// The other half of an unattended failover. The browser holds a ReassignAuth
+// the guest signed when they ordered, and when the node it was streaming from
+// dies it hands that signature to a standby, which is us. We submit
+// reassignWithAuth ourselves, so nobody has to be awake to confirm a wallet
+// prompt.
+//
+// This node pays the gas for that transaction, on a job it does not yet hold,
+// for a guest it has never served. src/takeover.ts holds every reason to
+// refuse and the order to discover them in; this function is the chain work
+// around it.
+
+/// How many times over the handover's own gas cost a job must still be able
+/// to pay before this node will front it. Taking a job that earns back
+/// exactly its gas is not a reason to do a stranger a favour.
+const TAKEOVER_MIN_MARGIN = BigInt(process.env.TAKEOVER_MIN_MARGIN ?? 3);
+/// Refused outright when 0. An operator who does not want their node fronting
+/// gas for handovers sets this and the standby simply declines.
+const TAKEOVER = (process.env.TAKEOVER ?? 'on').toLowerCase();
+
+/// Returns null on success, or the reason to send back as a 400.
+async function takeOver(jobId: bigint, rawAuth: any): Promise<string | null> {
+  if (TAKEOVER === 'off') return 'this node does not accept handovers';
+  const auth = parseAuth(rawAuth);
+  if (typeof auth === 'string') return auth;
+  if (auth.jobId !== jobId) return 'authorisation is for another job';
+
+  const job = await readJob(jobId);
+  const used = await pub.readContract({
+    address: ADDR, abi: ABI, functionName: 'reassignCount', args: [jobId],
+  }) as bigint;
+
+  // Gas first, because the affordability check needs it and it is also the
+  // number we send with. Estimation runs against the real state, so a call
+  // that would revert is usually caught here for free.
+  let gas: bigint;
+  try {
+    gas = await pub.estimateContractGas({
+      address: ADDR, abi: ABI, functionName: 'reassignWithAuth',
+      args: [jobId, me, auth.maxReassigns, auth.deadline, auth.signature],
+      account: w.account,
+    }).then(g => (g * 120n) / 100n);
+  } catch {
+    gas = 320000n;
+  }
+
+  const refusal = refuseTakeover({
+    job: { open: job.open, provider: job.provider, requester: job.requester, escrow: job.escrow, paid: job.paid },
+    auth, me, used,
+    nowSeconds: Math.floor(Date.now() / 1000),
+    gasCostWei: gas * gasPriceWei,
+    minMargin: TAKEOVER_MIN_MARGIN,
+  });
+  if (refusal) return refusal;
+
+  // Verified here rather than discovered on chain. A signature that does not
+  // recover to the requester reverts with "bad auth", and finding that out by
+  // sending costs this node a transaction to learn something free.
+  if (!await authorises(auth, job.requester, me, monadTestnet.id, ADDR)) {
+    return 'authorisation does not name this node';
+  }
+
+  const h = await w.writeContract({
+    address: ADDR, abi: ABI, functionName: 'reassignWithAuth',
+    args: [jobId, me, auth.maxReassigns, auth.deadline, auth.signature],
+    gas, maxFeePerGas: 2000000000000n,
+  });
+  const rc = await pub.waitForTransactionReceipt({ hash: h });
+  if (rc.status !== 'success') return `handover reverted ${EXPLORER}/tx/${h}`;
+  console.log(`[takeover] job ${jobId} is ours, ${EXPLORER}/tx/${h}`);
+  return null;
+}
 
 setInterval(() => {
   const now = Date.now();
@@ -1556,10 +1631,19 @@ http.createServer(async (req, res) => {
     }
 
     if (req.url === '/job') {
-      const { jobId, prompt, resume, session } = JSON.parse(body);
+      const { jobId, prompt, resume, session, auth } = JSON.parse(body);
       if (!gate(res, String(prompt ?? ''), String(resume?.text ?? ''))) return;
       admitted = true;
-      const job = await readJob(BigInt(jobId));
+      let job = await readJob(BigInt(jobId));
+      // A job that is not ours yet may still become ours, if the guest signed
+      // an authorisation for it. That is the unattended failover path: the
+      // browser never sends a transaction, and this node submits the handover
+      // before it serves a token.
+      if (!isMine(job, me) && auth) {
+        const why = await takeOver(BigInt(jobId), auth);
+        if (why) { res.statusCode = 400; return res.end(JSON.stringify({ error: 'handover refused', reason: why })); }
+        job = await readJob(BigInt(jobId));
+      }
       if (!isMine(job, me)) { res.statusCode = 400; return res.end('job not mine / closed'); }
 
       // A resume is only honoured if the claimed prefix hashes to the

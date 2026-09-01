@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+
 /// @notice Registry and streaming escrow for DinnerNode.
 /// @dev v2 exists to close a defect in v1: settle() accepted any tokensDelta
 ///      from the provider, capped only by the remaining escrow, so a single
@@ -138,6 +140,69 @@ contract DinnerNodeV2 {
     mapping(uint256 => Checkpoint) public checkpoints;
     mapping(uint256 => PlanCommitment) public plans;
     uint256 public jobCounter;
+
+    /// @notice How many times each job has been handed over under a signed
+    ///         authorisation. Only ever increases, which is what makes one
+    ///         signature usable for a bounded number of handovers and no more.
+    mapping(uint256 => uint256) public reassignCount;
+
+    // ---- EIP-712 -----------------------------------------------------------
+    //
+    // Why this exists at all: reassign() requires msg.sender == j.requester, so
+    // every failover was a transaction the guest had to approve by hand. That
+    // makes an unattended session impossible. A node dying at 3am leaves the
+    // answer stopped until a human wakes up and confirms a wallet prompt,
+    // which is the opposite of what a streaming escrow with a standby node is
+    // for.
+    //
+    // The fix keeps the guest as the authority and moves their approval
+    // earlier: they sign a typed message once, when they order, and the
+    // INCOMING provider submits it at the moment of the handover. No key is
+    // delegated, nothing is custodial, and the guest's own wallet is still the
+    // only thing that can authorise a handover of their job.
+    bytes32 public constant REASSIGN_AUTH_TYPEHASH = keccak256(
+        "ReassignAuth(uint256 jobId,address newProvider,uint256 maxReassigns,uint64 deadline)"
+    );
+    /// Cached, and rebuilt if the chain id ever differs from the one at
+    /// construction, so a signature can never be replayed across a fork.
+    bytes32 private immutable _CACHED_DOMAIN_SEPARATOR;
+    uint256 private immutable _CACHED_CHAIN_ID;
+
+    constructor() {
+        _CACHED_CHAIN_ID = block.chainid;
+        _CACHED_DOMAIN_SEPARATOR = _buildDomainSeparator();
+    }
+
+    function _buildDomainSeparator() private view returns (bytes32) {
+        return keccak256(abi.encode(
+            keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+            keccak256("DinnerNode"),
+            keccak256("2"),
+            block.chainid,
+            address(this)
+        ));
+    }
+
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return block.chainid == _CACHED_CHAIN_ID ? _CACHED_DOMAIN_SEPARATOR : _buildDomainSeparator();
+    }
+
+    /// @notice The digest a guest signs to authorise unattended handovers of
+    ///         one job. Published so a client builds it from the contract
+    ///         rather than reimplementing the encoding and drifting.
+    /// @param newProvider The only address allowed to take the job, or the
+    ///        zero address to allow any registered active provider.
+    function reassignAuthDigest(
+        uint256 jobId,
+        address newProvider,
+        uint256 maxReassigns,
+        uint64 deadline
+    ) public view returns (bytes32) {
+        bytes32 structHash = keccak256(abi.encode(
+            REASSIGN_AUTH_TYPEHASH, jobId, newProvider, maxReassigns, deadline
+        ));
+        return keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
+    }
 
     // ---- reads -------------------------------------------------------------
     //
@@ -451,9 +516,80 @@ contract DinnerNodeV2 {
     ///      and a provider that published no checkpoint gets nothing, which is
     ///      the incentive to publish them.
     function reassign(uint256 jobId, address newProvider) external {
+        require(msg.sender == jobs[jobId].requester, "not requester");
+        _reassign(jobId, newProvider);
+    }
+
+    /// @notice Hand a job over on the strength of a signature the requester
+    ///         gave earlier, submitted by the provider taking the job.
+    /// @dev This is what makes an unattended session possible. reassign()
+    ///      needs the guest at the keyboard, so a node dying mid-answer at 3am
+    ///      stops the answer until a human confirms a wallet prompt. Here the
+    ///      guest signs once at order time and the replacement carries the
+    ///      authorisation to the chain itself.
+    ///
+    ///      The guest's authority is not weakened, only moved earlier. Four
+    ///      things bound what the signature can be used for:
+    ///
+    ///        - `deadline`, so an authorisation does not outlive the session it
+    ///          was given for.
+    ///        - `maxReassigns`, checked against a counter that only increases,
+    ///          so one signature buys a bounded number of handovers rather
+    ///          than an open licence. It is also the replay protection: there
+    ///          is no separate nonce to keep in step.
+    ///        - `newProvider`, which either names the single address allowed to
+    ///          take the job, or is the zero address for "any registered active
+    ///          provider". The client signs the wildcard, because at order time
+    ///          it does not yet know which standby will still be alive.
+    ///        - `msg.sender == newProvider`, so only the node actually taking
+    ///          the work can submit it. A third party cannot bounce someone
+    ///          else's job around, and nobody can hand a job to a machine that
+    ///          is not itself party to the transaction.
+    ///
+    ///      What the guest risks by signing the wildcard is liveness, not
+    ///      money: every payment bound in this contract still applies to the
+    ///      replacement. The rate can only move down (see _reassign), the
+    ///      throughput ceiling can only move down, a provider that publishes no
+    ///      checkpoint is still paid nothing, and nothing is ever paid that was
+    ///      not deposited. The worst a hostile registered provider achieves is
+    ///      to take a job and serve it badly, which the guest ends with
+    ///      closeJob and their remaining escrow returns to them.
+    function reassignWithAuth(
+        uint256 jobId,
+        address newProvider,
+        uint256 maxReassigns,
+        uint64 deadline,
+        bytes calldata signature
+    ) external {
         Job storage j = jobs[jobId];
         require(j.open, "closed");
-        require(msg.sender == j.requester, "not requester");
+        // Checked before the signature, because these are the cheap reasons a
+        // handover is refused and they cost the caller less gas to discover.
+        require(msg.sender == newProvider, "not the new provider");
+        require(block.timestamp <= deadline, "auth expired");
+        require(reassignCount[jobId] < maxReassigns, "auth spent");
+
+        // The signature either names nobody or names this provider, and a
+        // wildcard authorisation must be verified as the wildcard it was
+        // signed as rather than as this address, or the digest will not match.
+        // The wildcard is tried first because it is what the client signs: at
+        // order time it does not know which standby will still be alive, so
+        // the named form is the rarer case and pays the extra recover.
+        bytes32 digest = reassignAuthDigest(jobId, address(0), maxReassigns, deadline);
+        address signer = ECDSA.recover(digest, signature);
+        if (signer != j.requester) {
+            digest = reassignAuthDigest(jobId, newProvider, maxReassigns, deadline);
+            signer = ECDSA.recover(digest, signature);
+            require(signer == j.requester, "bad auth");
+        }
+
+        reassignCount[jobId]++;
+        _reassign(jobId, newProvider);
+    }
+
+    function _reassign(uint256 jobId, address newProvider) internal {
+        Job storage j = jobs[jobId];
+        require(j.open, "closed");
         require(providers[newProvider].active, "inactive provider");
         require(newProvider != j.provider, "same provider");
 
