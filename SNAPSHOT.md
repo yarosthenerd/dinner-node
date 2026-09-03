@@ -14,7 +14,7 @@
 
 ## 0. Results, in one list
 
-Six commits, `ad4cb49` through `56f5021`.
+Ten commits, `ad4cb49` through `242bed7`.
 
 | # | Result | Evidence |
 |---|---|---|
@@ -26,6 +26,11 @@ Six commits, `ad4cb49` through `56f5021`.
 | 6 | **`REFRAME.md` section 3 rewritten against measurement**, the $0.80 target and the Groq comparison withdrawn. | 2026-09-02 snapshot section 5 |
 | 7 | **`TODO.md` gained a demand side**, which it did not have. | section 6 |
 | 8 | **The ngrok tunnel is retired**, closing a second public door onto node 1. | section 5 |
+| 9 | **Setup installs and starts ollama** rather than printing the command for it. | section 8 |
+| 10 | **Windows can run the launcher**, which is the platform holding most of the GPUs. | section 8 |
+| 11 | **Setup fetches cloudflared**, so a node gets a public URL and can earn. | section 8 |
+| 12 | **The DeltaV weekly update is posted**, six days after the last one. | section 9 |
+| 13 | **The `DELTAV_API_KEY` in `~/.bashrc` was a placeholder** and had never been a key. | section 9 |
 
 The five guards, since they are the durable part: `set-registry.mjs` refuses an
 address with no code; `v2-live.mjs` snapshots and restores the provider record,
@@ -47,6 +52,10 @@ ad4cb49  fix: the node told buyers it had no GPU
 99af182  ops: the registry that can do a handover the guest slept through
 9ece6f1  fix: a live suite that ate the node it was checking
 56f5021  feat: the handover, proven against the two live nodes
+f307b15  docs: the whole session, written down
+f63be0b  fix: the platform holding the GPUs could not run the launcher
+4e8556a  feat: setup fetches the binary that decides whether a node earns
+242bed7  feat: the wizard installs and starts ollama instead of describing how
 ```
 
 ## 1. The handover ran against the live pair, and it works
@@ -242,10 +251,131 @@ v1 and is the template. `DinnerRatings` still pins the old registry in its
 constructor, so it checks jobs against a contract nothing writes to. Both were
 deliberate, and both are still open.
 
-The thing the redeploy was FOR has not been run yet:
-`scripts/auth-takeover-e2e.mjs` against the two live nodes rather than against
-anvil. That is the first time the tunnels, the announce path and a real network
-failure are in the loop, and it is the migration demo.
+**This paragraph originally said the thing the redeploy was FOR had not been
+run.** It has: `scripts/auth-takeover-e2e.mjs` ran against the two live nodes
+rather than anvil, job#12, 12 of 12, and section 1 is the record of it. Section
+7 was written before section 1 and is corrected here rather than deleted.
+
+What is genuinely not done on the demo: no second operator. Both daemons run on
+one machine against one ollama, so every migration so far is house-to-house,
+and section 6 item 2 is the same finding from the roadmap side.
+
+## 8. Onboarding: the wizard now does the things it used to describe
+
+Four commits after the cutover, all on the supply side. The premise under them
+is section 6 item 2 and the reframe's supply thesis: idle consumer machines
+with discrete GPUs, most of which run Windows, and an operator who stops at the
+first step that asks them to go and do something by hand.
+
+**Windows could not run the launcher at all**, and both failures were silent.
+`setup.ts` asked whether a command existed with `spawnSync('command', ['-v',
+cmd], {shell: true})`. On win32 that shell is cmd.exe, where `command` is
+neither a builtin nor an executable, so the call returned non-zero for every
+input: `has('ollama')` and `has('cloudflared')` were permanently false. The
+wizard suppressed its offer to pull a model, and told operators who already had
+cloudflared that they had no tunnel tool. Separately it read config from
+`new URL('../.env', import.meta.url).pathname`, which on Windows is
+`/C:/Users/x/.env`, a POSIX path with a drive letter in it; `existsSync` says
+false, so a Windows operator read no config and generated a fresh wallet on
+every run, into a path the node would not then read. Both now live in
+`src/platform.ts` with the win32 branches under test. `dinnernode.cmd` is the
+launcher, `.cmd` rather than `.ps1` because a downloaded `.ps1` is blocked by
+the default execution policy and changing that is not an onboarding step; it
+pauses on failure when launched from Explorer. `.gitattributes` pins line
+endings, since a `.cmd` checked out with LF breaks cmd.exe's multi-line blocks.
+
+**Neither launcher holds logic any more.** Dependency freshness moved to
+`scripts/deps-stale.mjs`, which both call, because `[ package-lock.json -nt
+node_modules ]` has no batch equivalent worth writing. The POSIX launcher's
+tunnel block is deleted: `host.ts` has opened its own quick tunnel since
+`src/tunnel.ts` landed, so a machine with both was starting two onto one port.
+
+**Setup fetches cloudflared**, `src/cloudflared.ts`, because a node with no
+public URL serves its own LAN and earns nothing. Resolution prefers whatever is
+on PATH and falls through to `bin/`. The setup verdict stopped printing "ready"
+over that case and now says "ready for your LAN, and it will not earn".
+`startQuickTunnel` ran a bare `cloudflared`, which only ever worked from PATH,
+and now runs whichever binary resolution found. Verified against the real
+download: 39,763,452 bytes in 3.8s, mode 755, `cloudflared 2026.8.3`, and with
+cloudflared removed from PATH the fallback to `bin/` exercised.
+
+**The wizard installs and starts ollama**, `src/ollama.ts`. `probeOllama`
+separates three states where there were two: down, up with no models, up with
+models. When it is down the wizard offers to install, the vendor script on
+Linux, brew on macOS, winget on Windows, and then starts the server detached so
+it outlives setup, which is the point since the node starts immediately after.
+The Linux route pipes a vendor script into a root shell: it is printed in full,
+confirmed, and gated on `INTERACTIVE` rather than `ASSUME_YES`, so `--yes` and
+a pipe cannot start it. `installCommand` returns null where the only honest
+answer is a download page, macOS without homebrew and Windows without winget,
+because offering to run something that cannot work is worse than naming the
+page. After an install the wizard re-probes before starting a server, since the
+Linux script starts its own systemd unit and a second would fail to bind.
+`OLLAMA_URL` is hardcoded to match `host.ts` and `engines.ts`; `OLLAMA_HOST` is
+deliberately not read, being a host:port without a scheme as often as a URL,
+and a half-correct parse would probe somewhere the node does not talk to.
+
+**Node is the one prerequisite that cannot be guarded this way.** Everything
+here is TypeScript run by node, so a machine without it never reaches a line of
+our code. Both launchers now name the install route for their platform and
+check the major version before handing anything to tsx, rather than letting it
+surface as a syntax error from inside a dependency.
+
+Test counts moved with the work: 229 across 15 files, then 246 across 16, then
+258 across 17. Typecheck clean throughout, and `doctor` verified against node
+1's live config at each step.
+
+## 9. The DeltaV update, posted, and the key that was never a key
+
+Posted 2026-09-03T13:11:18Z, six days after the previous one on 2026-08-28.
+
+```
+id         cmtljn3wz0001la04r06fen4m
+startupId  cmt8jt70o0004i604tm3fbs54
+xLink      null
+```
+
+Four paragraphs as posted: the mid-answer handover between two nodes, each
+provider paid for its own range and the guest signing nothing; DinnerNodeV2 at
+`0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c` on the new registry, rate locked
+at job open; one-command setup on all three platforms, covering ollama install,
+model sizing against real memory, wallet, faucet and cloudflared; live price
+resolution from the OpenRouter listing at $1.002/M output with input free, and
+58 tok/s measured.
+
+**Cut before posting at the operator's request:** the closing paragraph
+carrying 1.13% realized utilisation, $0.387 total revenue, and the line naming
+the first buyer as the next work. The posted update therefore makes no traction
+claim at all, which is deliberate rather than an oversight.
+
+**The key.** The first POST returned `401 {"error":"Invalid API key"}`, and the
+cause was not the shell. `~/.bashrc:137` held
+
+```
+export DELTAV_API_KEY="delta…_..."
+```
+
+ten characters, ellipsis included: a redacted value pasted in place of the real
+one at some point after the 2026-08-28 session, which had used the key inline.
+The variable was present in every interactive shell and had never held a key,
+which is why two sessions in a row believed it was configured.
+
+Two things follow, and they point in opposite directions:
+
+- **`~/.bashrc` cannot be read by a tool shell anyway.** Line 7 is
+  `case $- in *i*) ;; *) return`, so non-interactive bash returns long before
+  line 137. Even a correct value there needs an explicit
+  `eval "$(grep '^export DELTAV_API_KEY=' ~/.bashrc)"` to reach a `Bash` call.
+- **The key now lives in `~/.deltav.key`**, mode 600, outside the repo, 71
+  characters. Read it with `cat`, never print it, and prefer it to the
+  environment. The placeholder export on line 137 should be deleted.
+
+The 2026-08-28 key was exposed in a chat transcript and was flagged for
+rotation in the 2026-08-28 evening snapshot section 2. Whether the key now in
+`~/.deltav.key` is a rotation or the same value is not known here.
+
+**Next update due around 2026-09-10.** The content that would earn mentorship
+is demand-side movement, since this one deliberately claims none.
 
 # Session snapshot, 2026-09-02 (night)
 
