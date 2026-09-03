@@ -18,9 +18,54 @@ import fs from 'node:fs';
 
 const next = process.argv[2];
 const write = process.argv.includes('--write');
+const force = process.argv.includes('--force');
 if (!next || !/^0x[0-9a-fA-F]{40}$/.test(next)) {
-  console.error('usage: node scripts/set-registry.mjs 0x<40 hex> [--write]');
+  console.error('usage: node scripts/set-registry.mjs 0x<40 hex> [--write] [--force]');
   process.exit(1);
+}
+
+/**
+ * Refuse an address that has no code on it.
+ *
+ * A well-formed address is not a registry. On 2026-09-03 this script was given
+ * the DEPLOYER's own address, copied out of the deploy script's own first line
+ * of output, because the deploy step had not been run yet and that was the only
+ * 40-hex string on the screen. It wrote all nine files, both nodes restarted
+ * and "registered" by sending a transaction to an account with no code, which
+ * succeeds and does nothing, and the failure surfaced two steps later as
+ * `deposits returned no data ("0x")`.
+ *
+ * Nothing about the shape of an address can catch that. The chain can, in one
+ * call, so it is asked before anything is written.
+ */
+const RPC = process.env.RPC_URL ?? 'https://testnet-rpc.monad.xyz';
+const codeAt = async (address) => {
+  const r = await fetch(RPC, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getCode', params: [address, 'latest'] }),
+  });
+  const j = await r.json();
+  if (j.error) throw new Error(`eth_getCode: ${j.error.message}`);
+  return j.result ?? '0x';
+};
+
+const code = await codeAt(next).catch(e => { console.error(`could not check ${next}: ${e.message}`); process.exit(1); });
+if (code === '0x') {
+  console.error(`
+  !  ${next} has NO CODE on ${RPC}.
+
+     That is an account, not a registry. Every node pointed at it will send
+     registrations to an address that cannot receive them, succeed, and serve
+     guests against a contract that does not exist.
+
+     If you have not deployed yet:   node scripts/deploy-v2.mjs --send
+     and use the address it prints, not the deployer address in its first line.
+
+     --force overrides this, for a deploy that has not landed yet.`);
+  if (!force) process.exit(1);
+  console.error('     --force given, continuing anyway.\n');
+} else {
+  console.log(`${next} has ${(code.length - 2) / 2} bytes of code`);
 }
 
 // Everything that carries a live registry address, and nothing that carries a
