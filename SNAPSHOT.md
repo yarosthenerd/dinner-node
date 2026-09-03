@@ -74,6 +74,48 @@ site bundle    index-B3hjANN-.js, new registry 8x, old registry 0x
 both nodes     accepting, gas ok
 ```
 
+## 2b. The handover ran against the live pair, and it works
+
+`scripts/auth-takeover-e2e.mjs` had only ever run against anvil. Run against
+`node1.dinnernode.xyz` and `node2.dinnernode.xyz` on the new registry, job#12,
+**12 of 12**. The guest's nonce was 113 before the handover and 113 after, which
+is the entire point: the node died and nobody had to be awake.
+
+The on-chain receipt, read back off the chain rather than off the test output:
+
+```
+59297534  settled     node1(qwen)  +  812 tok   0.02713095 MON
+59297534  checkpoint  node1(qwen)   tokens=67 billed=812
+59297535  HANDOVER    node1(qwen) -> node2(llama)
+59297549  settled     node2(llama) +   24 tok   0.00014472 MON
+59297549  checkpoint  node2(llama)  tokens=91 billed=836
+59297550  HANDOVER    node2(llama) -> node1(qwen)
+59297728  settled     node1(qwen)  + 1675 tok   0.01010025 MON
+```
+
+Two providers paid for disjoint ranges of one answer, each at its own rate:
+node 2 produced tokens 68 through 91 and was paid for those and nothing else.
+
+**The first run passed while proving less than it appeared to.** It reported
+`node A streamed 0 chars` and passed everything after it. The reader counted
+only `{t:…}` frames, and reasoning arrives as `{th:…}`, a separate shape: on
+qwen3.6 it spent its whole 200-chunk budget on thinking, captured no
+checkpoint, and handed node B `resume: undefined`, so node B started the answer
+from scratch and the suite called that a continuation. 1,323 tokens were billed
+for zero visible characters.
+
+Fixed in the script rather than worked around: it reads `th` frames, runs to a
+deadline instead of a chunk count, and now asserts two things it did not before,
+that node A published a checkpoint and that node B was given a prefix to
+continue from. Either would have failed the first run. `BUDGET` is also an
+environment variable now, because a reasoning model bills its thinking and the
+hardcoded 1 MON escrow is not a testnet-appropriate number.
+
+Also found: `eth_getLogs` on Monad's public RPC is capped at a 100 block range,
+which is the same ceiling `TODO.md` records against `watchContractEvent`, and
+`eth_estimateGas` answers a bare `-32602` for the no-argument `refund()`, which
+has to be sent with a fixed limit.
+
 ## 3. What this cutover did not do
 
 The 5.126 MON still held by the old registry was not moved. It is provider

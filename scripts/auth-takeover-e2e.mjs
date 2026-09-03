@@ -7,7 +7,14 @@
 // of the handover, which is the whole point: the node that died did so at 3am
 // and nobody was awake to confirm anything.
 //
-// Run it against anvil, never against testnet:
+// Runs against anvil, and against the live pair on Monad testnet:
+//
+//   set -a; . ./.env; set +a
+//   RPC_URL=https://testnet-rpc.monad.xyz CHAIN_ID=10143 \
+//   NODE_A=https://node1.dinnernode.xyz NODE_B=https://node2.dinnernode.xyz \
+//   BUDGET=0.05 node scripts/auth-takeover-e2e.mjs
+//
+// Against anvil:
 //
 //   anvil --port 8545 --chain-id 31337 --silent &
 //   forge create src/DinnerNodeV2.sol:DinnerNodeV2 --rpc-url http://127.0.0.1:8545 \
@@ -20,6 +27,9 @@ import { privateKeyToAccount } from 'viem/accounts';
 const RPC = process.env.RPC_URL ?? 'http://127.0.0.1:8545';
 const CHAIN_ID = Number(process.env.CHAIN_ID ?? 31337);
 const ADDR = process.env.DINNER_NODE_ADDRESS;
+// The escrow the guest puts up. Small on a real chain, where it is locked
+// until the job is closed; the default suits anvil, where MON is free.
+const BUDGET = process.env.BUDGET ?? '1';
 const NODE_A = process.env.NODE_A ?? 'http://127.0.0.1:4183';
 const NODE_B = process.env.NODE_B ?? 'http://127.0.0.1:4184';
 // anvil account 3, so it is neither provider.
@@ -56,15 +66,22 @@ const health = async (u) => (await fetch(u + '/health')).json();
 
 /// Read an SSE stream far enough to get a checkpoint, then walk away, which is
 /// what a dying node looks like from the browser's side.
-async function streamUntilCheckpoint(url, body, maxChunks = 200) {
+async function streamUntilCheckpoint(url, body, budgetMs = 180_000) {
   const res = await fetch(url + '/job', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`${url} refused: ${res.status} ${await res.text()}`);
   const reader = res.body.getReader();
   const dec = new TextDecoder();
-  let buf = '', text = '', cp = null, n = 0, chunks = 0, done = false;
-  outer: while (chunks++ < maxChunks) {
+  let buf = '', text = '', think = '', cp = null, n = 0, done = false;
+  // A deadline rather than a chunk count. The chunk count was 200, and a
+  // reasoning model spends more frames than that THINKING before it emits a
+  // single visible token: `th` frames are a separate shape from `t` ones, so a
+  // reader that counts only `t` walks away from qwen3.6 with nothing, captures
+  // no checkpoint, and makes the replacement start the answer from scratch.
+  // Found running this against the live pair, 2026-09-03.
+  const until = Date.now() + budgetMs;
+  outer: while (Date.now() < until) {
     const { value, done: fin } = await reader.read();
     if (fin) break;
     buf += dec.decode(value, { stream: true });
@@ -72,22 +89,28 @@ async function streamUntilCheckpoint(url, body, maxChunks = 200) {
     buf = lines.pop() ?? '';
     for (const line of lines) {
       if (!line.startsWith('data:')) continue;
-      let ev; try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') { done = true; break outer; }
+      let ev; try { ev = JSON.parse(payload); } catch { continue; }
+      if (ev.th) think += ev.th;
       if (ev.t) { text += ev.t; n += 1; }
+      if (ev.err) throw new Error(`${url} streamed an error: ${ev.err}`);
       if (ev.checkpoint || ev.cp) cp = ev.checkpoint ?? ev.cp;
       if (ev.done) { done = true; break outer; }
+      // Both, because a checkpoint with no visible text gives the replacement
+      // nothing to continue from.
       if (cp && text.length > 0) break outer;
     }
   }
   await reader.cancel().catch(() => {});
-  return { text, cp, n, done };
+  return { text, think, cp, n, done };
 }
 
 async function main() {
   const [ha, hb] = await Promise.all([health(NODE_A), health(NODE_B)]);
   console.log(`node A ${ha.provider} ${ha.model}\nnode B ${hb.provider} ${hb.model}\n`);
 
-  const budget = parseEther('1');
+  const budget = parseEther(BUDGET);
   await pub.waitForTransactionReceipt({ hash: await w.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: budget }) });
   const tag = keccak256(stringToHex('e2e prompt'));
   const rc = await pub.waitForTransactionReceipt({
@@ -116,7 +139,12 @@ async function main() {
 
   // Node A serves until it has published a checkpoint, then goes dark.
   const first = await streamUntilCheckpoint(NODE_A, { jobId: jobId.toString(), prompt: 'e2e prompt', session: true });
-  ok('node A streamed', first.text.length > 0, `${first.text.length} chars`);
+  ok('node A streamed', first.text.length > 0,
+     `${first.text.length} visible chars, ${first.think.length} reasoning chars`);
+  // The handover is only a HANDOVER if there is something to hand over. Without
+  // this the suite passes while node B silently restarts the answer.
+  ok('node A published a checkpoint to hand over', !!first.cp?.h,
+     first.cp ? `n=${first.cp.n} h=${String(first.cp.h).slice(0, 18)}…` : 'none, so node B would start from scratch');
 
   const txCountBefore = await pub.getTransactionCount({ address: guest.address });
 
@@ -125,6 +153,8 @@ async function main() {
   const resume = first.cp?.h ? { text: first.cp.text ?? first.text, n: first.cp.n ?? first.n, h: first.cp.h } : undefined;
   const second = await streamUntilCheckpoint(NODE_B, { jobId: jobId.toString(), prompt: 'e2e prompt', session: true, auth, resume });
   ok('node B continued the answer', second.text.length > 0, `${second.text.length} chars`);
+  ok('node B was given the prefix to continue from', !!resume,
+     resume ? `${resume.n} tokens, ${String(resume.h).slice(0, 18)}…` : 'no resume payload was sent');
 
   const txCountAfter = await pub.getTransactionCount({ address: guest.address });
   ok('the guest signed no transaction for the handover', txCountAfter === txCountBefore, `nonce ${txCountBefore} -> ${txCountAfter}`);

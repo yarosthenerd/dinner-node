@@ -195,11 +195,26 @@ Ordered. Everything here is ahead of every remaining defect in this file.
          length, differing only in the two immutable slots the artifact names.
          Three silent failures on the way, all recorded in `SNAPSHOT.md`
          section 1 of the 2026-09-03 snapshot, and all three now have guards.
-   - [ ] **Automatic failover on stream death, against the two LIVE nodes.
-         This is now the whole item.** `scripts/auth-takeover-e2e.mjs` exists
-         and has only ever run against anvil. Anvil proves the mechanism; it
-         does not prove the tunnels, the announce path or the browser's peer
-         discovery under a real network failure. Nothing blocks it any more.
+   - [x] **The handover works against the two LIVE nodes.** Done 2026-09-03,
+         job#12 on `0x7E98…`, 12 of 12 checks. Two handovers, real tunnels,
+         real chain, and the guest's nonce did not move: 113 before, 113 after.
+         The on-chain receipt is the claim itself:
+
+         ```
+         node1(qwen)   settled  +812 tok  0.0271 MON   checkpoint tokens=67
+         HANDOVER      node1 -> node2
+         node2(llama)  settled   +24 tok  0.00014 MON  checkpoint tokens=91
+         HANDOVER      node2 -> node1
+         node1(qwen)   settled +1675 tok  0.0101 MON   checkpoint tokens=843
+         ```
+
+         Two providers paid for DISJOINT token ranges on one answer, each at
+         its own rate. Node 2 produced tokens 68 through 91 and was paid for
+         those and nothing else.
+   - [ ] Failover triggered by a node actually dying, rather than by a client
+         that stops reading. The e2e walks away from the stream, which is what
+         a dead node looks like from the browser's side and is not the same as
+         killing the process. The demo in item 6 wants the real thing.
    - [x] Point the site and both nodes at the new address. Done 2026-09-03 by
          the new `scripts/set-registry.mjs`, which owns all nine places rather
          than the three this item guessed at, and refuses an address with no
@@ -214,6 +229,9 @@ Ordered. Everything here is ahead of every remaining defect in this file.
 6. **Record the migration demo.** Start a job, kill the laptop mid-answer, watch
    it continue elsewhere, with an on-chain receipt showing two providers paid
    for disjoint token ranges. Nobody in the competitive set can run this.
+   **The mechanism is proven as of 2026-09-03**, job#12, see item 5. What is
+   left is the recording and a real process kill rather than a client that
+   stops reading.
 7. ~~**Separate the faucet key from the cloud-kitchen provider key.**~~ Moot
    2026-08-28. Both halves are gone: the cloud kitchen was deleted in
    `fd86fb8`, and `web/api/topup.js` was deleted this session. `HOUSE_PK` no
