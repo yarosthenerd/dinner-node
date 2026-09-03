@@ -16,7 +16,7 @@ const chain = defineChain({
   nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
   rpcUrls: { default: { http: ['https://testnet-rpc.monad.xyz'] } },
 });
-const ADDR = process.env.DINNER_NODE_ADDRESS || '0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd';
+const ADDR = process.env.DINNER_NODE_ADDRESS || '0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c';
 const ABI = [
   { name: 'deposit', type: 'function', stateMutability: 'payable', inputs: [], outputs: [] },
   { name: 'deposits', type: 'function', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] },

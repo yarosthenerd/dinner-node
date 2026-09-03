@@ -17,7 +17,7 @@ const monadTestnet = defineChain({
   rpcUrls: { default: { http: ['https://testnet-rpc.monad.xyz'] } },
 });
 
-const NODE = process.env.DINNER_NODE_ADDRESS ?? '0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd';
+const NODE = process.env.DINNER_NODE_ADDRESS ?? '0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c';
 const EXPLORER = 'https://testnet.monadvision.com';
 const send = process.argv.includes('--send');
 
