@@ -1,0 +1,6 @@
+# Launchers are executed by the shell that matches their line endings. A .cmd
+# checked out with LF breaks cmd.exe's multi-line blocks, and a .sh with CRLF
+# fails on the shebang, so neither may be normalised by a contributor's config.
+dinnernode      text eol=lf
+*.sh            text eol=lf
+dinnernode.cmd  text eol=crlf

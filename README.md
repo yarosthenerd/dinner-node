@@ -8,6 +8,29 @@ requesters pay per token, **settled on Monad as the work becomes worth settling*
 Testnet only. MON here has no monetary value. See [terms](web/public/terms.html) and
 [acceptable use](web/public/acceptable-use.html).
 
+## Run a node
+
+```
+git clone <repo> && cd dinnernode
+./dinnernode          # Linux, macOS
+dinnernode.cmd        # Windows, or double-click it
+```
+
+Either launcher installs dependencies, runs the setup wizard, and serves. The
+wizard is idempotent and is also the doctor: `npm run doctor` re-runs every
+check and changes nothing. What it needs on the machine first is node 20 or
+newer and ollama; it names the install command for your platform when either is
+missing, sizes a model against the memory actually present, generates the node
+wallet, and asks the faucet for gas.
+
+Both launchers are shims. Dependency freshness lives in
+`scripts/deps-stale.mjs` and the public tunnel in `src/tunnel.ts`, so the two
+platforms cannot drift apart in shell script.
+
+A node with no public URL serves its own LAN and earns nothing from the
+network. `setup` says so; giving it one is `PUBLIC_URL`, or cloudflared on the
+PATH and the node opens a quick tunnel itself at boot.
+
 ## Why Monad
 One 60-second answer is roughly 30 settlement transactions, roughly 1.9M gas. What that
 costs on Ethereum depends entirely on the gas price and the ETH price on the day: at

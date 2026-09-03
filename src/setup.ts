@@ -22,11 +22,14 @@ import { formatEther } from 'viem';
 import { pub, DEFAULT_ADDR } from './chain.js';
 import { probeHardware, describeHardware } from './hardware.js';
 import { gb, rankInstalled, recommend } from './models.js';
+import { hasCommand, repoEnvPath, installHint, OLLAMA_SERVE_HINT } from './platform.js';
 
 // Overridable so the fresh-operator path (generates a key, writes a new file)
 // can be exercised against a throwaway file instead of a real one.
-const ENV_PATH = process.env.DINNERNODE_ENV_PATH ?? new URL('../.env', import.meta.url).pathname;
+const ENV_PATH = process.env.DINNERNODE_ENV_PATH ?? repoEnvPath(import.meta.url);
 const OLLAMA = 'http://localhost:11434';
+// The port the node serves on, so every tunnel hint names the same one.
+const PORT = Number(process.env.PORT ?? 4173);
 const FAUCET = 'https://agents.devnads.com/v1/faucet';
 // Enough for registerProvider plus a long tail of settle and closeJob calls.
 // Monad charges the gas limit, so a node that registers and then runs dry mid
@@ -108,7 +111,7 @@ function setEnv(key: string, value: string): void {
   process.env[key] = value;
 }
 
-const has = (cmd: string) => spawnSync('command', ['-v', cmd], { shell: true, stdio: 'ignore' }).status === 0;
+const has = hasCommand;
 
 async function main() {
   console.log(`\n${C.b}DinnerNode node setup${C.x}\n`);
@@ -138,9 +141,8 @@ async function main() {
     reachable = true;
     if (models.length) ok(`ollama running, ${models.length} model${models.length > 1 ? 's' : ''} installed`);
   } catch {
-    bad('ollama is not reachable on :11434',
-      has('ollama') ? 'it is installed but not running: ollama serve'
-                    : 'install it from https://ollama.com/download');
+    bad('ollama is not reachable on :11434', has('ollama') ? OLLAMA_SERVE_HINT : undefined);
+    if (!has('ollama')) for (const l of installHint('ollama')) console.log(`    ${C.d}${l}${C.x}`);
   }
 
   // ---- model choice -----------------------------------------------------
@@ -330,18 +332,18 @@ async function main() {
     // handled when it is not is worse than one that says nothing.
     warn('cloudflared installed but no PUBLIC_URL set');
     console.log(`    ${C.d}quick tunnel, no account, random hostname each run:${C.x}`);
-    console.log(`    ${C.d}  cloudflared tunnel --url http://localhost:4173${C.x}`);
+    console.log(`    ${C.d}  cloudflared tunnel --url http://localhost:${PORT}${C.x}`);
     console.log(`    ${C.d}then put the https URL in .env as PUBLIC_URL=${C.x}`);
     console.log(`    ${C.d}a named tunnel gives a hostname that survives a restart:${C.x}`);
     console.log(`    ${C.d}  ops/cloudflare-migration.md${C.x}`);
   } else if (has('ngrok')) {
     warn('ngrok installed but no PUBLIC_URL set');
-    console.log(`    ${C.d}start it yourself: ngrok http 4173${C.x}`);
+    console.log(`    ${C.d}start it yourself: ngrok http ${PORT}${C.x}`);
     console.log(`    ${C.d}then put the https URL in .env as PUBLIC_URL=${C.x}`);
   } else {
     warn('no tunnel tool — your node will serve the LAN only');
     console.log(`    ${C.d}for public jobs install cloudflared (no account needed):${C.x}`);
-    console.log(`    ${C.d}  https://developers.cloudflare.com/cloudflare-tunnel/downloads/${C.x}`);
+    for (const l of installHint('cloudflared')) console.log(`    ${C.d}  ${l}${C.x}`);
   }
 
   finish();
