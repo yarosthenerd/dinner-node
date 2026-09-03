@@ -117,6 +117,20 @@ describe('the nonce store', () => {
     expect(s.consume('0xAAA', a, 1001)).toBe(true);
   });
 
+  it('is why one node must announce on ONE timer', () => {
+    // Observed live 2026-09-02: host.ts registered two four-minute announce
+    // timers, so a node fetched two nonces and signed two claims. Interleaved
+    // the way the network delivered them, the first claim always lost, and the
+    // node logged "403 nonce unknown, spent or expired" every four minutes
+    // while the second announce quietly succeeded. The store is behaving
+    // correctly here; the caller was not. Fixed by deleting the second timer.
+    const s = nonceStore(60_000, seq());
+    const first = s.issue('0xAAA', 1000);   // timer A asks
+    const second = s.issue('0xAAA', 1000);  // timer B asks, replacing it
+    expect(s.consume('0xAAA', first, 1001)).toBe(false);  // A announces: 403
+    expect(s.consume('0xAAA', second, 1001)).toBe(true);  // B announces: 200
+  });
+
   it('keeps one outstanding nonce per claimant, and sweeps dead ones', () => {
     const s = nonceStore(60_000, seq());
     const first = s.issue('0xAAA', 1000);

@@ -10,12 +10,15 @@ stale and marks several things done that never existed. Read alongside:
 Legend: `[x]` done and verified, `[~]` done but not verified against a live run,
 `[ ]` open.
 
-Last updated 2026-08-31. Now items 1 through 4 are closed, and 5 and 7 are
-struck: the cloud kitchen they were written about was deleted in `fd86fb8`.
-**Item 0 is closed as of today:** a reboot on 2026-08-30 put the tree on the
-daemons, this session committed it and deployed `web/`. The load-bearing
-product item remains item 5, `reassign` between two live providers, triggered
-from a browser, and it is blocked on the tunnels below.
+Last updated 2026-09-02. Now items 0 through 4 are closed and 7 is struck.
+**The tunnel blocker is gone:** all three named tunnels are installed and
+running, and both nodes announce public hostnames, so item 5's stated blocker
+no longer exists. Item 5 itself is most of the way there and is now blocked on
+a contract redeploy rather than on DNS. See the rewritten item below, the DNS
+section, and "Found and fixed 2026-09-02" for two live defects closed tonight.
+
+**What this file still does not contain is a single demand-side item.** See
+"What this roadmap lacks" at the end, added 2026-09-02.
 
 ---
 
@@ -169,22 +172,39 @@ Ordered. Everything here is ahead of every remaining defect in this file.
    old 0.01 MON escrow bought 374 output tokens instead of 5,000, so it is now
    0.05 for about 1,870.
 5. **`reassign` between two live providers, from the browser.** The
-   load-bearing item, and it replaces the cloud-kitchen item that stood here.
-   `fd86fb8` deleted `web/api/p/job.js`, `health.js` and `_lib.js`, so the
-   canned second provider is gone and **the browser has no failover target at
-   all**: an order against a dead node fails and returns its escrow.
-   `web/src/App.tsx:493` says as much in a comment. What exists is the whole
-   precondition and none of the product: v2 `reassign` pays the outgoing
-   provider for exactly what it published and clamps the replacement to the
-   suffix, proven by 27 live checks in `scripts/v2-live.mjs`; `host.ts`
-   publishes a checkpoint inside `settle`; the browser has a manual resume
-   button. Needs: a peer URL the client can fail over to, an automatic
-   failover on stream death rather than a button, and a `reassign` call so the
-   handover is the contract's and not a convention between two hosts.
-   **Blocked on the same thing as item 9, confirmed 2026-08-29:** node 2
-   announces `http://192.168.5.98:4174`, a LAN address no guest's browser can
-   reach, so there is no failover target on the public internet whatever the
-   client does. The named tunnels below are the unblock.
+   load-bearing item. **Rewritten 2026-09-02: the DNS blocker is gone and the
+   remaining blocker is a contract redeploy.**
+
+   What is now true. Both nodes are reachable on the public internet at
+   `node1.dinnernode.xyz` and `node2.dinnernode.xyz` and both announce those
+   hostnames to discovery, so a browser has a failover target for the first
+   time. `c1b3f07` built the automatic half: `reassignWithAuth`, an EIP-712
+   authorisation the guest signs when they order, carried to the chain by the
+   INCOMING provider at the moment of handover, so a node dying at 3am no
+   longer waits for somebody to approve a MetaMask prompt. Bounded by a
+   deadline, a monotonic reassign counter, a named-or-wildcard provider, and
+   `msg.sender == newProvider`. `src/takeover.ts` refuses every reason it can
+   find before paying gas. Verified end to end against anvil with two nodes and
+   a real registry in `scripts/auth-takeover-e2e.mjs`.
+
+   - [ ] **Redeploy the registry. This is the blocker.** The contract in the
+         tree has `reassignWithAuth`; the deployed one at `0x2881…` does not.
+         Confirmed 2026-09-02 by calling `DOMAIN_SEPARATOR()` on it, which
+         reverts. The client probes for it once and falls back to asking the
+         guest for a transaction, so **in production the failover still needs
+         the guest awake and at their wallet.** Everything else on this item is
+         built and inert until the redeploy.
+   - [ ] Automatic failover on stream death, exercised against the two LIVE
+         nodes rather than against anvil. Anvil proves the mechanism; it does
+         not prove the tunnels, the announce path or the browser's peer
+         discovery under a real network failure.
+   - [ ] Point the site and both nodes at whatever address the redeploy
+         produces, in one pass. Three places carry it today.
+
+   One honest note that survives the redeploy: both nodes run on ONE machine
+   under one operator, sharing one ollama. A migration demo between them is
+   house-to-house, which is the same criticism item 7 makes of usage figures.
+   It proves the mechanism and it does not prove the network.
 6. **Record the migration demo.** Start a job, kill the laptop mid-answer, watch
    it continue elsewhere, with an on-chain receipt showing two providers paid
    for disjoint token ranges. Nobody in the competitive set can run this.
@@ -242,47 +262,83 @@ the contract. Claim "the replacement provider settles only the suffix it
 produced, verified against a keccak checkpoint chain", which is true today. Do
 not claim contract enforcement until the V2 items below land.
 
-## DNS and tunnels, state on 2026-08-29
+## DNS and tunnels, state on 2026-09-02
 
-Audited this morning against live DNS and the running units. The zone move in
-`ops/cloudflare-migration.md` is done and nothing after it is.
+**All closed.** Re-audited tonight against live DNS, the running units and the
+public endpoints. The three commits that closed this landed after the previous
+audit was written, which is why the section above them was stale for two days.
 
 - [x] Move the zone to Cloudflare. `dinnernode.xyz` is delegated to
-      `desi.ns.cloudflare.com` and `piers.ns.cloudflare.com`. Both
-      `google-site-verification` TXT records survived, `www` and
-      `api.dinnernode.xyz` resolve, the site serves 200.
-- [ ] **Install the named tunnels.** `ops/dinnernode-tunnel-node1.service` and
-      `ops/dinnernode-tunnel-discovery.service` exist in the repo and are not
-      installed under `~/.config/systemd/user`. No `cloudflared` process is
-      running. The only tunnel unit in place is the old ngrok one.
-- [ ] **`node1.dinnernode.xyz` and `discovery.dinnernode.xyz` do not resolve.**
-      No record of any kind. Every "verified live at node1.dinnernode.xyz" line
-      in the late snapshot came from an ad-hoc run against a hostname DNS has
-      never carried. `cloudflared` writes these records itself, so they land
-      with the item above.
-- [ ] **Set `PUBLIC_URL` on both nodes** once the hostnames exist, and retire
-      `dinnernode-tunnel.service`. Until then node 1 announces
-      `litter-unfunded-improvise.ngrok-free.dev` and node 2 announces a LAN
-      address.
-- [x] **The legal half of the proxy question is settled.** Done 2026-08-31.
-      Cloudflare's Email Address Obfuscation had rewritten the contact
-      addresses in the live `terms.html` into `/cdn-cgi/l/email-protection`
-      spans that need JavaScript to read, so the GDPR Article 13 controller
-      contact in a legal notice depended on a script running. Fixed at the
-      source rather than in the dashboard: every address is wrapped in
-      Cloudflare's documented `<!--email_off-->` markers, four places in
-      `web/public/terms.html` and three in `web/public/acceptable-use.html`.
-      That holds whatever the zone setting is later changed to, and needs no
-      Cloudflare access to reproduce.
-- [ ] **Decide the proxy question, on caching grounds only now.** Section 2 of
-      the migration doc requires DNS-only records and the apex and `www` are
-      proxied: they resolve to Cloudflare anycast and responses carry `cf-ray`
-      and `server: cloudflare` ahead of `x-vercel-cache`. What remains is the
-      second cache layer, not a published-content problem. Either turn the two
-      records grey or accept the layer knowingly.
-- [ ] The second cache layer the doc warned about is now real and has not
-      caused a problem yet. If the site ever looks stale for reasons the repo
-      does not explain, purge the Cloudflare cache before debugging anything.
+      `desi.ns.cloudflare.com` and `piers.ns.cloudflare.com`.
+- [x] **Install the named tunnels.** Done in `5d8d8fa` and `a987070`. Three
+      `cloudflared` processes are running under
+      `dinnernode-tunnel-node1.service`, `-node2.service` and
+      `-discovery.service`, all active.
+- [x] **`node1`, `node2` and `discovery.dinnernode.xyz` resolve and answer.**
+      Verified 2026-09-02: all three return 200 in about 100ms.
+      `https://node1.dinnernode.xyz/health` serves the qwen node,
+      `node2` the llama3.2:1b node, `discovery/providers` lists both.
+- [x] **`PUBLIC_URL` is set on both nodes.** Discovery shows node 1 announcing
+      `https://node1.dinnernode.xyz` and node 2 `https://node2.dinnernode.xyz`,
+      both `source: announce`. The LAN address that blocked item 5 is gone.
+- [x] The legal half of the proxy question is settled. Done 2026-08-31, see the
+      `<!--email_off-->` markers in `web/public/terms.html`.
+- [ ] **Retire `dinnernode-tunnel.service`.** The ngrok unit is still running
+      and still holds `litter-unfunded-improvise.ngrok-free.dev` against port
+      4173. Nothing announces it any more, so it is dead weight rather than a
+      hazard, but it is a second public door onto node 1 that no document
+      accounts for. `systemctl --user disable --now dinnernode-tunnel.service`.
+- [ ] **Decide the proxy question, on caching grounds only.** The apex and
+      `www` are proxied while the migration doc asks for DNS-only. Unchanged
+      since 2026-08-29. If the site ever looks stale for reasons the repo does
+      not explain, purge the Cloudflare cache before debugging anything.
+
+## Found and fixed 2026-09-02 (night)
+
+Two defects, both live, both found by probing the running nodes rather than by
+reading the code. Neither had a ticket, and neither would have surfaced from
+the test suite, because both live in the gap between what the code does and
+what the machine was doing when it started.
+
+- [x] **The node registered itself on chain as CPU-only, on a machine with an
+      RTX 5070 Ti.** `/health` and discovery both served
+      `CPU-only | 24 cores | 31GB` while the same process logged
+      `first token in 18.5s, 42% on GPU` a minute later. `probeHardware()` ran
+      once at module import, systemd started the node at 21:40:22 and the
+      NVIDIA kernel module had loaded at 21:40:20.42, so nvidia-smi was not yet
+      answering and the probe fell through to the CPU branch. That string is an
+      argument to `registerProvider`, so the wrong answer went on chain and
+      stayed there: nothing re-probes, so only a restart could fix it.
+      **Every buyer-facing description of the network's only real provider said
+      CPU-only.** Fixed with `probeHardwareReady` in `src/hardware.ts`: it
+      re-probes on an interval while `nvidiaPending()` says this machine looks
+      like it has a card whose driver has not come up, bounded at 60 seconds,
+      and gives up loudly rather than silently. A machine with genuinely no
+      NVIDIA GPU never waits, which is asserted in the tests. `host.ts` calls
+      it before `register` rather than at import. 6 tests.
+      **The chain still holds the wrong string until node 1 restarts.**
+      `registerProvider` overwrites unconditionally, so a restart corrects it.
+- [x] **`[announce] 403 nonce unknown, spent or expired`, every four minutes
+      since boot.** `src/host.ts` registered two announce timers, both at four
+      minutes, microseconds apart. Each fired its own announce; the second
+      `/announce/nonce` replaced the first one's outstanding nonce, so the
+      first claim always lost. The announcement itself always landed, so this
+      cost nothing but a recurring false alarm in the log, which is its own
+      kind of expensive: it is the line an operator learns to ignore. Fixed by
+      deleting the unconditional second timer. The store was behaving
+      correctly and the caller was not, which is now asserted in
+      `attest.test.ts`.
+- [ ] **Node 2 reports `gpuFraction: null` and `first token in 14.3s` for a
+      1.3GB model.** Not chased tonight. It is consistent with the
+      `OLLAMA_MAX_LOADED_MODELS=1` eviction already recorded under the session
+      decision above: node 2's model is not resident on the GPU. Worth one
+      look after that sudo item lands, because 14 seconds to first token on a
+      1B model is a number a buyer would notice.
+
+**Not done, and waiting for the operator:** neither fix is live. Both nodes
+are running the pre-fix tree. Restarting them is what puts the correct hardware
+string on chain and silences the 403:
+`systemctl --user restart dinnernode.service dinnernode2.service`
 
 ## Open, from the reviews of 2026-08-28 (late)
 
@@ -414,8 +470,12 @@ it is a specific number, it moves with the workload, and anyone can check it.
 
 - [x] Rate resolved from the market rather than set by hand. Done 2026-08-27.
 - [x] Input-side comparison modelled and published in `/health`. Done 2026-08-27.
-- [ ] Correct `.context/REFRAME.md` section 3, which still carries the Groq
-      comparison and the $0.80 figure.
+- [x] Correct `.context/REFRAME.md` section 3, which still carried the Groq
+      comparison and the $0.80 figure. Done 2026-09-02: section 3 rewritten
+      against the measurements, the Groq comparator withdrawn because it does
+      not serve these weights, the utilisation model folded in, and the
+      assumptions register updated so A1, A1b and A3 read as resolved. A4 is
+      the only one left. Changelog entry v2.
 - [ ] Decide the band position. `PRICE_POLICY` and `PRICE_DISCOUNT` in `.env`
       are the levers; today `median x 0.9`. Undercutting Darkbloom on output
       alone is roughly `median x 0.62` and moves break-even from 309 tokens to
@@ -782,8 +842,9 @@ contract holds **3.678 MON**. Identified so far:
 
 ## Test coverage still missing
 
-`web/` has 115 tests across 5 files and a measured mutation score of 8 of 9 as
-of the pass that recorded it. Gaps, in the order worth adding:
+`web/` has 135 tests across 7 files and a measured mutation score of 8 of 9 as
+of the pass that recorded it. The root has 223 across 14 files, both counts
+measured 2026-09-02. Gaps, in the order worth adding:
 
 - [x] The `>128` target cap, the 64 character replacement cap and the 16-rule
       cap in `extractSanitizationRules`. Done 2026-08-28.
@@ -796,8 +857,8 @@ of the pass that recorded it. Gaps, in the order worth adding:
       target is matched LITERALLY, which is the fix itself, and that a prompt
       which would trigger backtracking is untouched. Done 2026-08-28.
 - [~] `src/**` now has tests for every pure module: billing, plan, pricing,
-      engines, executor, models, earnings, and this session's `openai-api` and
-      `attest`. 164 root tests. What is still untested is the code that cannot
+      engines, executor, models, earnings, `openai-api`, `attest`, `takeover`
+      and, as of 2026-09-02, `hardware`. 223 root tests. What is still untested is the code that cannot
       be imported without a key and a chain, chiefly `host.ts` and
       `discovery.ts`, which this session exercised against a local anvil by
       hand instead. `web/api/**` no longer exists.
@@ -990,3 +1051,79 @@ From `.context/REFRAME.md` section 10. Each is cheap to settle and none has been
       lead with per-second settlement: x402 settlement volume is down 93 percent
       year to date on roughly $28k daily, so micropayment rails are not pulling
       demand on their own.
+
+---
+
+## What this roadmap lacks
+
+Added 2026-09-02, from reading the whole file against
+`.context/drafts/competitor-darkbloom.md`. Everything above this line is
+supply-side and mechanism-side: hardening, contract correctness, tunnels,
+pricing derivation, tests, legal gates. That is a good engineering roadmap and
+it is half the problem. These are the gaps in the OTHER half, in the order they
+would change what gets built.
+
+1. **There is not one demand item in this file.** The competitor brief's own
+   headline finding is that demand is the bottleneck, not supply: a funded team
+   with 250 providers and OpenRouter distribution could not fill them, and a
+   top earner made about $6. The A4 section says in prose that five customer
+   conversations settle the moat and more searching does not. That never became
+   a task. **The entire "Now" list can be completed without a single external
+   user existing.**
+   - [ ] Five conversations with people who buy inference, about the workload
+         in A4. Ahead of every code item in this file, because it decides which
+         of them are worth doing.
+
+2. **The moat cannot travel through the distribution channel, and nothing here
+   notices.** Item 9 says distribution is the gap. Items 5 and 6 say mid-answer
+   migration is the differentiator. These conflict: OpenRouter calls one
+   provider endpoint, and a cross-provider resume has no representation in that
+   protocol. Through the aggregator we are an ordinary slow provider at
+   $1.002/M with no way to express the one thing nobody else does.
+   - [ ] Decide: migration happens invisibly INSIDE our network behind one
+         endpoint, so an aggregator sees one reliable provider, or the
+         aggregator is not the channel for it. This reorders items 5, 6 and 9
+         and should be settled before spending two weeks on any of them.
+
+3. **No second operator appears anywhere in this plan.** Darkbloom has 250 to
+   900 providers. We have one operator running two daemons on one machine that
+   share one ollama and evict each other's models. A marketplace with one
+   seller is a hosting company, and every migration demo between our own two
+   nodes is house-to-house.
+   - [ ] One stranger running a node. Needs a one-command installer, a
+         hardware and VRAM matrix, Windows instructions, and onboarding docs.
+         Nothing in this file currently produces any of it.
+
+4. **No reliability numbers, on a channel that ranks on reliability.**
+   `/provider/models` publishes capacity absent and `is_ready` false. We
+   already tuned 429-versus-503 for OpenRouter's scoring, which means we know
+   they measure this, and we do not measure it ourselves.
+   - [ ] Measure and publish uptime, p50/p99 time to first token, and error
+         rate, from a canary rather than from a claim. Without it the
+         application is not credible and a regression is invisible.
+
+5. **Nobody can pay us.** Item 9's "decide what the endpoint bills" and P3's
+   "entity formation before outside money" are treated as unrelated and are the
+   same blocker. No invoicing, no accounts, no payout rail, no entity means the
+   OpenRouter application cannot complete however good the code is.
+   - [ ] Sequence the entity next to item 9 rather than in P3.
+
+6. **A4 is the declared moat and has no decision rule.** Marked contested,
+   marked worth more than anything else in this file, left open with no date
+   and no falsification test, while Featherless and Phala are both recorded as
+   evidence against it.
+   - [ ] Give it a test and a date: name ten models genuinely absent from
+         OpenRouter with evidence of paid demand, by a date, or adopt the
+         replacement thesis. Leaving it open is the most expensive line here.
+
+7. **Competitive tracking is a one-off.** The brief is dated 2026-08-27 and
+   Darkbloom's input price already moved under it, caught by accident. The
+   band feeds `pricing.ts` and the pitch.
+   - [ ] A recurring re-read of the band and the competitive set. The node
+         already fetches the band at startup; nothing keeps the BRIEF current.
+
+8. **Smaller, still real.** No answer to "who reads my prompt" for a buyer who
+   has heard of Secure Enclave, even a modest one. No Anthropic-compatible
+   surface, which Darkbloom has. No status page and no developer docs.
+   Migration's user-visible latency cost is unmeasured while its correctness is
+   proven.

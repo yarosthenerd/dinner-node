@@ -9,6 +9,11 @@
  * Every probe is best effort and every failure degrades to the next one, down
  * to "CPU only, size against system RAM", which is always answerable. Nothing
  * here throws.
+ *
+ * One failure does NOT degrade quietly, and that is what `probeHardwareReady`
+ * exists for. A GPU whose driver has not finished loading looks exactly like a
+ * machine that has no GPU, and a node started by systemd six seconds after boot
+ * reads the second answer. See the comment on that function.
  */
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -40,11 +45,25 @@ export type Hardware = {
 };
 
 const MB = 1024 * 1024;
-const run = (cmd: string, args: string[], ms = 4000): string => {
+
+type Run = {
+  /** Exit status, or null when the command could not be executed at all. */
+  status: number | null;
+  /** stdout, trimmed. Empty on any failure. */
+  out: string;
+  /** True when the binary was found and run, whatever it then returned. */
+  ran: boolean;
+};
+
+const run = (cmd: string, args: string[], ms = 4000): Run => {
   try {
     const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: ms, windowsHide: true });
-    return r.status === 0 ? (r.stdout ?? '').trim() : '';
-  } catch { return ''; }
+    // spawnSync sets `error` for ENOENT and for a timeout alike. A command that
+    // was never found and one that ran and failed are different facts here:
+    // only the second is worth waiting on.
+    const ran = !(r.error && (r.error as NodeJS.ErrnoException).code === 'ENOENT');
+    return { status: r.status, out: r.status === 0 ? (r.stdout ?? '').trim() : '', ran };
+  } catch { return { status: null, out: '', ran: false }; }
 };
 
 /**
@@ -52,7 +71,7 @@ const run = (cmd: string, args: string[], ms = 4000): string => {
  * platforms, and it reports the number ollama will actually see.
  */
 function nvidia(): Gpu[] {
-  const out = run('nvidia-smi', ['--query-gpu=name,memory.total', '--format=csv,noheader,nounits']);
+  const { out } = run('nvidia-smi', ['--query-gpu=name,memory.total', '--format=csv,noheader,nounits']);
   if (!out) return [];
   return out.split('\n').flatMap(line => {
     const [name, mem] = line.split(',').map(s => s.trim());
@@ -61,6 +80,26 @@ function nvidia(): Gpu[] {
       ? [{ name, vramMB, source: 'nvidia-smi' }]
       : [];
   });
+}
+
+/**
+ * Whether a "no GPU here" answer should be believed yet.
+ *
+ * True when this machine looks like it HAS an NVIDIA card whose driver is not
+ * answering: the tool is installed and ran and failed, or the kernel module's
+ * proc entry exists. Both are the signature of a probe run too early in boot,
+ * where nvidia-smi exits non-zero with "couldn't communicate with the NVIDIA
+ * driver". A machine with no NVIDIA hardware at all fails the first test
+ * (nvidia-smi is not installed) and the second, so it never waits.
+ */
+export function nvidiaPending(): boolean {
+  if (existsSync('/proc/driver/nvidia/version')) {
+    // The module is loaded. If it is loaded and the query still returns
+    // nothing, the device is not ready yet.
+    return nvidia().length === 0;
+  }
+  const r = run('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader']);
+  return r.ran && r.status !== 0;
 }
 
 /**
@@ -84,7 +123,7 @@ function amd(): Gpu[] {
   }
   if (found.length) return found;
 
-  const json = run('rocm-smi', ['--showmeminfo', 'vram', '--json']);
+  const { out: json } = run('rocm-smi', ['--showmeminfo', 'vram', '--json']);
   if (!json) return [];
   try {
     const d = JSON.parse(json) as Record<string, Record<string, string>>;
@@ -104,7 +143,7 @@ function amd(): Gpu[] {
  * larger is kept, which is right whichever one is broken.
  */
 function windows(): Gpu[] {
-  const ps = (script: string) => run('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], 8000);
+  const ps = (script: string) => run('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], 8000).out;
   const names = ps('(Get-CimInstance Win32_VideoController).Name -join "|"').split('|').map(s => s.trim()).filter(Boolean);
   if (!names.length) return [];
   const adapter = ps('(Get-CimInstance Win32_VideoController).AdapterRAM -join "|"')
@@ -125,7 +164,7 @@ function windows(): Gpu[] {
  * a little more above). That cap, not the total, is what a model has to fit in.
  */
 function apple(ramMB: number): Gpu[] {
-  const chip = run('sysctl', ['-n', 'machdep.cpu.brand_string']) || 'Apple Silicon';
+  const chip = run('sysctl', ['-n', 'machdep.cpu.brand_string']).out || 'Apple Silicon';
   const share = ramMB <= 36 * 1024 ? 0.75 : 0.8;
   return [{ name: chip, vramMB: Math.floor(ramMB * share), source: 'unified memory' }];
 }
@@ -168,6 +207,64 @@ export function probeHardware(): Hardware {
     cpu: cpus[0]?.model?.trim() ?? 'unknown CPU',
     ramMB, gpus, budgetMB, budgetSource, unified,
   };
+}
+
+const nap = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+export type ReadyOptions = {
+  /** How long to keep asking before accepting the CPU-only answer. */
+  timeoutMs?: number;
+  intervalMs?: number;
+  /** Injected for tests. Default to the real probes. */
+  probe?: () => Hardware;
+  pending?: () => boolean;
+  sleep?: (ms: number) => Promise<void>;
+  /** Told once when the wait starts and once when it ends, either way. */
+  log?: (line: string) => void;
+};
+
+/**
+ * `probeHardware`, but it does not accept "no GPU" from a machine that plainly
+ * has one until the driver has had a chance to answer.
+ *
+ * The failure this exists for, observed on 2026-09-02: systemd started the node
+ * six seconds after boot, nvidia-smi was not yet answering, and the probe
+ * returned CPU-only. That string is an argument to `registerProvider`, so it
+ * went ON CHAIN, and discovery served the network's only real provider to
+ * buyers as "CPU-only | 24 cores | 31GB" while the same process logged "42% on
+ * GPU" a minute later. Nothing recovers from this short of a restart, because
+ * the probe ran once at import.
+ *
+ * Waiting is bounded and only ever happens when `nvidiaPending()` says this
+ * looks like a driver that has not come up. A machine that genuinely has no
+ * GPU returns on the first probe and pays nothing.
+ */
+export async function probeHardwareReady(opts: ReadyOptions = {}): Promise<Hardware> {
+  const {
+    timeoutMs = 60_000, intervalMs = 2_000,
+    probe = probeHardware, pending = nvidiaPending,
+    sleep = nap, log = () => {},
+  } = opts;
+
+  let hw = probe();
+  if (hw.gpus.length || !pending()) return hw;
+
+  log(`no GPU yet, but this machine looks like it has one. waiting up to ${Math.round(timeoutMs / 1000)}s for the driver…`);
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    await sleep(intervalMs);
+    hw = probe();
+    if (hw.gpus.length) {
+      log(`GPU ready after ${((Date.now() - t0) / 1000).toFixed(1)}s: ${describeHardware(hw)}`);
+      return hw;
+    }
+    if (!pending()) break;
+  }
+  // Deliberately loud. Registering as CPU-only on a machine with a GPU is a
+  // wrong claim published to buyers, so the operator should see why.
+  log('  !  giving up on the GPU and registering as CPU-only. If this machine has a GPU,\n' +
+      '     the driver was not answering. Restart this node once nvidia-smi works.');
+  return hw;
 }
 
 /** One line for the on-chain provider record and for setup's output. */

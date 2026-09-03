@@ -1,3 +1,124 @@
+# Session snapshot, 2026-09-02 (night)
+
+> Prepended to the 2026-08-31 snapshot below, which is unchanged. Everything
+> here was read off the running machine, live DNS, the running units and the
+> deployed registry tonight.
+
+## 0. The tunnels landed, and the roadmap did not know
+
+Three commits landed after `TODO.md` was last updated on 2026-08-31, so the
+roadmap's DNS section described a world that had been fixed two days earlier.
+Probed tonight:
+
+```
+node1.dinnernode.xyz/health        -> 200 in 0.10s, qwen3.6:35b-a3b
+node2.dinnernode.xyz/health        -> 200 in 0.10s, llama3.2:1b
+discovery.dinnernode.xyz/providers -> 200, both nodes, source: announce
+```
+
+Three `cloudflared` processes run under the three named tunnel units, all
+active. Both nodes announce public hostnames rather than the LAN address that
+blocked the failover item. The old ngrok unit is still running and still holds
+`litter-unfunded-improvise.ngrok-free.dev` against port 4173; nothing announces
+it, so it is dead weight rather than a hazard, and it is a second public door
+onto node 1 that no document accounts for.
+
+**The failover blocker moved rather than closed.** `c1b3f07` built
+`reassignWithAuth`, so a node dying mid-answer no longer waits for the guest to
+approve a wallet prompt. It is inert in production: calling `DOMAIN_SEPARATOR()`
+on the deployed registry `0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd` reverts,
+confirmed tonight, so the client falls back to asking the guest for a
+transaction exactly as before. The blocker is now a redeploy, not DNS.
+
+## 1. The node told buyers it had no GPU
+
+`/health` and discovery both served `CPU-only | 24 cores | 31GB` for node 1,
+and `gpuFraction: null`. The same process had logged `first token in 18.5s,
+42% on GPU` a minute after start, and `nvidia-smi` reports an RTX 5070 Ti
+Laptop GPU with 12,227 MiB. The description is an argument to
+`registerProvider`, so the wrong answer is **on chain**, and it is what
+discovery serves to anyone choosing a provider.
+
+The cause, confirmed against the kernel log rather than inferred:
+
+```
+21:40:20.422  kernel: NVRM: loading NVIDIA UNIX Open Kernel Module 595.84
+21:40:22      systemd: Started dinnernode.service
+21:40:23      npm[1395]: waiting for ollama on localhost:11434
+```
+
+`probeHardware()` runs at module import, about three seconds after the kernel
+module loaded and before the device was answering queries. It found no GPU,
+fell through to the CPU branch, and nothing ever re-probed. Only a restart
+could have corrected it, and a restart at boot reproduces it.
+
+**Fixed in `src/hardware.ts`.** `probeHardwareReady` re-probes on an interval
+while `nvidiaPending()` says this machine looks like it has a card whose driver
+has not come up: the kernel module's proc entry exists, or nvidia-smi is
+installed and exits non-zero, which is exactly what a too-early probe sees. It
+is bounded at 60 seconds and gives up loudly rather than silently, because
+registering as CPU-only on a machine with a GPU is a wrong claim published to
+buyers. A machine with genuinely no NVIDIA GPU returns on the first probe and
+waits zero, which is asserted rather than assumed. `host.ts` now calls it
+before `register` rather than at import, so the string that goes on chain is
+the one measured after the driver answered. Run live tonight: 25ms, and the
+correct `NVIDIA GeForce RTX 5070 Ti Laptop GPU 12GB`.
+
+`run()` inside that file now distinguishes a binary that was never found from
+one that ran and failed. Only the second is worth waiting on, and that
+distinction is the whole fix.
+
+## 2. A 403 every four minutes, for the life of every process
+
+```
+[announce] 200 {"ok":true,...}
+[announce] 403 nonce unknown, spent or expired
+```
+
+Both lines, every four minutes, since boot, on both nodes. `host.ts` registered
+two announce timers, both at four minutes, microseconds apart. Each fired its
+own announce; the second `/announce/nonce` replaced the first one's outstanding
+nonce, and the first claim always lost. The nonce store was behaving exactly as
+designed, which is why nothing in its tests caught this: one outstanding nonce
+per claimant is the property that makes a captured signature worthless.
+
+The announcement always landed, so the cost was never availability. The cost is
+that an operator learns to ignore a recurring 403 in a security-relevant log.
+Fixed by deleting the unconditional second timer, and the interleaving is now
+written down as a test in `attest.test.ts` so the next person to add a timer
+reads why there is one.
+
+## 3. Not chased
+
+Node 2 reports `gpuFraction: null` and `first token in 14.3s` for a 1.3GB
+model. That is consistent with the `OLLAMA_MAX_LOADED_MODELS=1` eviction
+already recorded in `TODO.md`: node 2's model is not resident on the GPU.
+Fourteen seconds to first token on a 1B model is a number a buyer would notice,
+and it is worth one look after that sudo item lands.
+
+## 4. Counts
+
+Root 223 tests across 14 files, `web/` 135 across 7, all passing, typecheck
+clean. Six of the root tests are new and cover the hardware probe; one is new
+in `attest.test.ts`.
+
+**Neither fix is live.** Both nodes are running the pre-fix tree. A restart is
+what puts the correct hardware string on chain and silences the 403.
+
+## 5. Documents reconciled
+
+`.context/REFRAME.md` section 3 was rewritten against the measurements. It had
+carried a $0.80/M target derived from a Groq comparison, a 25 tok/s throughput
+guess and a 250W power guess, all of which the 2026-08-28 benchmarks replaced.
+Groq does not serve these weights, so it was never the comparator a buyer would
+reach for. The assumptions register now reads A1, A1b and A3 as resolved, A2 as
+partial, and A4 as contested and still the moat. Changelog entry v2.
+
+`TODO.md` gained a section it did not have: what the roadmap lacks measured
+against Darkbloom. The short version is that every item in it is supply-side,
+and the competitor brief's own headline finding is that demand is the
+bottleneck.
+
 # Session snapshot, 2026-08-31
 
 > Prepended to the 2026-08-29 audit below, which is unchanged and is superseded

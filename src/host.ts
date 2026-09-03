@@ -8,7 +8,7 @@ import { ABI, ADDR, EXPLORER, monadTestnet, pub, wallet } from './chain';
 import { isMine, readJob, readProvider, remaining } from './registry';
 import { authorises, parseAuth, refuseTakeover } from './takeover';
 import { mock, ollama, openai, SYSTEM_PROMPT, type Chunk } from './engines';
-import { describeHardware, probeHardware } from './hardware';
+import { describeHardware, probeHardware, probeHardwareReady } from './hardware';
 import { PLAN_LIMITS, planCostWei, planHash, validatePlan, type Plan } from './plan';
 import { describePlan, makePlan } from './planner';
 import { executePlan, type Dispatch } from './executor';
@@ -136,9 +136,14 @@ const throttleMs = () => {
 };
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-// Probed once at start. The string goes on chain in the provider record, so a
+// Probed at start. The string goes on chain in the provider record, so a
 // guest choosing between nodes sees what they are choosing between.
-const HW = probeHardware();
+//
+// Mutable, and re-probed before `register` below. A GPU driver that has not
+// finished loading is indistinguishable from no GPU, so a node systemd starts
+// seconds after boot would otherwise register itself as CPU-only and stay that
+// way until someone restarted it. See `probeHardwareReady`.
+let HW = probeHardware();
 
 /**
  * What a guest has to wait for before the first token, and how much of the
@@ -1859,6 +1864,10 @@ http.createServer(async (req, res) => {
   // costs more gas than the tokens are worth.
   console.log(`price break-even ${breakEvenTokens(settleGasUnits, gasPriceWei, RATE)} tokens per settle at ${Number(gasPriceWei) / 1e9} gwei`);
 
+  // Before registering, and not before listening: this can wait up to a minute
+  // on a machine whose driver is still coming up, and it only ever waits there.
+  HW = await probeHardwareReady({ log: l => console.log(l) });
+
   await register(e);
   const lan = Object.values(os.networkInterfaces()).flat().find(a => a?.family === 'IPv4' && !a.internal)?.address;
   console.log(`\nprovider ${me} listening on :${PORT}`);
@@ -1902,6 +1911,11 @@ http.createServer(async (req, res) => {
   announce();
   // Unref'd: a re-announce timer should never be the reason this process stays
   // alive.
+  // ONE timer. There were two, both at four minutes, registered microseconds
+  // apart: each fired its own announce, the second `/announce/nonce` replaced
+  // the first node's outstanding nonce, and the loser logged
+  // "403 nonce unknown, spent or expired" every four minutes for the life of
+  // the process. The announcement itself always landed, so this cost nothing
+  // but a false alarm in the log, which is its own kind of expensive.
   if (DISCOVERY && PUBLIC_URL) setInterval(announce, ANNOUNCE_EVERY_MS).unref?.();
-  setInterval(announce, 4 * 60 * 1000).unref();
 });
