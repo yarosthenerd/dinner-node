@@ -1,10 +1,99 @@
 # Session snapshot, 2026-09-03
 
-> Prepended to the 2026-09-02 snapshot below, which is unchanged.
-> The registry was redeployed today. Three things went wrong on the way and
-> none of them produced an error message, which is the theme of this entry.
+> The full record of the session that began on the night of 2026-09-02 and ran
+> through the registry cutover on 2026-09-03. The 2026-09-02 snapshot below is
+> kept unchanged and is the detail for sections 5 and 6 here; where it says a
+> fix is "not live", section 5 is the correction.
+>
+> The theme, and the reason to read this one: **seven things went wrong across
+> this session, and four of them produced no error at all.** Of the three that
+> did, one was a 403 in a log an operator had learned to ignore, one was a
+> warning printed directly under a line that said "registered", and one was a
+> FAIL the suite then passed twelve checks on top of. Nothing here was found by
+> something going red.
 
-## 0. DinnerNodeV2 is live at 0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c
+## 0. Results, in one list
+
+Six commits, `ad4cb49` through `56f5021`.
+
+| # | Result | Evidence |
+|---|---|---|
+| 1 | **The handover works against two live nodes.** Two providers paid for disjoint ranges of one answer, guest signs nothing. | job#12, 12 of 12, section 1 |
+| 2 | **DinnerNodeV2 redeployed with `reassignWithAuth`.** `0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c` | section 2 |
+| 3 | **The node no longer advertises itself as CPU-only.** The GPU string is on chain and correct. | section 5 |
+| 4 | **The `[announce] 403` every four minutes is gone.** | section 5 |
+| 5 | **Five guards written**, one per failure that announced itself nowhere. | sections 1 and 3 |
+| 6 | **`REFRAME.md` section 3 rewritten against measurement**, the $0.80 target and the Groq comparison withdrawn. | 2026-09-02 snapshot section 5 |
+| 7 | **`TODO.md` gained a demand side**, which it did not have. | section 6 |
+| 8 | **The ngrok tunnel is retired**, closing a second public door onto node 1. | section 5 |
+
+The five guards, since they are the durable part: `set-registry.mjs` refuses an
+address with no code; `v2-live.mjs` snapshots and restores the provider record,
+and refuses the production registry without `--yes-clobber`; its final
+`process.exit` became `process.exitCode` so the restore actually runs on a
+passing run; `auth-takeover-e2e.mjs` asserts a checkpoint was published and a
+prefix was handed over; `probeHardwareReady` refuses to believe "no GPU" from a
+machine whose driver has not come up.
+
+Counts unchanged from the night before and re-run today: root 223 tests across
+14 files, `web/` 135 across 7, contracts 72 across 5 suites, typecheck clean.
+
+Commits, oldest first:
+
+```
+ad4cb49  fix: the node told buyers it had no GPU
+5f6fa19  ops: a deploy for the registry, and one place that knows every address
+267a6e8  fix: an address is not a registry
+99af182  ops: the registry that can do a handover the guest slept through
+9ece6f1  fix: a live suite that ate the node it was checking
+56f5021  feat: the handover, proven against the two live nodes
+```
+
+## 1. The handover ran against the live pair, and it works
+
+`scripts/auth-takeover-e2e.mjs` had only ever run against anvil. Run against
+`node1.dinnernode.xyz` and `node2.dinnernode.xyz` on the new registry, job#12,
+**12 of 12**. The guest's nonce was 113 before the handover and 113 after, which
+is the entire point: the node died and nobody had to be awake.
+
+The on-chain receipt, read back off the chain rather than off the test output:
+
+```
+59297534  settled     node1(qwen)  +  812 tok   0.02713095 MON
+59297534  checkpoint  node1(qwen)   tokens=67 billed=812
+59297535  HANDOVER    node1(qwen) -> node2(llama)
+59297549  settled     node2(llama) +   24 tok   0.00014472 MON
+59297549  checkpoint  node2(llama)  tokens=91 billed=836
+59297550  HANDOVER    node2(llama) -> node1(qwen)
+59297728  settled     node1(qwen)  + 1675 tok   0.01010025 MON
+```
+
+Two providers paid for disjoint ranges of one answer, each at its own rate:
+node 2 produced tokens 68 through 91 and was paid for those and nothing else.
+This is the item nobody in the competitive set can run, and it is now done
+rather than argued for.
+
+**The first run passed while proving less than it appeared to.** It reported
+`node A streamed 0 chars` and passed everything after it. The reader counted
+only `{t:…}` frames, and reasoning arrives as `{th:…}`, a separate shape: on
+qwen3.6 it spent its whole 200-chunk budget on thinking, captured no
+checkpoint, and handed node B `resume: undefined`, so node B started the answer
+from scratch and the suite called that a continuation. 1,323 tokens were billed
+for zero visible characters.
+
+Fixed in the script rather than worked around: it reads `th` frames, runs to a
+deadline instead of a chunk count, and now asserts two things it did not before,
+that node A published a checkpoint and that node B was given a prefix to
+continue from. **Either assertion would have failed the first run.** `BUDGET` is
+an environment variable now, because a reasoning model bills its thinking and
+the hardcoded 1 MON escrow is not a testnet-appropriate number.
+
+**What is still not proven:** the e2e walks away from the stream, which is what
+a dead node looks like from the browser's side and is not the same as killing
+the process. `TODO.md` item 6 is now the recording plus a real `systemctl stop`
+mid-answer.
+
+## 2. DinnerNodeV2 is live at 0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c
 
 `reassignWithAuth` is on chain. `DOMAIN_SEPARATOR()` answers
 `0x5940d1d2253c9f77e0e7eafc855ba40d3c3924ddbdbf1481cda736395fcc062c`, where the
@@ -22,7 +111,11 @@ runs totalling 34 bytes at offsets 5391 and 5413. The artifact's
 `_CACHED_DOMAIN_SEPARATOR` and `_CACHED_CHAIN_ID`, spliced in at construction.
 Everything else matches byte for byte.
 
-## 1. Three silent failures, in order
+## 3. Four silent failures on the way to it
+
+All four were found by probing the running system, not by anything reporting
+them. Each now has a guard, because a class of failure that announces itself
+nowhere will happen again.
 
 **An address is not a registry.** `scripts/set-registry.mjs` was given the
 DEPLOYER's address, which is the first line of the deploy script's own output,
@@ -63,7 +156,10 @@ opened jobs on the new one. `GET /health` on discovery publishes the registry it
 is using, which is what caught it. Anything that changes `DINNER_NODE_ADDRESS`
 is a three-service restart, not two.
 
-## 2. State at the end of the cutover, all verified independently
+## 4. State at the end of the cutover, all verified independently
+
+Read off the chain, the running units and the deployed bundle, not off the
+commands' own output.
 
 ```
 new registry   0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c
@@ -74,49 +170,71 @@ site bundle    index-B3hjANN-.js, new registry 8x, old registry 0x
 both nodes     accepting, gas ok
 ```
 
-## 2b. The handover ran against the live pair, and it works
+## 5. The 2026-09-02 fixes are live, and this is the verification
 
-`scripts/auth-takeover-e2e.mjs` had only ever run against anvil. Run against
-`node1.dinnernode.xyz` and `node2.dinnernode.xyz` on the new registry, job#12,
-**12 of 12**. The guest's nonce was 113 before the handover and 113 after, which
-is the entire point: the node died and nobody had to be awake.
+The snapshot below says "neither fix is live". That was true when it was
+written and stopped being true when the nodes restarted on the morning of
+2026-09-03. Both are now confirmed against the running machine.
 
-The on-chain receipt, read back off the chain rather than off the test output:
+**The hardware string is corrected on chain.** Node 1 re-registered as
+`NVIDIA GeForce RTX 5070 Ti Laptop GPU 12GB | 24 cores | 31GB`, tx
+`0x2ceecaaf…`, and discovery serves that from the provider record rather than
+from local state. Both providers carry it. `gpuFraction` populated on the next
+measurement: `first token in 31.1s, 42% on GPU`, where the 42% matches the
+earlier reading and the 31 seconds is the known cold model load at 32k context
+from the A1 sweep, not a new problem.
 
-```
-59297534  settled     node1(qwen)  +  812 tok   0.02713095 MON
-59297534  checkpoint  node1(qwen)   tokens=67 billed=812
-59297535  HANDOVER    node1(qwen) -> node2(llama)
-59297549  settled     node2(llama) +   24 tok   0.00014472 MON
-59297549  checkpoint  node2(llama)  tokens=91 billed=836
-59297550  HANDOVER    node2(llama) -> node1(qwen)
-59297728  settled     node1(qwen)  + 1675 tok   0.01010025 MON
-```
+**The 403 is gone.** Zero on either node across a full four-minute announce
+cycle. The proof is silence rather than a line: a repeat success is
+deliberately not logged, so a cycle passing with no output at all is the
+duplicate timer being absent. Previously every cycle printed a 403 beside the
+200.
 
-Two providers paid for disjoint ranges of one answer, each at its own rate:
-node 2 produced tokens 68 through 91 and was paid for those and nothing else.
+**The ngrok tunnel is retired.** `dinnernode-tunnel.service` disabled, zero
+ngrok processes, three cloudflared still running, all three hostnames still
+answering. That closes the second public door onto node 1 that no document
+accounted for.
 
-**The first run passed while proving less than it appeared to.** It reported
-`node A streamed 0 chars` and passed everything after it. The reader counted
-only `{t:…}` frames, and reasoning arrives as `{th:…}`, a separate shape: on
-qwen3.6 it spent its whole 200-chunk budget on thinking, captured no
-checkpoint, and handed node B `resume: undefined`, so node B started the answer
-from scratch and the suite called that a continuation. 1,323 tokens were billed
-for zero visible characters.
+## 6. What the roadmap lacks, which is the part no code fixes
 
-Fixed in the script rather than worked around: it reads `th` frames, runs to a
-deadline instead of a chunk count, and now asserts two things it did not before,
-that node A published a checkpoint and that node B was given a prefix to
-continue from. Either would have failed the first run. `BUDGET` is also an
-environment variable now, because a reasoning model bills its thinking and the
-hardcoded 1 MON escrow is not a testnet-appropriate number.
+The session opened by reading `TODO.md` end to end against
+`.context/drafts/competitor-darkbloom.md`. The finding, now written into
+`TODO.md` as a section with checkboxes rather than left in a conversation:
 
-Also found: `eth_getLogs` on Monad's public RPC is capped at a 100 block range,
-which is the same ceiling `TODO.md` records against `watchContractEvent`, and
-`eth_estimateGas` answers a bare `-32602` for the no-argument `refund()`, which
-has to be sent with a fixed limit.
+**Every item in the roadmap was supply-side.** Hardening, contract correctness,
+tunnels, pricing derivation, tests, legal gates. The competitor brief's own
+headline finding is that demand is the bottleneck, not supply: a funded team
+with 250 providers and OpenRouter distribution could not fill them, and a top
+earner made about $6. The A4 section says in prose that five customer
+conversations settle the moat and more searching does not. That never became a
+task, and **the entire "Now" list could have been completed without a single
+external user existing.**
 
-## 3. What this cutover did not do
+Seven more, in the order they would change what gets built:
+
+1. **The moat cannot travel through the distribution channel.** Item 9 says
+   distribution is the gap; items 5 and 6 say mid-answer migration is the
+   differentiator. OpenRouter calls one provider endpoint, and a cross-provider
+   resume has no representation in that protocol. Either migration happens
+   invisibly inside our network behind one endpoint, or the aggregator is not
+   the channel for it. Undecided, and it reorders three items.
+2. **No second operator appears anywhere.** Two daemons on one machine sharing
+   one ollama is not a marketplace, and every migration demo between them is
+   house-to-house.
+3. **No reliability numbers**, on a channel that ranks on reliability. We tuned
+   429-versus-503 for OpenRouter's scoring, so we know they measure it, and we
+   do not measure it ourselves.
+4. **Nobody can pay us.** "Decide what the endpoint bills" and "entity
+   formation" are the same blocker filed in two places.
+5. **A4 is the declared moat and has no decision rule**, no date and no
+   falsification test, while Featherless and Phala are both recorded against it.
+6. **Competitive tracking is a one-off.** Darkbloom's input price already moved
+   under the brief and was caught by accident.
+7. Smaller: no answer to "who reads my prompt", no Anthropic-compatible
+   surface, no status page, and migration's user-visible latency cost is
+   unmeasured while its correctness is proven.
+
+## 7. What this session did not do
 
 The 5.126 MON still held by the old registry was not moved. It is provider
 earnings and guest deposits, and `scripts/drain-v1.mjs` is the same job against
@@ -235,6 +353,8 @@ in `attest.test.ts`.
 
 **Neither fix is live.** Both nodes are running the pre-fix tree. A restart is
 what puts the correct hardware string on chain and silences the 403.
+**Superseded: both were restarted and verified on 2026-09-03.** See section 5
+of the snapshot above, which carries the tx hash and the announce-cycle check.
 
 ## 5. Documents reconciled
 
