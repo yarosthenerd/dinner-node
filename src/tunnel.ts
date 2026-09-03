@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { resolveCloudflared } from './cloudflared.js';
 
 /**
  * A public URL for a node whose operator has not arranged one.
@@ -42,15 +43,21 @@ export function startQuickTunnel(port: number, opts: {
   timeoutMs?: number;
   log?: (s: string) => void;
   spawnFn?: typeof spawn;
+  /** Which binary to run. Defaults to the operator's, then to ours in bin/. */
+  bin?: string;
 } = {}): Promise<Tunnel | null> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const log = opts.log ?? console.log;
   const spawner = opts.spawnFn ?? spawn;
+  // A bare 'cloudflared' only works when one is on the PATH. setup may have
+  // fetched one into bin/ instead, which is the ordinary case for an operator
+  // who installed nothing by hand.
+  const bin = opts.bin ?? resolveCloudflared()?.path ?? 'cloudflared';
 
   return new Promise(resolve => {
     let child: ChildProcess;
     try {
-      child = spawner('cloudflared', [
+      child = spawner(bin, [
         'tunnel', '--no-autoupdate', '--url', `http://localhost:${port}`,
       ], { stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e: any) {

@@ -23,13 +23,12 @@ import { pub, DEFAULT_ADDR } from './chain.js';
 import { probeHardware, describeHardware } from './hardware.js';
 import { gb, rankInstalled, recommend } from './models.js';
 import { hasCommand, repoEnvPath, installHint, OLLAMA_SERVE_HINT } from './platform.js';
+import { resolveCloudflared, downloadCloudflared, approxMB } from './cloudflared.js';
 
 // Overridable so the fresh-operator path (generates a key, writes a new file)
 // can be exercised against a throwaway file instead of a real one.
 const ENV_PATH = process.env.DINNERNODE_ENV_PATH ?? repoEnvPath(import.meta.url);
 const OLLAMA = 'http://localhost:11434';
-// The port the node serves on, so every tunnel hint names the same one.
-const PORT = Number(process.env.PORT ?? 4173);
 const FAUCET = 'https://agents.devnads.com/v1/faucet';
 // Enough for registerProvider plus a long tail of settle and closeJob calls.
 // Monad charges the gas limit, so a node that registers and then runs dry mid
@@ -58,6 +57,10 @@ const C = process.stdout.isTTY
   : { g: '', r: '', y: '', d: '', b: '', x: '' };
 
 let failed = false;
+// Separate from `failed` on purpose. A LAN-only node is a working node and
+// must not stop the launcher, but it earns nothing from the network, and the
+// success line has to say which of the two an operator is looking at.
+let cannotEarn = false;
 const ok = (m: string) => console.log(`  ${C.g}✓${C.x} ${m}`);
 const warn = (m: string) => console.log(`  ${C.y}!${C.x} ${m}`);
 const bad = (m: string, fix?: string) => {
@@ -324,26 +327,42 @@ async function main() {
   // A node only earns from guests who can reach it. Without a public URL it
   // still serves the LAN page, which is a real mode, not a failure.
   const publicUrl = env.get('PUBLIC_URL') ?? process.env.PUBLIC_URL ?? '';
+  const tunnelMode = (env.get('TUNNEL') ?? process.env.TUNNEL ?? 'auto').trim().toLowerCase();
+
   if (publicUrl) {
     ok(`public url ${publicUrl}`);
-  } else if (has('cloudflared')) {
-    // It said "a tunnel will start with the node", and nothing in this
-    // codebase has ever started one. A checklist that reports a thing is
-    // handled when it is not is worse than one that says nothing.
-    warn('cloudflared installed but no PUBLIC_URL set');
-    console.log(`    ${C.d}quick tunnel, no account, random hostname each run:${C.x}`);
-    console.log(`    ${C.d}  cloudflared tunnel --url http://localhost:${PORT}${C.x}`);
-    console.log(`    ${C.d}then put the https URL in .env as PUBLIC_URL=${C.x}`);
-    console.log(`    ${C.d}a named tunnel gives a hostname that survives a restart:${C.x}`);
-    console.log(`    ${C.d}  ops/cloudflare-migration.md${C.x}`);
-  } else if (has('ngrok')) {
-    warn('ngrok installed but no PUBLIC_URL set');
-    console.log(`    ${C.d}start it yourself: ngrok http ${PORT}${C.x}`);
-    console.log(`    ${C.d}then put the https URL in .env as PUBLIC_URL=${C.x}`);
+  } else if (tunnelMode === 'off') {
+    // An explicit decision, so it is reported rather than argued with. It is
+    // still the state where the node earns nothing.
+    warn('TUNNEL=off and no PUBLIC_URL set');
+    cannotEarn = true;
   } else {
-    warn('no tunnel tool — your node will serve the LAN only');
-    console.log(`    ${C.d}for public jobs install cloudflared (no account needed):${C.x}`);
-    for (const l of installHint('cloudflared')) console.log(`    ${C.d}  ${l}${C.x}`);
+    let cf = resolveCloudflared();
+
+    // The one dependency between a node that earns and a node that does not,
+    // and the only one this wizard can satisfy on its own: a static binary,
+    // no Cloudflare account, no token, no DNS. Telling an operator to go and
+    // fetch it is how a supply funnel loses people at the last step.
+    if (!cf && !CHECK_ONLY && INTERACTIVE) {
+      console.log(`  ${C.b}?${C.x} without a tunnel this node serves your LAN only and earns nothing.`);
+      if (await confirm(`download cloudflared now? (~${approxMB()} MB, no account needed)`)) {
+        const r = await downloadCloudflared({ log: l => console.log(`    ${C.d}${l}${C.x}`) });
+        if (r.ok) cf = { path: r.path, source: 'downloaded' };
+        else warn(`download failed: ${r.why}`);
+      }
+    }
+
+    if (cf) {
+      ok(`tunnel ready ${C.d}(cloudflared ${cf.source === 'PATH' ? 'on your PATH' : 'in bin/'})${C.x}`);
+      console.log(`    ${C.d}the node opens a quick tunnel at boot and gets a new hostname each restart${C.x}`);
+      console.log(`    ${C.d}for one that survives a restart, set PUBLIC_URL: ops/cloudflare-migration.md${C.x}`);
+    } else {
+      warn('no cloudflared, so this node will serve your LAN only');
+      cannotEarn = true;
+      console.log(`    ${C.d}install it and re-run, no account needed:${C.x}`);
+      for (const l of installHint('cloudflared')) console.log(`    ${C.d}  ${l}${C.x}`);
+      console.log(`    ${C.d}or set PUBLIC_URL in .env to any tunnel you already run${C.x}`);
+    }
   }
 
   finish();
@@ -354,6 +373,15 @@ function finish(): never {
   if (failed) {
     console.log(`${C.r}not ready${C.x} — fix the items above and run ${C.b}npm run setup${C.x} again\n`);
     process.exit(1);
+  }
+  if (cannotEarn) {
+    // Exit 0 regardless: LAN-only is a mode an operator may have chosen, and
+    // failing here would stop the launcher for someone who wants exactly this.
+    // What was wrong before was not the exit code, it was printing "ready"
+    // over a node that cannot be reached by a paying guest.
+    console.log(`${C.y}ready for your LAN, and it will not earn${C.x} — nothing on the network can reach it.`);
+    console.log(`${C.d}serve anyway with ${C.x}${C.b}npm run host${C.x}${C.d}, or fix the reachability item above and re-run.${C.x}\n`);
+    process.exit(0);
   }
   console.log(`${C.g}ready${C.x} — start serving with ${C.b}npm run host${C.x}\n`);
   process.exit(0);

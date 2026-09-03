@@ -28,8 +28,11 @@ Both launchers are shims. Dependency freshness lives in
 platforms cannot drift apart in shell script.
 
 A node with no public URL serves its own LAN and earns nothing from the
-network. `setup` says so; giving it one is `PUBLIC_URL`, or cloudflared on the
-PATH and the node opens a quick tunnel itself at boot.
+network, and setup now says that in those words rather than printing "ready"
+over it. Giving it one takes no Cloudflare account: setup offers to fetch the
+cloudflared binary into `bin/`, and the node opens a quick tunnel with it at
+boot. Decline, and the node still serves your LAN. Set `PUBLIC_URL` instead for
+a hostname that survives a restart, or `TUNNEL=off` to never open one.
 
 ## Why Monad
 One 60-second answer is roughly 30 settlement transactions, roughly 1.9M gas. What that

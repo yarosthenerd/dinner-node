@@ -47,3 +47,8 @@ patch_engrams3.cjs
 
 # root tsc -b build artifact
 tsconfig.tsbuildinfo
+
+# cloudflared, fetched by `npm run setup` when the operator has none. A build
+# artifact rather than source: it is an unpinned `latest` on purpose, because a
+# tunnel client vendored into a repo goes stale and starts failing handshakes.
+bin/
