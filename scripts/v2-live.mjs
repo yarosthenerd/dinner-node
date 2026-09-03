@@ -11,8 +11,20 @@
 //   DINNER_NODE_V2=0x... node scripts/v2-live.mjs
 //
 // Wallets: PROVIDER_PK is provider A and pays for everything, HOUSE_PK is the
-// replacement provider B, GUEST_PK is the guest. Nothing here touches the v1
-// contract the live site and both running nodes use.
+// replacement provider B, GUEST_PK is the guest.
+//
+// PROVIDER_PK IS NODE 1'S OWN KEY, and registerProvider overwrites
+// unconditionally. The header here used to say "nothing touches the contract
+// the live site and both running nodes use", which was true only while this
+// script was pointed at a registry nothing else pointed at. On 2026-09-03 the
+// registry was redeployed, this ran against it, and node 1's live provider
+// record became `live-check-A` at `hw` with a rate 33,000x below the real one:
+// a model nothing serves, advertised to every guest, until the node happened to
+// restart. Nothing errored, because every call did what it was told.
+//
+// So the record is snapshotted before the run and restored at the end, whatever
+// the outcome, and pointing this at the registry the nodes are actually using
+// now asks first. --yes-clobber skips the question for CI.
 import 'dotenv/config';
 import { createPublicClient, createWalletClient, defineChain, formatEther, http, keccak256, parseEther, parseEventLogs, stringToHex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -22,6 +34,26 @@ const ADDR = process.env.DINNER_NODE_V2;
 if (!ADDR) { console.error('set DINNER_NODE_V2'); process.exit(1); }
 const EXPLORER = 'https://testnet.monadvision.com';
 const MAX_FEE = 2000000000000n;
+
+// The registry the nodes and the site are configured against, read from the
+// same .env they read. Equal to ADDR means this run is destructive to
+// production rather than to a scratch deployment.
+const LIVE = process.env.DINNER_NODE_ADDRESS ?? '';
+const PRODUCTION = LIVE && LIVE.toLowerCase() === ADDR.toLowerCase();
+if (PRODUCTION && !process.argv.includes('--yes-clobber')) {
+  console.error(`
+  !  ${ADDR} is the registry DINNER_NODE_ADDRESS names, so it is what the
+     running nodes and the deployed site are using.
+
+     This suite registers provider A with PROVIDER_PK, which is node 1's key,
+     and registerProvider overwrites unconditionally. The real record is
+     restored when the run finishes, but a crash between the two leaves node 1
+     advertising 'live-check-A' at 0.001 MON/M until it is restarted.
+
+     Prefer a scratch deployment:  node scripts/deploy-v2.mjs --send
+     Or pass --yes-clobber to run against production anyway.`);
+  process.exit(1);
+}
 
 // Cheap on purpose: 1e15 wei per million tokens makes 100,000 tokens cost
 // 0.0001 MON, so the whole run is gas rather than escrow.
@@ -138,6 +170,17 @@ async function main() {
     const hash = await wA.sendTransaction({ to: G.address, value: parseEther('1'), maxFeePerGas: MAX_FEE, maxPriorityFeePerGas: 1n, gas: 21000n });
     await pub.waitForTransactionReceipt({ hash });
   }
+  // Snapshot A's real record BEFORE overwriting it, so the finally below can
+  // put it back. Read rather than assumed: the rate moves with the market.
+  const beforeA = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'getProvider', args: [A.address] })
+    .catch(() => null);
+  if (beforeA?.active && beforeA.model !== 'live-check-A') {
+    restoreA = async () => {
+      console.log(`\n  restoring provider A: ${beforeA.model} at ${beforeA.ratePerMillion}`);
+      await send(wA, 'registerProvider', [beforeA.model, beforeA.hw, beforeA.ratePerMillion, beforeA.maxTokensPerSecond]);
+    };
+  }
+
   console.log('  registering A(fast) and B(slow) on the new contract...');
   // B starts FAST so the double-pay check below is bound by the CHECKPOINT and
   // not by throughput; it is re-registered SLOW before the throughput check.
@@ -281,7 +324,22 @@ async function main() {
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);
-  process.exit(fail ? 1 : 0);
+  // exitCode rather than exit(), so the restore in the finally below actually
+  // runs. process.exit() here would skip it and leave A misregistered on a
+  // fully passing run, which is the worst version of this bug.
+  process.exitCode = fail ? 1 : 0;
 }
 
-main().catch(e => { console.error('\nFATAL', e.shortMessage ?? e.message); process.exit(1); });
+// Set by main() once it has read A's real record, and run whatever happens
+// after: a suite that leaves a provider misregistered has broken the thing it
+// was checking.
+let restoreA = null;
+const restore = async () => {
+  if (!restoreA) return;
+  try { await restoreA(); } catch (e) { console.error('  !  could not restore provider A:', e.shortMessage ?? e.message); }
+  restoreA = null;
+};
+
+main()
+  .catch(e => { console.error('\nFATAL', e.shortMessage ?? e.message); process.exitCode = 1; })
+  .finally(restore);

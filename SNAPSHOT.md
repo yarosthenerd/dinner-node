@@ -1,3 +1,92 @@
+# Session snapshot, 2026-09-03
+
+> Prepended to the 2026-09-02 snapshot below, which is unchanged.
+> The registry was redeployed today. Three things went wrong on the way and
+> none of them produced an error message, which is the theme of this entry.
+
+## 0. DinnerNodeV2 is live at 0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c
+
+`reassignWithAuth` is on chain. `DOMAIN_SEPARATOR()` answers
+`0x5940d1d2253c9f77e0e7eafc855ba40d3c3924ddbdbf1481cda736395fcc062c`, where the
+old instance at `0x2881…` reverted, so the gasless failover is no longer inert
+and a node dying mid-answer does not wait for the guest to reach their wallet.
+
+Deployed by `scripts/deploy-v2.mjs`, new this session, because none existed:
+`contracts/README.md` still carried the stock Foundry template pointing at
+`Counter.s.sol`. Cost 0.505 MON of an estimated 0.505.
+
+Verified against the local build rather than trusted: the deployed code is
+22,543 bytes, the same length as `deployedBytecode`, and differs in exactly two
+runs totalling 34 bytes at offsets 5391 and 5413. The artifact's
+`immutableReferences` names slots at 5361 and 5413, which are
+`_CACHED_DOMAIN_SEPARATOR` and `_CACHED_CHAIN_ID`, spliced in at construction.
+Everything else matches byte for byte.
+
+## 1. Three silent failures, in order
+
+**An address is not a registry.** `scripts/set-registry.mjs` was given the
+DEPLOYER's address, which is the first line of the deploy script's own output,
+because the deploy step had not been run yet and it was the only 40-hex string
+on screen. It rewrote all nine files. Both nodes restarted and "registered" by
+sending a transaction to an account with no code, which succeeds and does
+nothing. The node's own guard said so, `could not read the registry to confirm
+registration`, one line under a `registered` that looked like success. The real
+failure surfaced two steps later as `deposits returned no data ("0x")`.
+Fixed: the script now calls `eth_getCode` before writing anything and refuses
+an address with no code, `--force` to override.
+
+**A deploy that landed and went nowhere.** On the retry the deploy succeeded
+and printed its address, but `set-registry.mjs` never received it, so every
+file, both nodes and the live site stayed on `0x2881…`. There was no error to
+see, because each command individually did what it was told. The address was
+recovered from the chain rather than from scrollback: the deployer's balance
+fell 0.609 MON, the nonce reached 37, and the CREATE address for nonce 36 held
+the matching bytecode.
+
+**The live suite ate node 1's identity.** `scripts/v2-live.mjs` registers its
+provider A with `PROVIDER_PK`, which is node 1's own key, and
+`registerProvider` overwrites unconditionally. Run against the new registry, it
+left node 1's live on-chain record as `model=live-check-A`, `hw=hw`, rate
+`1e15` wei, which is a model nothing serves at 33,000x below the real price,
+advertised to every guest. The script's own header said "nothing here touches
+the contract the live site and both running nodes use", and that was true only
+while it pointed at a registry nothing else pointed at. Fixed two ways: the
+real record is snapshotted before the run and restored in a `finally`, and the
+final `process.exit` became `process.exitCode` so the restore actually runs on
+a passing run. Pointing it at the registry `DINNER_NODE_ADDRESS` names now
+refuses unless `--yes-clobber` is passed.
+
+**Discovery was not in the restart.** `dinnernode-discovery.service` reads the
+registry at import and had been up since the previous evening, so after the
+cutover it served a provider list read from the OLD contract while the browser
+opened jobs on the new one. `GET /health` on discovery publishes the registry it
+is using, which is what caught it. Anything that changes `DINNER_NODE_ADDRESS`
+is a three-service restart, not two.
+
+## 2. State at the end of the cutover, all verified independently
+
+```
+new registry   0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c
+node1 on chain qwen3.6:35b-a3b  33412500000000000000  RTX 5070 Ti ...
+node2 on chain llama3.2:1b       6030000000000000000  RTX 5070 Ti ...
+discovery      registry 0x7E98Cd3E…, known 2, active 2
+site bundle    index-B3hjANN-.js, new registry 8x, old registry 0x
+both nodes     accepting, gas ok
+```
+
+## 3. What this cutover did not do
+
+The 5.126 MON still held by the old registry was not moved. It is provider
+earnings and guest deposits, and `scripts/drain-v1.mjs` is the same job against
+v1 and is the template. `DinnerRatings` still pins the old registry in its
+constructor, so it checks jobs against a contract nothing writes to. Both were
+deliberate, and both are still open.
+
+The thing the redeploy was FOR has not been run yet:
+`scripts/auth-takeover-e2e.mjs` against the two live nodes rather than against
+anvil. That is the first time the tunnels, the announce path and a real network
+failure are in the loop, and it is the migration demo.
+
 # Session snapshot, 2026-09-02 (night)
 
 > Prepended to the 2026-08-31 snapshot below, which is unchanged. Everything

@@ -187,19 +187,25 @@ Ordered. Everything here is ahead of every remaining defect in this file.
    find before paying gas. Verified end to end against anvil with two nodes and
    a real registry in `scripts/auth-takeover-e2e.mjs`.
 
-   - [ ] **Redeploy the registry. This is the blocker.** The contract in the
-         tree has `reassignWithAuth`; the deployed one at `0x2881…` does not.
-         Confirmed 2026-09-02 by calling `DOMAIN_SEPARATOR()` on it, which
-         reverts. The client probes for it once and falls back to asking the
-         guest for a transaction, so **in production the failover still needs
-         the guest awake and at their wallet.** Everything else on this item is
-         built and inert until the redeploy.
-   - [ ] Automatic failover on stream death, exercised against the two LIVE
-         nodes rather than against anvil. Anvil proves the mechanism; it does
-         not prove the tunnels, the announce path or the browser's peer
-         discovery under a real network failure.
-   - [ ] Point the site and both nodes at whatever address the redeploy
-         produces, in one pass. Three places carry it today.
+   - [x] **Redeploy the registry.** Done 2026-09-03.
+         **`0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c`.**
+         `DOMAIN_SEPARATOR()` answers where the old instance reverted, so the
+         gasless failover is live rather than inert. Deployed by the new
+         `scripts/deploy-v2.mjs` and verified against the local build: same
+         length, differing only in the two immutable slots the artifact names.
+         Three silent failures on the way, all recorded in `SNAPSHOT.md`
+         section 1 of the 2026-09-03 snapshot, and all three now have guards.
+   - [ ] **Automatic failover on stream death, against the two LIVE nodes.
+         This is now the whole item.** `scripts/auth-takeover-e2e.mjs` exists
+         and has only ever run against anvil. Anvil proves the mechanism; it
+         does not prove the tunnels, the announce path or the browser's peer
+         discovery under a real network failure. Nothing blocks it any more.
+   - [x] Point the site and both nodes at the new address. Done 2026-09-03 by
+         the new `scripts/set-registry.mjs`, which owns all nine places rather
+         than the three this item guessed at, and refuses an address with no
+         code on it. **It is a THREE service restart**, not two: discovery
+         reads the registry at import and serving a provider list off the old
+         contract while the browser transacts on the new one is silent.
 
    One honest note that survives the redeploy: both nodes run on ONE machine
    under one operator, sharing one ollama. A migration demo between them is
