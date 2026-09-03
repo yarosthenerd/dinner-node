@@ -24,6 +24,17 @@ where npm >nul 2>&1 || (
   goto :fail
 )
 
+rem tsx, which runs everything below, needs a current runtime. Caught here
+rem rather than as a syntax error from inside a dependency.
+node -e "process.exit(parseInt(process.versions.node,10)>=20?0:1)"
+if errorlevel 1 (
+  echo [X] your node runtime is too old. DinnerNode needs version 20 or newer.
+  node -v
+  echo     winget install OpenJS.NodeJS.LTS
+  echo     or download it: https://nodejs.org
+  goto :fail
+)
+
 rem ---- dependencies ---------------------------------------------------------
 node scripts\deps-stale.mjs
 if not errorlevel 1 (

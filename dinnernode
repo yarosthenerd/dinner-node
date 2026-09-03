@@ -21,8 +21,32 @@ else B=''; D=''; X=''; fi
 say() { printf "%b\n" "$1"; }
 die() { printf "%b\n" "\033[31m✗${X} $1" >&2; exit 1; }
 
-command -v node >/dev/null 2>&1 || die "node is not installed. Get it from https://nodejs.org (version 20 or newer)."
-command -v npm  >/dev/null 2>&1 || die "npm is not installed. It ships with node: https://nodejs.org"
+# ---- runtime --------------------------------------------------------------
+# The one prerequisite nothing in this repo can install, because everything in
+# this repo runs on it. Say how to get it for the machine we are actually on,
+# rather than printing a URL and stopping.
+if ! command -v node >/dev/null 2>&1; then
+  say "\033[31m✗${X} node is not installed. DinnerNode needs version 20 or newer."
+  case "$(uname -s)" in
+    Darwin) say "    brew install node" ;;
+    Linux)
+      # A distro package is often older than 20, so nvm is named first: it
+      # needs no root and gives a current runtime.
+      say "    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash"
+      say "    then: nvm install --lts"
+      ;;
+  esac
+  say "    or download it: https://nodejs.org"
+  exit 1
+fi
+command -v npm >/dev/null 2>&1 || die "npm is not installed. It ships with node: https://nodejs.org"
+
+# tsx, which runs everything below, needs a current runtime. Caught here rather
+# than as a syntax error from inside a dependency.
+NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+if [ "$NODE_MAJOR" -lt 20 ] 2>/dev/null; then
+  die "node $(node -v) is too old. DinnerNode needs 20 or newer: https://nodejs.org"
+fi
 
 # ---- dependencies ---------------------------------------------------------
 if node scripts/deps-stale.mjs; then

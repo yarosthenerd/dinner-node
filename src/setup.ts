@@ -24,11 +24,12 @@ import { probeHardware, describeHardware } from './hardware.js';
 import { gb, rankInstalled, recommend } from './models.js';
 import { hasCommand, repoEnvPath, installHint, OLLAMA_SERVE_HINT } from './platform.js';
 import { resolveCloudflared, downloadCloudflared, approxMB } from './cloudflared.js';
+import { probeOllama, startOllama, installCommand, runInstall, OLLAMA_URL } from './ollama.js';
 
 // Overridable so the fresh-operator path (generates a key, writes a new file)
 // can be exercised against a throwaway file instead of a real one.
 const ENV_PATH = process.env.DINNERNODE_ENV_PATH ?? repoEnvPath(import.meta.url);
-const OLLAMA = 'http://localhost:11434';
+const OLLAMA = OLLAMA_URL;
 const FAUCET = 'https://agents.devnads.com/v1/faucet';
 // Enough for registerProvider plus a long tail of settle and closeJob calls.
 // Monad charges the gas limit, so a node that registers and then runs dry mid
@@ -136,14 +137,44 @@ async function main() {
   ok(`model budget ${gb(hw.budgetMB)} ${C.d}(${hw.budgetSource})${C.x}`);
 
   // ---- ollama -----------------------------------------------------------
-  let reachable = false;
-  let models: string[] = [];
-  try {
-    const r = await fetch(`${OLLAMA}/api/tags`, { signal: AbortSignal.timeout(4000) });
-    models = ((await r.json() as any).models ?? []).map((m: any) => m.name);
-    reachable = true;
+  // Three states, and this wizard can fix two of them. Not installed, and
+  // installed but not serving, were both reported as instructions for the
+  // operator to carry out by hand; each one is a step some operators stop at,
+  // and neither needs a human. The third, a machine with no node at all, never
+  // reaches this code, because this code runs on node.
+  let { reachable, models } = await probeOllama(OLLAMA);
+
+  if (!reachable && !CHECK_ONLY) {
+    if (!has('ollama') && INTERACTIVE) {
+      const inst = installCommand();
+      console.log(`  ${C.b}?${C.x} ollama is not installed, and there is nothing for this node to serve without it.`);
+      if (inst) {
+        // Shown in full first. On Linux this is a vendor script piped into a
+        // shell that escalates to root, which is what Ollama publishes and
+        // what its own docs tell people to run, and is not something to start
+        // on an operator's behalf from a default.
+        console.log(`    ${C.d}${inst.shown}${C.x}`);
+        if (await confirm('run that now?')) {
+          console.log();
+          const okRun = runInstall(inst);
+          console.log();
+          if (!okRun) warn('the installer did not finish cleanly');
+          // The Linux script starts its own systemd service, so ask before
+          // starting a second server that would fail to bind.
+          ({ reachable, models } = await probeOllama(OLLAMA));
+        }
+      } else {
+        for (const l of installHint('ollama')) console.log(`    ${C.d}${l}${C.x}`);
+      }
+    }
+    if (!reachable && has('ollama')) {
+      ({ reachable, models } = await startOllama({ log: l => console.log(`    ${C.d}${l}${C.x}`) }));
+    }
+  }
+
+  if (reachable) {
     if (models.length) ok(`ollama running, ${models.length} model${models.length > 1 ? 's' : ''} installed`);
-  } catch {
+  } else {
     bad('ollama is not reachable on :11434', has('ollama') ? OLLAMA_SERVE_HINT : undefined);
     if (!has('ollama')) for (const l of installHint('ollama')) console.log(`    ${C.d}${l}${C.x}`);
   }

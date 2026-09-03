@@ -18,10 +18,16 @@ dinnernode.cmd        # Windows, or double-click it
 
 Either launcher installs dependencies, runs the setup wizard, and serves. The
 wizard is idempotent and is also the doctor: `npm run doctor` re-runs every
-check and changes nothing. What it needs on the machine first is node 20 or
-newer and ollama; it names the install command for your platform when either is
-missing, sizes a model against the memory actually present, generates the node
-wallet, and asks the faucet for gas.
+check and changes nothing.
+
+**The one prerequisite is node 20 or newer.** Everything here runs on it, so a
+machine without one cannot be repaired by anything in this repo; both launchers
+stop with the install command for that platform. From there the wizard handles
+the rest: it offers to install ollama, starts it when it is installed and not
+serving, sizes a model against the memory actually present and offers to pull
+one, generates the node wallet, asks the faucet for gas, and fetches
+cloudflared. Every one of those is a confirm, and declining any of them leaves
+the machine exactly as it was.
 
 Both launchers are shims. Dependency freshness lives in
 `scripts/deps-stale.mjs` and the public tunnel in `src/tunnel.ts`, so the two
