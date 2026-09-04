@@ -1,3 +1,281 @@
+# Session snapshot, 2026-09-04
+
+> The session that began with a strategy question and became four commits of
+> engineering. The 2026-09-03 snapshot below is kept unchanged and is still
+> accurate; nothing here contradicts it, and section 2 corrects the one file it
+> never covered.
+>
+> The theme: **the repository's front door described a different project than
+> the one running**, and the two defects found here were found by a test that
+> kills a node rather than by one that asks it politely to stop. Both are the
+> same lesson in different clothes. A claim nobody re-reads goes stale silently,
+> and a failure nobody simulates honestly is a failure nobody has seen.
+
+## 0. Results, in one list
+
+Four commits, `daead6e` through `313e2c2`, 1,176 insertions across 11 files.
+
+| # | Result | Evidence |
+|---|---|---|
+| 1 | **The README named a retired contract** and told readers the fixed one was not deployed. Corrected. | section 2 |
+| 2 | **`contracts/README.md` was the stock Foundry template**, pointing at `Counter.s.sol`. Rewritten. | section 2 |
+| 3 | **The failover is proven against a node that is actually killed**, not a client that walks away. 16 of 16. | section 3 |
+| 4 | **The user-visible cost of a handover is measured for the first time:** 9 ms to the handover, 36 ms to the first new token. | section 3 |
+| 5 | **A malformed resume used to burn one of the guest's two authorised handovers.** Fixed, with a guard. | section 4 |
+| 6 | **A window where the disjoint-payment claim is not true**, found and recorded rather than papered over. | section 3.2 |
+| 7 | **Reliability is measured and published**, uptime, error rate and latency percentiles, from a canary. | section 5 |
+| 8 | **Root tests 258 to 275.** Web 135, contracts 72, typecheck clean throughout. | section 6 |
+| 9 | **The strategy question was answered and no strategy document was changed.** Deliberate. | section 1 |
+
+Commits, oldest first:
+
+```
+daead6e  fix: a malformed resume cost the guest one of two handovers
+fe93c42  test: the failover, against a node that is actually killed
+af4dd98  docs: the front door named a contract that is not the one running
+313e2c2  feat: reliability numbers from a canary rather than from a claim
+```
+
+## 1. The question the session opened with, and what was done about it
+
+The operator asked where to aim to make this a demanded, profitable project.
+The answer given, from this repository's own numbers rather than from
+enthusiasm:
+
+- Total revenue ever, both contracts, **$0.387**. Realized utilisation 1.13%.
+- A consumer node earns **$100 to $150 a year** at the utilisation an
+  independent network actually achieves. Darkbloom, funded, 900 providers,
+  OpenRouter distribution, top earner about $6.
+- **The differentiator cannot travel through the channel.** OpenRouter calls one
+  provider endpoint and a cross-provider resume has no representation in that
+  protocol.
+
+Those three together say the supply-recruitment business does not close and
+that listing on an aggregator does not carry the one thing we have. The
+recommendation was to sell the failover rather than the GPUs: a reliability
+layer for long-running inference, where the consumer hardware is the cheapest
+tier inside it rather than the pitch. Its test is five conversations with people
+who run long agentic or batch jobs, not more searching.
+
+**The operator then chose to treat the project as a technical showpiece**, and
+the rest of the session is engineering under that framing.
+
+**`REFRAME.md` was deliberately not edited.** A positioning document rewritten
+from a conversation, without the five conversations that settle A4, would be the
+exact failure section 10 of that file already names as its most expensive line.
+The conversation is recorded here; the strategy is unchanged and still open.
+
+## 2. The front door described a different project
+
+`README.md` is the first file an outside reader opens, and on 2026-09-03 it
+still said:
+
+- **`Contract: 0x2881…EbCd`**, which is the superseded registry.
+- **"V2 is written but not deployed. Roadmap."** V2 had been live at
+  `0x7E98Cd3E…` since the previous day, and every code path in the repo already
+  pointed at it: `src/chain.ts`, `web/src/config.ts` and five scripts.
+- **The V1 defect described as live.** "A single call can therefore take the
+  whole escrow for zero work" was true of the deployed contract when written and
+  had been false for a day.
+
+So the one file that introduces the project was advertising the known-broken
+version as the running one, a day after the work that fixed it. Nothing was
+wrong with the code. Nothing reported it, because no test reads prose.
+
+Also corrected there: `openJob` and `settle` were both written with fewer
+arguments than they take, which is a signature a reader could not call; the curl
+example named `qwen3.8:27b`, a model neither node serves; and the section
+heading called V1 the protocol. Added: the migration receipt, and a table of the
+commands that check every count on the page.
+
+**`contracts/README.md` was the stock Foundry template**, the one that ships
+with `forge init`, pointing at `Counter.s.sol`. It is now a document of the
+three contracts, which is live, what V2 changes and why it is not a drop-in, the
+five test suites, and the three-service restart that a registry change requires.
+
+## 3. The failover, against a node that is actually killed
+
+`scripts/auth-takeover-e2e.mjs` proves the contract half and stops the stream by
+walking away from it. That is what a dying node looks like from the browser's
+side, and it is not the same event: the server is alive, holds the model, and
+closes the connection on its own terms. Every assertion downstream of that runs
+against a healthy node.
+
+`scripts/kill-takeover-e2e.mjs`, new, SIGKILLs the serving node mid-answer while
+the client is still reading. It asserts the stream **broke** rather than ended,
+and it refuses to run without an explicit `KILL_PID` or `KILL_CMD`, because the
+failure mode of guessing is stopping a node somebody is using.
+
+**16 of 16** against two mock nodes on anvil, job#5:
+
+```
+--- killing node A mid-answer, 306 chars in, checkpoint n=48, mode=onchain ---
+PASS  the stream BROKE under the reader rather than ending politely  broke: UND_ERR_SOCKET
+PASS  the checkpoint survived the death, on chain  tokens=41 billed=41
+PASS  the guest signed no transaction while asleep  nonce 10 -> 10
+PASS  node A was paid for the range it produced before dying  0.0010947 MON
+PASS  node B settled only the tail, not the whole answer  job tokens=41 checkpoint=41
+```
+
+**The number nobody had:** 9 ms from death to the handover request, 36 ms from
+death to the first new token. `TODO.md` listed migration's user-visible latency
+cost as unmeasured while its correctness was proven. It is measured now, on mock
+nodes, which bounds the protocol overhead and not the model reload behind it.
+
+### 3.1 Two bugs in the script itself, both instructive
+
+The first run sent the whole 410-character transcript as the resume prefix
+against a hash covering only the 64-token checkpoint, and node B answered
+`checkpoint hash mismatch`. The sibling suite never hit it because it breaks out
+of the loop at the checkpoint, so its transcript and its checkpoint agree by
+accident. A run that keeps reading until the node dies has to remember where the
+checkpoint was. That refusal is what exposed section 4.
+
+The second was the mock engine finishing before there was anything on chain to
+survive a death: the passage runs out in under two seconds, which is shorter
+than a settle round trip. `MOCK_REPEAT` exists for that one test and defaults
+to 1.
+
+### 3.2 The window where the disjoint-payment claim is not true
+
+Found by the script's own harsher mode, `KILL_ON=stream`, job#4:
+
+```
+--- killing node A mid-answer, 50 chars in, checkpoint n=8, mode=stream ---
+INFO  on-chain checkpoint at the moment of death: tokens=0 billed=0
+INFO  node A earned 0 MON for 50 chars it actually produced
+```
+
+Node A was killed 11 ms after emitting a checkpoint **frame** and before it had
+settled anything. Nothing about it reached the chain, so node B then settled the
+whole answer including node A's tokens. There is no double payment and the guest
+is not overcharged. What is wrong is attribution: node A did real work and was
+paid nothing, and the bound in `_allowed` that exists to split the payment is
+keyed on `cp.billed`, which is still zero inside that window, so it does not
+apply.
+
+The window is about one settle interval wide. **The honest form of the claim is
+therefore: two providers are paid for disjoint ranges once a checkpoint is on
+chain, and not before.** That sentence now travels with the feature. Two options
+are recorded in `TODO.md` and neither is chosen here: checkpoint on the first
+token rather than the 64th, or accept the window and say so.
+
+`KILL_ON=onchain` is the default and waits for the checkpoint; `KILL_ON=stream`
+keeps the window visible. They are two different claims and the script does not
+let them be confused.
+
+## 4. A refused resume burned one of the guest's two handovers
+
+`src/host.ts` submitted `reassignWithAuth` **before** it validated that the
+claimed prefix hashes to the published checkpoint. Confirmed on chain rather
+than argued: anvil job#2 returned `400 checkpoint hash mismatch`, and the job had
+already moved to node B with `reassignCount` at 1.
+
+So a client sending a malformed resume moved the job, spent the incoming node's
+gas, consumed one of the two reassigns the guest signed for, and was then
+refused service, for a reason that needed nothing from the chain. It is a hash
+of text the caller supplied against a hash the caller supplied, and a mismatch is
+a bad request whoever owns the job.
+
+The check now runs first. The regression guard lives in the kill e2e, where a
+valid authorisation and a malformed resume are sent to the node that does **not**
+own the job:
+
+```
+PASS  a malformed resume is refused  {"error":"checkpoint hash mismatch"}
+PASS  and it did NOT cost the guest a handover  reassignCount still 0
+PASS  and the job still belongs to node A
+```
+
+`auth-takeover-e2e.mjs` still passes 12 of 12 after the reordering.
+
+## 5. Reliability, measured rather than claimed
+
+`TODO.md` gap 4: the one distribution channel this project wants ranks providers
+on reliability, we already tuned 429-versus-503 for its scoring, and we published
+no reliability numbers at all.
+
+`src/canary.ts` probes every reachable node on an interval, keeps its samples
+across restarts, and serves `/status` as JSON and `/` as a page: availability,
+error rate by reason, worst continuous outage, and p50/p90/p99 per node over 1h,
+24h and 7d. `npm run canary -- --once` prints the table and exits.
+
+**The arithmetic is in `src/canary-stats.ts`, apart from the daemon**, so it is
+tested without opening a port or spending MON. 17 tests. Nearest-rank
+percentiles, no interpolation, so every number published is a value some probe
+actually took, and the sample count sits beside it.
+
+**A failed probe is excluded from the latency percentiles and counted in the
+error rate.** A timeout is not a slow response, and averaging it in is precisely
+how a dead node comes to look merely sluggish.
+
+Verified three ways rather than by inspection:
+
+```
+live pair          node1 ok 183ms   node2 ok 186ms
+dead port          FAIL ECONNREFUSED
+https://example.com FAIL http 404      <- a 200 that is not a node counts as DOWN
+mock node killed   availability 63.6%, worst streak 4 probes / 9s, p50 3ms p99 9ms unmoved
+```
+
+The `example.com` case is the one worth keeping: a 200 carrying no provider
+address is a tunnel error page, an interstitial, or somebody else's server on
+that hostname, and treating it as up is how a status page reports green through
+an outage.
+
+**Two probe kinds, kept apart everywhere including the output, because they cost
+different things.** Liveness is `GET /health` and is free. The answer probe
+measures time to first VISIBLE token, deliberately not counting `th` reasoning
+frames, and is **off by default**: it goes through `/lanjob`, which opens a job
+the node pays for, so every sample spends the operator's own gas. It was
+verified against a mock node, 29 ms, and has never been run against the live
+pair.
+
+**What it does not claim travels in the payload**, under `caveats`, where a
+renderer cannot drop it: one vantage point, on the operator's own network,
+watching the operator's own machines. It cannot see an outage between a guest
+and the tunnel, and a node answering `/health` while serving nothing reads as up.
+
+## 6. Counts and verification, end of session
+
+Re-run at the end rather than quoted from the middle.
+
+```
+root         275 tests, 18 files   (258 before, +17 canary-stats)
+web/         135 tests,  7 files
+contracts     72 tests,  5 suites
+typecheck    clean
+auth-takeover-e2e   12 of 12   (after the host.ts reordering)
+kill-takeover-e2e   16 of 16   (anvil, two mock nodes)
+```
+
+Both live nodes were healthy at the end and were never touched: every kill in
+this session matched `PORT=418`, and the live nodes listen on 4173 and 4174.
+Anvil, the mock nodes and the test canary were all stopped and confirmed gone.
+What is left is exactly what was running when the session started, all of it
+from 2026-09-03 19:18: the two node daemons, discovery, and three cloudflared
+tunnels.
+
+## 7. Open, and honestly labelled
+
+Nothing below was attempted and abandoned. Each is a decision the operator has
+not made or a cost not yet agreed.
+
+- **The kill e2e has never run against the live pair.** That means stopping node
+  1, and nothing on this machine restarts it: the daemons are bare `tsx`
+  processes, not systemd units. It wants a `RESTORE_CMD` and a deliberate act.
+- **Time to first token is not being collected.** The probe works and is off,
+  because each sample spends the operator's gas through `/lanjob`. The p50 and
+  p99 that OpenRouter ranks on stay unmeasured until that budget is agreed.
+- **The canary has one vantage point**, on the same machine as the nodes. The
+  caveat is published, which is honest and is not a second vantage point.
+- **The checkpoint window of section 3.2 is recorded, not closed.**
+- **The strategy is unchanged.** A4 still has no falsification test and no date,
+  which `REFRAME.md` section 10 already calls the most expensive line in it. The
+  five conversations remain the cheapest thing that would settle it.
+
+---
+
 # Session snapshot, 2026-09-03
 
 > The full record of the session that began on the night of 2026-09-02 and ran
