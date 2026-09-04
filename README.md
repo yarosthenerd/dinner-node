@@ -82,13 +82,16 @@ answers `0x5940d1d2…`, where the superseded instance reverted. Verified agains
 live nodes on job#12: two providers paid for disjoint token ranges of one answer, each at
 its own rate, and the guest's nonce did not move.
 
-The first visible token forces a job's first settlement, so the checkpoint that
-makes this split possible is on chain within about one settle round trip rather
-than waiting for the value trigger. Measured: 244 ms, against 60,298 ms before
-the rule existed. It costs the provider one extra settlement per job, and
-`CHECKPOINT_FIRST_TOKENS=0` declines to pay it. The claim is bounded to match:
-two providers are paid for disjoint ranges **once a checkpoint is on chain**,
-and a node killed in the moments before its first one publishes nothing.
+The claim is bounded, and the bound is a priced decision rather than an
+oversight: two providers are paid for disjoint ranges **once a checkpoint is on
+chain**, which the settle ticker reaches when the unsettled tokens are worth
+settling. A node dying before that publishes nothing and is not paid for what it
+produced. `CHECKPOINT_FIRST_TOKENS=1` closes the window to one settle round trip
+(measured: 60,298 ms down to 244 ms) and costs a whole extra settlement per job,
+which is 31% of the revenue of a 1,000 token job on node 1 and 171% on node 2,
+so it is off. The guest is unaffected either way: the first visible token always
+publishes a checkpoint FRAME, which is free, so a replacement is always handed a
+prefix to continue from.
 
 ```
 node1(qwen)   settled  +812 tok  0.0271 MON   checkpoint tokens=67

@@ -26,7 +26,7 @@ Four commits, `daead6e` through `313e2c2`, 1,176 insertions across 11 files.
 | 7 | **Reliability is measured and published**, uptime, error rate and latency percentiles, from a canary. | section 5 |
 | 8 | **Root tests 258 to 275.** Web 135, contracts 72, typecheck clean throughout. | section 6 |
 | 9 | **The strategy question was answered and no strategy document was changed.** Deliberate. | section 1 |
-| 10 | **The window of item 6 is closed as far as it can be**, 60,298 ms down to 244 ms. | section 8 |
+| 10 | **The window of item 6 was closed, priced, and then deliberately left open.** The fix costs more than the work it protects. | section 8 |
 
 Commits, oldest first:
 
@@ -278,10 +278,10 @@ not made or a cost not yet agreed.
   p99 that OpenRouter ranks on stay unmeasured until that budget is agreed.
 - **The canary has one vantage point**, on the same machine as the nodes. The
   caveat is published, which is honest and is not a second vantage point.
-- **The residual checkpoint window cannot be closed.** Section 8 narrowed it by
-  247x and the last of it is arithmetic: a token exists before the transaction
-  carrying it confirms. What is open is not work, it is whether the extra
-  settlement per job is a price the operator wants to keep paying.
+- **The checkpoint window is open on purpose.** Section 8 built the fix,
+  measured it at 247x, priced it, and turned it off: it costs more than the work
+  it protects on any job under a few thousand tokens. The version that does not
+  cost that is a contract change and is written down rather than built.
 - **The strategy is unchanged.** A4 still has no falsification test and no date,
   which `REFRAME.md` section 10 already calls the most expensive line in it. The
   five conversations remain the cheapest thing that would settle it.
@@ -289,7 +289,10 @@ not made or a cost not yet agreed.
 ## 8. The window of section 3.2, closed as far as arithmetic allows
 
 Decided by the operator the same day it was found: checkpoint at the first
-token. Built as `CHECKPOINT_FIRST_TOKENS`, default 1.
+token. Built as `CHECKPOINT_FIRST_TOKENS`, measured, then **defaulted to 0 on
+the operator's reading of the price**, which the numbers below support. The
+mechanism exists and is one environment variable away for a node whose jobs are
+worth insuring.
 
 **The frame interval was never the cause, and finding that out changed the
 fix.** `settle` already hashes the prefix as it stands at the instant it fires,
@@ -319,11 +322,41 @@ after    first token -> first on-chain checkpoint      244 ms       6 tokens exp
 is at most that. The measurement is now part of the kill e2e's output rather
 than a one-off.
 
-**What it costs, stated because a provider pays it.** One extra settlement per
-job, about 0.0103 MON at 102 gwei and 101k gas, covering a single token. That is
-the one settlement this node makes at a deliberate loss.
-`CHECKPOINT_FIRST_TOKENS=0` restores the old behaviour for an operator who would
-rather carry the window than the gas.
+**Then the price was worked out, and it is why the default is 0.** One extra
+settlement per job is 0.0103 MON at 102 gwei, which is the revenue of 308 tokens
+on node 1 and 1,708 on node 2:
+
+| job | node 1 (qwen) | node 2 (llama) |
+|---|---|---|
+| 300 tok | 103% of revenue | 570% |
+| 1,000 tok | 31% | 171% |
+| 3,000 tok | 10% | 57% |
+
+**The protection costs more than the work it protects on every job under a few
+thousand tokens**, and it is charged on every job to insure against a node
+dying, which is rare. The operator's call, and the right one on these numbers.
+
+There is no cheaper on-chain path, which was checked rather than assumed: a
+job's first checkpoint is a COLD write of the Checkpoint struct, and the gas
+report puts `commitCheckpoint` at 29,988 warm against 120,107 cold. The expense
+is the storage, not the function, so no cheaper caller exists.
+
+**What is accepted, precisely.** The guest never loses work. The first-token
+FRAME is free and stays on, so a replacement is always handed a prefix. What is
+exposed is payment ATTRIBUTION between two providers over a job's first tokens,
+and only if a node dies inside the window. Both nodes are one operator today, so
+it is house-to-house money.
+
+**The fix that does not cost this is a contract change**, now in `TODO.md` beside
+the v3 spec: carry the outgoing provider's SIGNED checkpoint inside
+`reassignWithAuth`, a transaction that already exists and is sent only when a
+handover really happens, and credit that provider for its own range. The 120k
+cold write is then paid once per handover instead of once per job, by the
+incoming provider, which already prices this kind of favour through
+`TAKEOVER_MIN_MARGIN`. Two open questions before it is worth writing: what the
+outgoing provider signs and when, given it may already be dead, and whether the
+client holding the stream is a trustworthy carrier for that signature, since it
+is deliberately not trusted with the prefix today.
 
 **What is left, verified rather than assumed.** A node killed at the instant of
 its first frame still publishes nothing: killed 10 chars in, `getCheckpoint`

@@ -48,32 +48,44 @@ const MAX_BODY = Number(process.env.MAX_BODY_BYTES ?? 1_000_000);
 const CONTEXT_TOKENS = Number(process.env.CONTEXT_TOKENS ?? 32768);
 const OUTPUT_RESERVE = Number(process.env.OUTPUT_RESERVE_TOKENS ?? 2048);
 const CHECKPOINT_EVERY = Number(process.env.CHECKPOINT_TOKENS ?? 64);
-// How much visible progress is enough to force a job's FIRST settlement, ahead
-// of the value trigger that governs every settlement after it.
+// How much visible progress forces a job's FIRST settlement, ahead of the value
+// trigger that governs every settlement after it. OFF by default, and the
+// reason is arithmetic rather than taste.
 //
-// The window this closes, measured 2026-09-03 by
-// `scripts/kill-takeover-e2e.mjs KILL_ON=stream`: a node killed before its
-// first settle has published nothing, so `getCheckpoint` is empty, the dead
-// node earns nothing for work it really did, and the replacement bills the
-// whole answer because `_allowed`'s split bound is keyed on `cp.billed` and
-// that is still zero. Nothing about that is theoretical; it is what the run
-// recorded.
+// What it buys: a node killed before its first settle has published nothing, so
+// `getCheckpoint` is empty, the dead node earns nothing for work it really did,
+// and the replacement bills the whole answer, because `_allowed`'s split bound
+// is keyed on `cp.billed` and that is still zero. Setting this to 1 narrows the
+// exposure from up to SETTLE_MAX_MS to one settle round trip. Measured on
+// anvil: 60,298 ms down to 244 ms.
 //
-// The value trigger cannot close it, and that is the point. It settles once
-// the unsettled tokens are worth ten times the gas, which on node 1 is about
-// 3,000 tokens, with SETTLE_MAX_MS as the only backstop. So a real job could
-// run for a full minute with nothing on chain behind it.
+// What it costs: exactly one extra settlement per job, and there is no cheaper
+// way to do it. A job's first checkpoint is a cold write of the Checkpoint
+// struct, about 120k gas, whichever function performs it: `commitCheckpoint`
+// costs 29,988 gas warm and 120,107 cold, so it is not an alternative.
 //
-// 1 means the first visible token forces the first settlement, which is the
-// smallest window this node can offer: after it, the exposure is one settle
-// round trip rather than up to SETTLE_MAX_MS.
+// At 102 gwei that settlement is 0.0103 MON, which is the revenue of 308 tokens
+// on node 1 and 1,708 on node 2. Against a 1,000 token job that is 31 percent
+// of the revenue on node 1 and 171 percent on node 2. **The protection costs
+// more than the work it protects on every job smaller than a few thousand
+// tokens**, and it is charged on every job to insure against a node dying,
+// which is rare.
 //
-// It is not free, and the cost is exactly one extra settlement per job, paid
-// by the provider: about 0.0103 MON at 102 gwei and 101k gas, against a
-// settlement that pays for a single token. An operator who would rather carry
-// the window than the gas raises this, and 0 restores the old behaviour of
-// waiting for the value trigger.
-const CHECKPOINT_FIRST = Number(process.env.CHECKPOINT_FIRST_TOKENS ?? 1);
+// So the default is 0 and the window is accepted, documented, and bounded in
+// what it can cost anyone: the guest never loses work, because the frame below
+// still fires on the first visible token and a replacement is always handed a
+// prefix. What is exposed is only the payment ATTRIBUTION between two providers
+// for the first tokens of a job.
+//
+// The fix that does not cost this is a contract change, not a setting. See
+// TODO.md: let the incoming provider publish the outgoing provider's SIGNED
+// checkpoint inside `reassignWithAuth`, a transaction that already exists and
+// is only sent when a handover actually happens. That pays the 120k once per
+// handover rather than once per job.
+//
+// Set it to 1 on a node serving jobs valuable enough to insure, or where gas is
+// cheap relative to the rate.
+const CHECKPOINT_FIRST = Number(process.env.CHECKPOINT_FIRST_TOKENS ?? 0);
 const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT_JOBS ?? 2);
 // How long a session job may sit idle before the provider closes it and
 // returns the guest's unspent escrow. Long enough to read an answer and think

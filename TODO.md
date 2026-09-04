@@ -326,44 +326,72 @@ audit was written, which is why the section above them was stale for two days.
       both `source: announce`. The LAN address that blocked item 5 is gone.
 - [x] The legal half of the proxy question is settled. Done 2026-08-31, see the
       `<!--email_off-->` markers in `web/public/terms.html`.
-- [x] **The unattributed window, narrowed from 60s to one settle round trip.**
-      Decided and built 2026-09-04: the first token forces the job's first
-      settlement. `CHECKPOINT_FIRST_TOKENS`, default 1.
+- [x] **The unattributed window: measured, priced, and deliberately accepted.**
+      2026-09-04. `CHECKPOINT_FIRST_TOKENS` exists and defaults to **0**, which
+      is off.
 
       The cause was never the frame interval. Settlement already hashes the
-      prefix as it stands, so what governed the on-chain checkpoint was the
+      prefix as it stands, so what governs the on-chain checkpoint is the
       SETTLE ticker: it waits until unsettled tokens are worth ten times the
       gas, about 3,000 tokens on node 1, with `SETTLE_MAX_MS` as the only
-      backstop. A job could therefore run a full minute with nothing on chain,
-      and a node dying in that window earned nothing for real work while its
-      replacement billed the whole answer, because `_allowed`'s split bound is
-      keyed on `cp.billed` and that was still zero.
+      backstop. So a job can run a full minute with nothing on chain, and a
+      node dying in that window earns nothing for real work while its
+      replacement bills the whole answer.
 
-      Measured on anvil with the value trigger disabled so only the backstop
-      remained, `scripts/kill-takeover-e2e.mjs KILL_ON=onchain`:
+      Forcing the first settlement closes it, measured on anvil with the value
+      trigger disabled so only the backstop remained:
 
       ```
-      before  first token -> first on-chain checkpoint  60,298 ms, 1,985 tokens exposed
-      after   first token -> first on-chain checkpoint     244 ms, 6 tokens exposed
+      off  first token -> first on-chain checkpoint  60,298 ms, 1,985 tokens exposed
+      on   first token -> first on-chain checkpoint     244 ms, 6 tokens exposed
       ```
 
-      The frame also now fires on the first visible token whatever the interval
-      is, which costs nothing and means a replacement always has a prefix to
-      continue from rather than only after token 64.
+      **And it is not worth the price.** One extra settlement per job, 0.0103
+      MON at 102 gwei, which is the revenue of 308 tokens on node 1 and 1,708
+      on node 2:
 
-      **It costs one extra settlement per job**, paid by the provider: about
-      0.0103 MON at 102 gwei and 101k gas, for a settlement covering a single
-      token. `CHECKPOINT_FIRST_TOKENS=0` restores the old behaviour for an
-      operator who would rather carry the window than the gas.
+      | job | node 1 (qwen) | node 2 (llama) |
+      |---|---|---|
+      | 300 tok | 103% of revenue | 570% |
+      | 1,000 tok | 31% | 171% |
+      | 3,000 tok | 10% | 57% |
 
-- [ ] **The residual window cannot be closed, and the claim is written to
-      match.** A node killed at the instant of its first frame still publishes
-      nothing: verified 2026-09-04, killed 10 chars in, `getCheckpoint` empty,
-      node A earned 0. There is always a gap between producing a token and a
-      transaction confirming. So the honest form stays what section 3.2 of the
-      snapshot says: two providers are paid for disjoint ranges once a
-      checkpoint is on chain, and that is now within about one settle round
-      trip of the first token rather than up to a minute.
+      The protection costs more than the work it protects on every job smaller
+      than a few thousand tokens, and it is charged on EVERY job to insure
+      against a node dying, which is rare. There is no cheaper on-chain path:
+      a job's first checkpoint is a cold write of the Checkpoint struct, and
+      `commitCheckpoint` measures 29,988 gas warm but 120,107 cold, so it is
+      not an alternative.
+
+      **What is accepted, precisely.** The guest never loses work: the frame
+      still fires on the first visible token, free, so a replacement is always
+      handed a prefix to continue from. What is exposed is the payment
+      ATTRIBUTION between two providers over the first tokens of a job, and
+      only if a node dies inside that window. Today both nodes are one
+      operator, so it is house-to-house money.
+
+      Set it to 1 on a node serving jobs valuable enough to insure, or where
+      gas is cheap relative to the rate.
+
+- [ ] **v3: let the handover carry the outgoing provider's checkpoint.** This
+      is the fix that does not cost a settlement per job, and it is a contract
+      change rather than a setting, so it belongs beside the plan-as-a-job v3
+      spec rather than in front of it.
+
+      `reassignWithAuth` is a transaction that already exists and is sent only
+      when a handover actually happens. If the outgoing provider's last
+      checkpoint were SIGNED by it and carried in that call, the contract could
+      publish it and credit that provider for its own range, inside a
+      transaction somebody is already paying for. The 120k cold write is then
+      paid once per handover instead of once per job, by the incoming provider,
+      which already prices exactly this kind of favour through
+      `TAKEOVER_MIN_MARGIN`.
+
+      Open questions before it is worth writing: what the outgoing provider
+      signs and when it can sign it, given it may be dead by then, and whether
+      the client holding the stream is a trustworthy carrier for that signature
+      (it is not trusted with the prefix today, which is why the hash is
+      checked). Design review with monad-chain-reviewer before implementation.
 
 - [x] ~~**A refused resume still burns one of the guest's authorised
       handovers.**~~ Fixed 2026-09-03 in `daead6e`, the same day it was found.
