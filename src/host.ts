@@ -1639,6 +1639,29 @@ http.createServer(async (req, res) => {
       const { jobId, prompt, resume, session, auth } = JSON.parse(body);
       if (!gate(res, String(prompt ?? ''), String(resume?.text ?? ''))) return;
       admitted = true;
+
+      // A resume is only honoured if the claimed prefix hashes to the
+      // checkpoint the previous provider published. Otherwise a client could
+      // hand us any text and have it treated as already-paid-for work.
+      //
+      // This runs BEFORE the handover, and the order is load-bearing. It used
+      // to run after, so a client sending a malformed prefix moved the job to
+      // this node, spent this node's gas, and consumed one of the reassigns
+      // the guest authorised, and was then refused service for a reason the
+      // check could have found without touching the chain. Observed
+      // 2026-09-03 as `400 checkpoint hash mismatch` on a job that had already
+      // been reassigned, `reassignCount` 1. Nothing here needs the job to be
+      // ours: it is a hash of text the caller supplied against a hash the
+      // caller supplied, and a mismatch is a bad request either way.
+      let r: { text: string; n: number } | undefined;
+      if (resume?.text) {
+        if (keccak256(stringToHex(String(resume.text))) !== String(resume.h)) {
+          res.statusCode = 400;
+          return res.end(JSON.stringify({ error: 'checkpoint hash mismatch' }));
+        }
+        r = { text: String(resume.text), n: Number(resume.n ?? 0) };
+      }
+
       let job = await readJob(BigInt(jobId));
       // A job that is not ours yet may still become ours, if the guest signed
       // an authorisation for it. That is the unattended failover path: the
@@ -1650,18 +1673,6 @@ http.createServer(async (req, res) => {
         job = await readJob(BigInt(jobId));
       }
       if (!isMine(job, me)) { res.statusCode = 400; return res.end('job not mine / closed'); }
-
-      // A resume is only honoured if the claimed prefix hashes to the
-      // checkpoint the previous provider published. Otherwise a client could
-      // hand us any text and have it treated as already-paid-for work.
-      let r: { text: string; n: number } | undefined;
-      if (resume?.text) {
-        if (keccak256(stringToHex(String(resume.text))) !== String(resume.h)) {
-          res.statusCode = 400;
-          return res.end(JSON.stringify({ error: 'checkpoint hash mismatch' }));
-        }
-        r = { text: String(resume.text), n: Number(resume.n ?? 0) };
-      }
       return serveJob(BigInt(jobId), prompt, res, r, session === true);
     }
 
