@@ -18,6 +18,7 @@
     "typecheck": "tsc --noEmit",
     "setup": "tsx src/setup.ts",
     "doctor": "tsx src/setup.ts --check",
-    "test": "vitest run"
+    "test": "vitest run",
+    "canary": "tsx src/canary.ts"
   }
 }

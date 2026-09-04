@@ -1160,9 +1160,26 @@ would change what gets built.
    `/provider/models` publishes capacity absent and `is_ready` false. We
    already tuned 429-versus-503 for OpenRouter's scoring, which means we know
    they measure this, and we do not measure it ourselves.
-   - [ ] Measure and publish uptime, p50/p99 time to first token, and error
-         rate, from a canary rather than from a claim. Without it the
-         application is not credible and a regression is invisible.
+   - [x] **Measure and publish uptime, error rate and latency percentiles.**
+         Done 2026-09-04, `src/canary.ts` and `src/canary-stats.ts`, 17 tests.
+         `npm run canary` probes every reachable node, keeps the samples across
+         restarts, and serves `/status` as JSON and `/` as a page: availability,
+         error rate by reason, worst continuous outage, and p50/p90/p99 over 1h,
+         24h and 7d. Verified against the live pair, and against a mock node
+         killed mid-run: availability fell to 63.6%, the outage was recorded as
+         4 probes over 9s of continuous failure with `ECONNREFUSED` as the
+         reason, and the latency percentiles did not move, because a failed
+         probe is excluded from them and counted in the error rate instead.
+   - [ ] **Time to first token is measured but not yet being collected.** The
+         answer probe works, verified against a mock node, and is off by
+         default: it goes through `/lanjob`, which opens a job the NODE pays
+         for, so every sample spends the operator's own gas. Decide the budget
+         and turn it on with `CANARY_ANSWER=lanjob`, or the p50/p99 that
+         OpenRouter ranks on stays unmeasured.
+   - [ ] **Run the canary somewhere that is not the operator's own network.**
+         One vantage point on the same machine as the nodes cannot see an
+         outage between a guest and the tunnel. The caveat is published in the
+         payload, which is honest and is not a substitute for a second vantage.
 
 5. **Nobody can pay us.** Item 9's "decide what the endpoint bills" and P3's
    "entity formation before outside money" are treated as unrelated and are the

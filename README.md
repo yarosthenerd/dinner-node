@@ -220,6 +220,8 @@ Nothing here asks to be taken on trust. Every count below was re-run on 2026-09-
 | The failover, against the two live nodes | `node scripts/auth-takeover-e2e.mjs` | 12 of 12, real chain |
 | The failover when the node is **killed** mid-answer | `node scripts/kill-takeover-e2e.mjs` | 16 of 16, incl. the payment split |
 | What a node is actually doing right now | `curl https://node1.dinnernode.xyz/health` | live price band, model, GPU |
+| The status page arithmetic | `npx vitest run src/__tests__/canary-stats.test.ts` | 17 tests |
+| What the nodes have actually been doing | `npm run canary -- --once` | uptime, error rate, p50/p90/p99 |
 
 `kill-takeover-e2e.mjs` is the one worth running to understand the project. It
 SIGKILLs the node serving a job while the client is still reading, and then
@@ -229,6 +231,33 @@ nothing, and that the two providers were paid for disjoint ranges. It measured
 the cost to the person waiting, which had never been measured: **9 ms from death
 to handover, 36 ms from death to the first new token.** It refuses to run
 without an explicit `KILL_PID` or `KILL_CMD`.
+
+## Reliability, measured rather than claimed
+
+`npm run canary` probes every reachable node on an interval, keeps the samples,
+and serves what it measured at `/status` as JSON and at `/` as a page: uptime,
+error rate, worst continuous outage, and p50/p90/p99, per node and over 1h, 24h
+and 7d windows. `npm run canary -- --once` prints the same table and exits.
+
+Two kinds of probe, kept apart in the output because they cost different things.
+**Liveness** is `GET /health`, free, and on by default. **Answer** probes measure
+time to first visible token over `/lanjob`, which is the number a buyer feels,
+and they are off by default because that endpoint opens a job the NODE pays for:
+every probe spends the operator's own gas. Turn them on with
+`CANARY_ANSWER=lanjob`, and only beside the nodes, since `/lanjob` is LAN-gated.
+
+The numbers are deliberately plain. Percentiles are nearest-rank over the
+samples held, with no interpolation, so every figure on the page is a value some
+probe actually took, and the sample count sits beside it. A failed probe is
+excluded from the latency percentiles and counted in the error rate, because a
+timeout is not a slow response and averaging it in makes a dead node look merely
+sluggish.
+
+What it does not claim travels in the payload itself, under `caveats`, so a
+renderer cannot quietly drop it: one vantage point, on the operator's own
+network, watching the operator's own machines. It cannot see an outage between
+a guest and the tunnel, and a node answering `/health` while serving nothing
+reads as up.
 
 `/health` publishes the whole price derivation rather than a number: the ten-provider
 OpenRouter band for the exact weights being served, the policy and discount applied to it,
