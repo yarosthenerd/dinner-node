@@ -37,9 +37,19 @@ async function* lines(body: ReadableStream<Uint8Array>): AsyncGenerator<string> 
  */
 export type Chunk = { t: string; th?: never } | { th: string; t?: never };
 
+// MOCK_REPEAT exists for one test that cannot be written without it: killing a
+// node mid-answer AFTER its checkpoint has reached the chain. The passage below
+// runs out in under two seconds, which is shorter than a settle round trip, so
+// a mock node is always already finished by the time there is anything on chain
+// to survive its death. Repeating it makes the stream long enough to be
+// interrupted. Default 1, so normal behaviour is unchanged.
+// See scripts/kill-takeover-e2e.mjs, KILL_ON=onchain.
 export async function* mock(prompt: string): AsyncGenerator<Chunk> {
   const text = `Analyzing request "${prompt.slice(0, 60)}". This response is being served by idle hardware someone left on. Every token you read is a micropayment settling on Monad. At this rate the host machine funds its owner's dinner in roughly one streaming session. Proof: watch the settlement feed. `;
-  for (const w of text.split(' ')) { yield { t: w + ' ' }; await sleep(30); } // ~33 tok/s
+  const repeat = Math.max(1, Number(process.env.MOCK_REPEAT ?? 1));
+  for (let i = 0; i < repeat; i++) {
+    for (const w of text.split(' ')) { yield { t: w + ' ' }; await sleep(30); } // ~33 tok/s
+  }
 }
 
 // Ollama unloads a model after five minutes idle by default, and a 27B evicting

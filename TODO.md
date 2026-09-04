@@ -211,10 +211,21 @@ Ordered. Everything here is ahead of every remaining defect in this file.
          Two providers paid for DISJOINT token ranges on one answer, each at
          its own rate. Node 2 produced tokens 68 through 91 and was paid for
          those and nothing else.
-   - [ ] Failover triggered by a node actually dying, rather than by a client
-         that stops reading. The e2e walks away from the stream, which is what
-         a dead node looks like from the browser's side and is not the same as
-         killing the process. The demo in item 6 wants the real thing.
+   - [x] **Failover triggered by a node actually dying.** Done 2026-09-03,
+         `scripts/kill-takeover-e2e.mjs`. It SIGKILLs the serving node
+         mid-answer while the client is still reading, so the stream breaks
+         under the reader (`UND_ERR_SOCKET`) rather than ending politely, and
+         it refuses to run without an explicit `KILL_PID` or `KILL_CMD`.
+         13 of 13 against two mock nodes on anvil, job#3: node A killed 402
+         chars in, on-chain checkpoint tokens=50 survived it, node B continued,
+         guest nonce 6 -> 6, node A paid 0.001335 MON for its range and node B
+         only for the tail. **Measured, and previously unmeasured: 9 ms from
+         death to the handover request, 33 ms from death to the first new
+         token.** Two modes, because they are two claims: `KILL_ON=onchain`
+         waits until the checkpoint is on the chain, `KILL_ON=stream` kills at
+         the checkpoint FRAME. See the two findings below, both found by this
+         script on its first runs.
+         **Not yet run against the live pair**, which means stopping node 1.
    - [x] Point the site and both nodes at the new address. Done 2026-09-03 by
          the new `scripts/set-registry.mjs`, which owns all nine places rather
          than the three this item guessed at, and refuses an address with no
@@ -229,9 +240,10 @@ Ordered. Everything here is ahead of every remaining defect in this file.
 6. **Record the migration demo.** Start a job, kill the laptop mid-answer, watch
    it continue elsewhere, with an on-chain receipt showing two providers paid
    for disjoint token ranges. Nobody in the competitive set can run this.
-   **The mechanism is proven as of 2026-09-03**, job#12, see item 5. What is
-   left is the recording and a real process kill rather than a client that
-   stops reading.
+   **The mechanism is proven as of 2026-09-03**, job#12, see item 5, and the
+   real process kill landed the same day in `scripts/kill-takeover-e2e.mjs`.
+   What is left is the recording itself, and running the kill against the live
+   pair rather than against two mock nodes on anvil.
 7. ~~**Separate the faucet key from the cloud-kitchen provider key.**~~ Moot
    2026-08-28. Both halves are gone: the cloud kitchen was deleted in
    `fd86fb8`, and `web/api/topup.js` was deleted this session. `HOUSE_PK` no
@@ -307,6 +319,32 @@ audit was written, which is why the section above them was stale for two days.
       both `source: announce`. The LAN address that blocked item 5 is gone.
 - [x] The legal half of the proxy question is settled. Done 2026-08-31, see the
       `<!--email_off-->` markers in `web/public/terms.html`.
+- [ ] **A node that dies between its checkpoint FRAME and its settle is not
+      paid for the work, and the replacement bills the whole answer.** Found
+      2026-09-03 by `scripts/kill-takeover-e2e.mjs KILL_ON=stream`, job#4 on
+      anvil. Node A streamed 50 chars, published a checkpoint frame, and was
+      killed 11 ms later. Nothing about it reached the chain: `getCheckpoint`
+      returned `tokens=0 billed=0`, node A earned 0, and node B then settled
+      the whole answer including node A's tokens. No double payment, and the
+      guest is not overcharged, but the bound in `_allowed` that exists to
+      split the payment is keyed on `cp.billed`, which is still zero in this
+      window, so it does not apply. The window is roughly one settle interval
+      wide and is the honest limit on "two providers are paid for disjoint
+      ranges": it is true once a checkpoint is on chain and not before.
+      Options are a checkpoint on the first token rather than the 64th, or
+      accepting the window and saying so.
+
+- [ ] **A refused resume still burns one of the guest's authorised handovers.**
+      Found 2026-09-03, confirmed on chain: job#2 came back
+      `400 {"error":"checkpoint hash mismatch"}` from node B, and the job had
+      already moved to node B with `reassignCount` 1. `src/host.ts:1647`
+      submits `reassignWithAuth` before `src/host.ts:1658` validates that the
+      claimed prefix hashes to the published checkpoint, so a client sending a
+      malformed resume transfers the job, spends gas, consumes one of the two
+      reassigns the guest authorised, and is then refused service. Validate the
+      resume hash BEFORE taking the job over: nothing in the check needs the
+      job to be ours.
+
 - [ ] **Retire `dinnernode-tunnel.service`.** The ngrok unit is still running
       and still holds `litter-unfunded-improvise.ngrok-free.dev` against port
       4173. Nothing announces it any more, so it is dead weight rather than a
