@@ -226,6 +226,13 @@ Ordered. Everything here is ahead of every remaining defect in this file.
          the checkpoint FRAME. See the two findings below, both found by this
          script on its first runs.
          **Not yet run against the live pair**, which means stopping node 1.
+   - [ ] **Run the kill e2e against the two live nodes.** The only thing between
+         here and item 6's recording. It stops node 1, and nothing on this
+         machine restarts it: the daemons are bare `tsx` processes rather than
+         systemd units, so it wants a `RESTORE_CMD` and a deliberate decision
+         to do it. Against the live pair the two measured numbers also become
+         real: the 9 ms and 36 ms from the mock run bound the protocol
+         overhead, not the model reload behind it.
    - [x] Point the site and both nodes at the new address. Done 2026-09-03 by
          the new `scripts/set-registry.mjs`, which owns all nine places rather
          than the three this item guessed at, and refuses an address with no
@@ -334,16 +341,19 @@ audit was written, which is why the section above them was stale for two days.
       Options are a checkpoint on the first token rather than the 64th, or
       accepting the window and saying so.
 
-- [ ] **A refused resume still burns one of the guest's authorised handovers.**
-      Found 2026-09-03, confirmed on chain: job#2 came back
+- [x] ~~**A refused resume still burns one of the guest's authorised
+      handovers.**~~ Fixed 2026-09-03 in `daead6e`, the same day it was found.
+      Confirmed on chain first: job#2 came back
       `400 {"error":"checkpoint hash mismatch"}` from node B, and the job had
-      already moved to node B with `reassignCount` 1. `src/host.ts:1647`
-      submits `reassignWithAuth` before `src/host.ts:1658` validates that the
-      claimed prefix hashes to the published checkpoint, so a client sending a
-      malformed resume transfers the job, spends gas, consumes one of the two
-      reassigns the guest authorised, and is then refused service. Validate the
-      resume hash BEFORE taking the job over: nothing in the check needs the
-      job to be ours.
+      already moved to node B with `reassignCount` 1. `src/host.ts` submitted
+      `reassignWithAuth` before it validated that the claimed prefix hashes to
+      the published checkpoint, so a client sending a malformed resume
+      transferred the job, spent gas, consumed one of the two reassigns the
+      guest authorised, and was then refused service. The check needs nothing
+      from the chain, so it now runs first. Guarded in
+      `scripts/kill-takeover-e2e.mjs`, which sends a valid authorisation and a
+      malformed resume to the node that does NOT own the job and asserts
+      `reassignCount` stays 0.
 
 - [ ] **Retire `dinnernode-tunnel.service`.** The ngrok unit is still running
       and still holds `litter-unfunded-improvise.ngrok-free.dev` against port
@@ -1203,6 +1213,10 @@ would change what gets built.
 
 8. **Smaller, still real.** No answer to "who reads my prompt" for a buyer who
    has heard of Secure Enclave, even a modest one. No Anthropic-compatible
-   surface, which Darkbloom has. No status page and no developer docs.
-   Migration's user-visible latency cost is unmeasured while its correctness is
-   proven.
+   surface, which Darkbloom has. No developer docs.
+
+   Two items struck from this list 2026-09-04. **There is a status page**: the
+   canary serves one at `/` and the same numbers at `/status`, see gap 4. And
+   **migration's user-visible latency cost is measured**, 9 ms from a node's
+   death to the handover and 36 ms to the first new token, though on mock nodes,
+   so it bounds the protocol overhead rather than the model reload behind it.

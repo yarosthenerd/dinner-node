@@ -189,6 +189,14 @@ PASS  and the job still belongs to node A
 
 `auth-takeover-e2e.mjs` still passes 12 of 12 after the reordering.
 
+**A footnote in the same spirit as this file's theme.** The finding was written
+into `TODO.md` before it was fixed and left marked open there, so for the length
+of this session `TODO.md` and section 4 of this snapshot disagreed about whether
+it was done. Caught by re-reading the open items rather than by anything
+reporting it. Corrected, along with two statements in `TODO.md` gap 8 that this
+session made false: there is a status page now, and migration's user-visible
+latency cost is no longer unmeasured.
+
 ## 5. Reliability, measured rather than claimed
 
 `TODO.md` gap 4: the one distribution channel this project wants ranks providers
