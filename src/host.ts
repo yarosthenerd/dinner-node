@@ -4,6 +4,7 @@ import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { formatEther, keccak256, parseEther, parseEventLogs, stringToHex, toHex } from 'viem';
+import { isRevert, WillRevert } from './revert';
 import { ABI, ADDR, EXPLORER, monadTestnet, pub, wallet } from './chain';
 import { isMine, readJob, readProvider, remaining } from './registry';
 import { authorises, parseAuth, refuseTakeover } from './takeover';
@@ -321,6 +322,18 @@ function serialized<T>(f: () => Promise<T>): Promise<T> {
 // of the new wallet reverted and the guest was never charged. Estimating per
 // call costs one round trip against a three second settlement interval and
 // keeps the limit both sufficient and tight.
+//
+// The estimate is also the only cheap warning that a call CANNOT succeed, and
+// throwing that away was costing real money. This used to catch every failure
+// and return the padded fallback, and the caller broadcast on it: on a chain
+// that charges the gas LIMIT, a settle the chain had already refused to
+// estimate was sent at 150,000 gas and burned all of it, to learn what the
+// estimate had just said for free.
+//
+// So a revert now throws and nothing is sent. Every other failure, an
+// unreachable RPC, a timeout, a rate limit, still falls back, because that is
+// what the fallback is for: a node that stops settling whenever a public
+// endpoint has a bad minute is worse than one that occasionally overpays.
 async function gasFor(fn: string, args: readonly unknown[], fallback: bigint, value?: bigint): Promise<bigint> {
   try {
     const g = await pub.estimateContractGas({
@@ -330,7 +343,8 @@ async function gasFor(fn: string, args: readonly unknown[], fallback: bigint, va
       ...(value === undefined ? {} : { value }),
     } as any);
     return (g * 120n) / 100n;
-  } catch {
+  } catch (e) {
+    if (isRevert(e)) throw new WillRevert(fn, String((e as any)?.shortMessage ?? (e as any)?.message ?? e).slice(0, 200));
     return fallback;
   }
 }

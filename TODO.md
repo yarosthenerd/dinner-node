@@ -494,7 +494,19 @@ worth reading against `SNAPSHOT.md` section 0.
       ISO 3166-1 alpha-2 at startup, the way `MODEL` now refuses, and say in
       `hosting.html` that the value is operator-declared and republished
       verbatim.
-- [ ] **`proveControl` has no tests**, and it is the one function whose failure
+- [x] ~~**`proveControl` has no tests**~~ Done 2026-09-04, 13 in
+      `web/src/lib/__tests__/prove-control.test.ts`, against real signatures
+      from real keys rather than a mocked verifier, so the crypto binding is
+      what is under test. Covers the impostor with a valid signature from the
+      wrong key, a replayed signature over a different nonce, the RELAY, where a
+      hostile host forwards the challenge to node1 and returns node1's genuine
+      signature, a host that proves its key but is not active on chain, and the
+      deliberate distinction where an RPC outage throws a plain `Error` rather
+      than `HostNotProven` so one bad minute does not skip every healthy node.
+      Verified by mutation: accepting any signature fails 3 of them, dropping
+      the origin from the signed message fails 3, and calling an RPC outage
+      `HostNotProven` fails 1.
+      The original note, kept because it is still the reason this mattered:
       mode is "sends the prompt anyway". Wants a bad signature, an inactive
       provider, a non-2xx `/challenge`, and the relay case.
 - [ ] **`dn_wallet_rdns` is now the inconsistent one.** Having accepted that
@@ -505,7 +517,19 @@ worth reading against `SNAPSHOT.md` section 0.
       in, so the anonymity-set problem gets harder rather than easier.
 - [ ] `finish_reason: 'error'` is not in the OpenAI enum. A strict SDK will
       reject the final chunk of a failed stream.
-- [ ] `gasFor` swallows a revert and then broadcasts the padded fallback,
+- [x] ~~**`gasFor` swallows a revert and then broadcasts the padded
+      fallback.**~~ Fixed 2026-09-04. The estimate is the cheap warning that a
+      call CANNOT succeed, and it was being discarded: on a chain that charges
+      the gas LIMIT, a settle the chain had already refused to estimate was
+      sent at 150,000 gas and burned all of it to learn what the estimate had
+      just said for free. A revert now throws `WillRevert` and nothing is sent.
+      Every other failure still falls back, because a node that stops settling
+      whenever a public endpoint has a bad minute is worse than one that
+      occasionally overpays. The predicate is `src/revert.ts`, 7 tests, and it
+      is verified against the errors viem really throws rather than
+      hand-built ones: a live revert on anvil reads `isRevert = true`, a live
+      unreachable RPC reads `false`.
+      The original note:
       burning the full limit for a call that was never going to succeed.
       Distinguish a revert from an RPC failure and refuse to send on the first.
 - [ ] `openFronted` holds the transaction queue across two receipt waits, with
