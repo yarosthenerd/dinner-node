@@ -3,7 +3,12 @@
 Rent idle consumer hardware to serve local LLM inference. Providers stream tokens;
 requesters pay per token, **settled on Monad as the work becomes worth settling**.
 
-**Live:** https://dinnernode.xyz · **Contract:** [0x2881…EbCd](https://testnet.monadvision.com/address/0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd) · Monad testnet (10143)
+**A job survives the node serving it.** When a provider dies mid-answer, the answer
+continues on another node from a signed checkpoint, the guest signs nothing, and the two
+providers are paid for disjoint ranges of the same answer. That is verified on chain, not
+argued for: see the receipt under Protocol.
+
+**Live:** https://dinnernode.xyz · **Registry:** [0x7E98…423c](https://testnet.monadvision.com/address/0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c) (`DinnerNodeV2`, deployed 2026-09-03) · Monad testnet (10143)
 
 Testnet only. MON here has no monetary value. See [terms](web/public/terms.html) and
 [acceptable use](web/public/acceptable-use.html).
@@ -49,18 +54,41 @@ headline number, it is that per-second post-pay micropayments only become a viab
 model on a chain with 10k TPS and 400ms blocks, where the settlement cost stays negligible
 regardless of what the market is doing.
 
-## Protocol (DinnerNode.sol)
-`registerProvider(model, hw, rate)` → `deposit()` → `openJob(provider, budget, promptTag)` →
-`settle(jobId, Δtokens)` @ ~2 Hz → `closeJob / withdraw / refund`.
-Trust: post-pay per second, escrow exhaustion auto-closes.
+## Protocol (DinnerNodeV2.sol)
+`registerProvider(model, hw, rate, maxTokensPerSecond)` → `deposit()` →
+`openJob(provider, budget, promptTag, requireCheckpoints)` →
+`settle(jobId, Δtokens, prefixHash, prefixTokens, billedTotal)` @ ~2 Hz →
+`closeJob / withdraw / refund`, with `reassignWithAuth` in between when a node dies.
+Trust: post-pay per second, bounded per settlement, escrow exhaustion auto-closes.
 
-**Known defect in the deployed contract.** `DinnerNode.sol`, the version currently live,
-accepts any `tokensDelta` a provider passes to `settle`, capped only by the remaining escrow.
-A single call can therefore take the whole escrow for zero work. Bounded per-settlement loss
-is a property of `contracts/src/DinnerNodeV2.sol`, which locks the rate at job open and caps
-each settlement by the tokens the provider could plausibly have produced since the last one.
-**V2 is written but not deployed. Roadmap.** Until it ships, the guest's worst case is loss of
-the full escrow for a job, not one settlement.
+**What the deployed contract bounds.** `contracts/src/DinnerNodeV2.sol` is what is
+live at `0x7E98…423c`. It locks the rate at job open and caps each settlement two ways:
+by `elapsed × maxTokensPerSecond`, so a provider cannot bill for tokens it had no time to
+produce, and by the published checkpoint, so a replacement provider that checkpoints the
+whole answer still has only the unpaid tail as headroom. The guest's worst case is one
+settlement interval rather than the whole escrow, and
+`test_worst_case_loss_is_one_settlement_interval` is the test that says so.
+
+**The superseded instance.** `contracts/src/DinnerNode.sol` at
+[0x2881…EbCd](https://testnet.monadvision.com/address/0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd)
+accepted any `tokensDelta` capped only by remaining escrow, so a single call could take the
+whole escrow for zero work. It stays callable forever and nothing in this repo points at it;
+it is the address to reach for only to `withdraw` or `refund` value left behind in it.
+
+**Mid-answer migration is live on this instance.** `reassignWithAuth` carries an EIP-712
+authorisation the guest signs at order time, submitted by the INCOMING provider, so a node
+dying at 3am does not wait for anyone to approve a wallet prompt. `DOMAIN_SEPARATOR()`
+answers `0x5940d1d2…`, where the superseded instance reverted. Verified against the two
+live nodes on job#12: two providers paid for disjoint token ranges of one answer, each at
+its own rate, and the guest's nonce did not move.
+
+```
+node1(qwen)   settled  +812 tok  0.0271 MON   checkpoint tokens=67
+HANDOVER      node1 -> node2
+node2(llama)  settled   +24 tok  0.00014 MON  checkpoint tokens=91
+HANDOVER      node2 -> node1
+node1(qwen)  settled +1675 tok  0.0101 MON
+```
 
 ## Privacy: what the chain actually sees
 Prompt text never touches the chain. What is written, permanently and publicly, is a
@@ -142,7 +170,7 @@ for what you received.
 curl https://node1.dinnernode.xyz/v1/chat/completions \
   -H "authorization: Bearer $DINNERNODE_KEY" \
   -H "content-type: application/json" \
-  -d '{"model":"qwen3.8:27b","messages":[{"role":"user","content":"how much is dinner in Belgrade"}],"stream":true}'
+  -d '{"model":"qwen3.6:35b-a3b","messages":[{"role":"user","content":"how much is dinner in Belgrade"}],"stream":true}'
 ```
 
 Streaming and buffered both work, `GET /v1/models` lists what the node answers
@@ -178,6 +206,34 @@ chose and checks the registry still calls it active.
 That proves the machine is the provider it claims to be. It does not say who
 that provider is, and a provider can put itself in a link, so the interface
 still tells you which machines a link named.
+
+## Verifying the claims in this file
+
+Nothing here asks to be taken on trust. Every count below was re-run on 2026-09-03.
+
+| What | Command | Result |
+|---|---|---|
+| Daemon, chain and pricing logic | `npx vitest run` | 258 tests, 17 files |
+| Browser app and streaming | `cd web && npx vitest run` | 135 tests, 7 files |
+| Contracts | `cd contracts && forge test` | 72 tests, 5 suites |
+| Types | `npm run typecheck` | clean |
+| The failover, against the two live nodes | `node scripts/auth-takeover-e2e.mjs` | 12 of 12, real chain |
+| The failover when the node is **killed** mid-answer | `node scripts/kill-takeover-e2e.mjs` | 16 of 16, incl. the payment split |
+| What a node is actually doing right now | `curl https://node1.dinnernode.xyz/health` | live price band, model, GPU |
+
+`kill-takeover-e2e.mjs` is the one worth running to understand the project. It
+SIGKILLs the node serving a job while the client is still reading, and then
+checks that the stream broke rather than ended, that the checkpoint outlived the
+process on chain, that the replacement resumed from it, that the guest signed
+nothing, and that the two providers were paid for disjoint ranges. It measured
+the cost to the person waiting, which had never been measured: **9 ms from death
+to handover, 36 ms from death to the first new token.** It refuses to run
+without an explicit `KILL_PID` or `KILL_CMD`.
+
+`/health` publishes the whole price derivation rather than a number: the ten-provider
+OpenRouter band for the exact weights being served, the policy and discount applied to it,
+and where that lands us against each one. The price is resolved at startup from that band,
+so it is not a figure typed into this README.
 
 ## Real vs. demo
 Real: the registry, escrow, and settlements; laptop inference via ollama; prompt commitments;
