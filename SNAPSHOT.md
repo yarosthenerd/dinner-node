@@ -1,6 +1,6 @@
 # Session snapshot, 2026-09-04
 
-> The session that began with a strategy question and became four commits of
+> The session that began with a strategy question and became ten commits of
 > engineering. The 2026-09-03 snapshot below is kept unchanged and is still
 > accurate; nothing here contradicts it, and section 2 corrects the one file it
 > never covered.
@@ -13,7 +13,7 @@
 
 ## 0. Results, in one list
 
-Four commits, `daead6e` through `313e2c2`, 1,176 insertions across 11 files.
+Ten commits, `daead6e` through `47b123a`, two of which are this file.
 
 | # | Result | Evidence |
 |---|---|---|
@@ -24,9 +24,11 @@ Four commits, `daead6e` through `313e2c2`, 1,176 insertions across 11 files.
 | 5 | **A malformed resume used to burn one of the guest's two authorised handovers.** Fixed, with a guard. | section 4 |
 | 6 | **A window where the disjoint-payment claim is not true**, found and recorded rather than papered over. | section 3.2 |
 | 7 | **Reliability is measured and published**, uptime, error rate and latency percentiles, from a canary. | section 5 |
-| 8 | **Root tests 258 to 275.** Web 135, contracts 72, typecheck clean throughout. | section 6 |
+| 8 | **Root tests 258 to 282, web 135 to 148.** Contracts 72, typecheck clean throughout. | section 6 |
 | 9 | **The strategy question was answered and no strategy document was changed.** Deliberate. | section 1 |
-| 10 | **The window of item 6 was closed, priced, and then deliberately left open.** The fix costs more than the work it protects. | section 8 |
+| 10 | **The window of item 6 was closed, priced, and then deliberately left open.** The fix costs more than the work it protects. | section 7 |
+| 11 | **`proveControl` has 13 tests**, including the relay attack the origin line exists for. Verified by mutation. | section 8 |
+| 12 | **`gasFor` was throwing away the chain's own warning** and broadcasting a doomed transaction at full gas. Fixed. | section 9 |
 
 Commits, oldest first:
 
@@ -35,7 +37,17 @@ daead6e  fix: a malformed resume cost the guest one of two handovers
 fe93c42  test: the failover, against a node that is actually killed
 af4dd98  docs: the front door named a contract that is not the one running
 313e2c2  feat: reliability numbers from a canary rather than from a claim
+a3534ab  docs: the session, written down
+a4535a7  docs: three items the roadmap still called open after they were closed
+530ca9a  feat: the first token forces the first settlement
+b6d8598  fix: the first-token settlement costs more than the work it protects
+c545abd  test: proveControl, the check that decides who receives a prompt
+47b123a  fix: gasFor threw away the chain's own warning and broadcast anyway
 ```
+
+`a3534ab` and `a4535a7` are this file and its correction, listed rather than
+quietly dropped, because a snapshot that edits its own commit list is the first
+step towards the staleness section 2 is about.
 
 ## 1. The question the session opened with, and what was done about it
 
@@ -250,8 +262,8 @@ and the tunnel, and a node answering `/health` while serving nothing reads as up
 Re-run at the end rather than quoted from the middle.
 
 ```
-root         275 tests, 18 files   (258 before, +17 canary-stats)
-web/         135 tests,  7 files
+root         282 tests, 19 files   (258 before: +17 canary-stats, +7 revert)
+web/         148 tests,  8 files   (135 before: +13 proveControl)
 contracts     72 tests,  5 suites
 typecheck    clean
 auth-takeover-e2e   12 of 12   (after the host.ts reordering)
@@ -265,28 +277,7 @@ What is left is exactly what was running when the session started, all of it
 from 2026-09-03 19:18: the two node daemons, discovery, and three cloudflared
 tunnels.
 
-## 7. Open, and honestly labelled
-
-Nothing below was attempted and abandoned. Each is a decision the operator has
-not made or a cost not yet agreed.
-
-- **The kill e2e has never run against the live pair.** That means stopping node
-  1, and nothing on this machine restarts it: the daemons are bare `tsx`
-  processes, not systemd units. It wants a `RESTORE_CMD` and a deliberate act.
-- **Time to first token is not being collected.** The probe works and is off,
-  because each sample spends the operator's gas through `/lanjob`. The p50 and
-  p99 that OpenRouter ranks on stay unmeasured until that budget is agreed.
-- **The canary has one vantage point**, on the same machine as the nodes. The
-  caveat is published, which is honest and is not a second vantage point.
-- **The checkpoint window is open on purpose.** Section 8 built the fix,
-  measured it at 247x, priced it, and turned it off: it costs more than the work
-  it protects on any job under a few thousand tokens. The version that does not
-  cost that is a contract change and is written down rather than built.
-- **The strategy is unchanged.** A4 still has no falsification test and no date,
-  which `REFRAME.md` section 10 already calls the most expensive line in it. The
-  five conversations remain the cheapest thing that would settle it.
-
-## 8. The window of section 3.2, closed as far as arithmetic allows
+## 7. The window of section 3.2, closed as far as arithmetic allows
 
 Decided by the operator the same day it was found: checkpoint at the first
 token. Built as `CHECKPOINT_FIRST_TOKENS`, measured, then **defaulted to 0 on
@@ -366,6 +357,112 @@ defect. The claim is written to match, in the README and in `TODO.md`: two
 providers are paid for disjoint ranges **once a checkpoint is on chain**, which
 is now within about a settle round trip of the first token rather than up to a
 minute.
+
+## 8. proveControl, the check that decides who receives a prompt
+
+`web/src/lib/attest.ts` holds the function that decides whether a guest's prompt
+goes to the registered provider or to whoever put themselves in a `?host=`
+link. It had **no tests**, while the message-building helpers beside it had
+eight. That asymmetry is the finding: the part that was easy to test was tested,
+and the part that mattered was not.
+
+Thirteen now, using **real signatures from real keys against the real
+`verifyMessage`**. Mocking the verifier would have proved the test rather than
+the code, and the cryptographic binding is the only thing here worth proving.
+The fake host reads the nonce out of the request body and signs it, the way a
+node does.
+
+The cases, each one a path something actually takes:
+
+- **The impostor.** Holds a real key, signs correctly, and is simply not the key
+  the registry pays.
+- **The replay.** A valid signature over a different nonce, which is the shape a
+  captured signature has.
+- **The relay.** A hostile host forwards the challenge to node 1 and returns
+  node 1's genuine signature. It fails because the message we rebuild names the
+  origin WE dialed. That is precisely what the `url:` line in `controlMessage`
+  exists for, and nothing had ever tested it.
+- **Key proven, provider inactive.** Two separate questions, both required.
+- **A node too old to answer `/challenge`.** Refused deliberately: an unprovable
+  host must not receive a prompt, and being lenient about the upgrade would be
+  the entire hole.
+- **An RPC outage is not a verdict.** It throws a plain `Error` rather than
+  `HostNotProven`, because the caller's failover treats `HostNotProven` as "try
+  the next host", and collapsing the two would skip every healthy node in the
+  list on an unrelated fault.
+
+**Verified by mutation rather than by passing**, which is the part worth
+copying. Accepting any signature fails 3 of them. Dropping the origin from the
+signed message fails 3, including the two pinned-message tests in the sibling
+file. Calling an RPC outage `HostNotProven` fails 1. A test that does not fail
+when the code is broken is decoration.
+
+## 9. gasFor threw away the chain's own warning
+
+`estimateContractGas` failing is how the chain says a call will revert.
+`gasFor` caught every failure alike and returned a padded fallback, and the
+caller broadcast on it.
+
+Monad charges the gas LIMIT rather than the gas used. So a settle the chain had
+already refused to estimate was sent at 150,000 gas and burned all of it, to
+learn what the estimate had just said for free. It affected `settle`,
+`closeJob`, `registerProvider`, `deposit` and `openJob`.
+
+A revert now throws `WillRevert` and nothing is sent. **Every other failure
+still falls back**, and that distinction is the design: an unreachable RPC, a
+timeout or a rate limit is a fault on our side of the wire, and a node that
+stops settling whenever a public endpoint has a bad minute is worse than one
+that occasionally overpays for gas.
+
+The predicate lives in `src/revert.ts`, extracted because `host.ts` takes a
+wallet and opens a port at import and cannot be tested in place. It walks
+viem's typed errors through `BaseError.walk` and falls back to a string match
+for nodes that return `execution reverted` as a plain JSON-RPC error,
+deliberately NOT matching a bare "revert", so that "reverting to the fallback"
+is not read as a verdict from the chain.
+
+**Checked against what viem really throws**, not against hand-built error
+objects, which is how this test could have been written and been worthless:
+
+```
+real revert on anvil      isRevert = true    settle reverted ... "closed"
+real unreachable RPC      isRevert = false   HTTP request failed.
+healthy call              estimate = 45,238 gas
+```
+
+Every call site already catches or propagates to a request that can fail, so
+nothing needed to change around it.
+
+**Two roadmap entries were found stale while surveying for this work**, both
+already fixed in earlier sessions: the duplicate announce timer, where `host.ts`
+now has exactly one `setInterval`, and `finish_reason: 'error'`, which is a
+declared member of the `Finish` type but was not confirmed to reach the wire, so
+it is recorded as unverified rather than repeated as a defect.
+
+## 10. Open, and honestly labelled
+
+Nothing below was attempted and abandoned. Each is a decision the operator has
+not made or a cost not yet agreed.
+
+- **The kill e2e has never run against the live pair.** That means stopping node
+  1, and nothing on this machine restarts it: the daemons are bare `tsx`
+  processes, not systemd units. It wants a `RESTORE_CMD` and a deliberate act.
+- **Everything committed today reaches the live nodes only on their next
+  restart.** They have been up since 2026-09-03 19:18 and are running none of
+  it: not the resume-ordering fix, not the first-token frame, not the `gasFor`
+  change. That is a deliberate non-action, not an oversight.
+- **Time to first token is not being collected.** The probe works and is off,
+  because each sample spends the operator's gas through `/lanjob`. The p50 and
+  p99 that OpenRouter ranks on stay unmeasured until that budget is agreed.
+- **The canary has one vantage point**, on the same machine as the nodes. The
+  caveat is published, which is honest and is not a second vantage point.
+- **The checkpoint window is open on purpose.** Section 7 built the fix,
+  measured it at 247x, priced it, and turned it off: it costs more than the work
+  it protects on any job under a few thousand tokens. The version that does not
+  cost that is a contract change and is written down rather than built.
+- **The strategy is unchanged.** A4 still has no falsification test and no date,
+  which `REFRAME.md` section 10 already calls the most expensive line in it. The
+  five conversations remain the cheapest thing that would settle it.
 
 ---
 
