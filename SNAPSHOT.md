@@ -26,6 +26,7 @@ Four commits, `daead6e` through `313e2c2`, 1,176 insertions across 11 files.
 | 7 | **Reliability is measured and published**, uptime, error rate and latency percentiles, from a canary. | section 5 |
 | 8 | **Root tests 258 to 275.** Web 135, contracts 72, typecheck clean throughout. | section 6 |
 | 9 | **The strategy question was answered and no strategy document was changed.** Deliberate. | section 1 |
+| 10 | **The window of item 6 is closed as far as it can be**, 60,298 ms down to 244 ms. | section 8 |
 
 Commits, oldest first:
 
@@ -277,10 +278,61 @@ not made or a cost not yet agreed.
   p99 that OpenRouter ranks on stay unmeasured until that budget is agreed.
 - **The canary has one vantage point**, on the same machine as the nodes. The
   caveat is published, which is honest and is not a second vantage point.
-- **The checkpoint window of section 3.2 is recorded, not closed.**
+- **The residual checkpoint window cannot be closed.** Section 8 narrowed it by
+  247x and the last of it is arithmetic: a token exists before the transaction
+  carrying it confirms. What is open is not work, it is whether the extra
+  settlement per job is a price the operator wants to keep paying.
 - **The strategy is unchanged.** A4 still has no falsification test and no date,
   which `REFRAME.md` section 10 already calls the most expensive line in it. The
   five conversations remain the cheapest thing that would settle it.
+
+## 8. The window of section 3.2, closed as far as arithmetic allows
+
+Decided by the operator the same day it was found: checkpoint at the first
+token. Built as `CHECKPOINT_FIRST_TOKENS`, default 1.
+
+**The frame interval was never the cause, and finding that out changed the
+fix.** `settle` already hashes the prefix as it stands at the instant it fires,
+which deliberately decouples settlement from `CHECKPOINT_TOKENS`. What actually
+governed when a checkpoint reached the chain was the settle ticker: it waits
+until the unsettled tokens are worth ten times the gas to settle them, about
+3,000 tokens on node 1, with `SETTLE_MAX_MS` as the only backstop. Setting
+`CHECKPOINT_TOKENS=1` would have changed the frames and nothing on chain.
+
+So the change is in the ticker. A job with nothing published yet settles as soon
+as it has any visible progress, ahead of the value trigger. The frame also fires
+on the first visible token whatever the interval is, which is free and means a
+replacement always has a prefix rather than only after token 64.
+
+**Measured rather than reasoned about.** Anvil's gas is too cheap for the value
+trigger to ever delay anything, so the first attempt at a before-and-after
+showed no difference and proved nothing. Disabling the value trigger with
+`SETTLE_GAS_MULTIPLE=100000`, so only the 60 second backstop remained, isolated
+it:
+
+```
+before   first token -> first on-chain checkpoint   60,298 ms   1,985 tokens exposed
+after    first token -> first on-chain checkpoint      244 ms       6 tokens exposed
+```
+
+244 ms is itself bounded below by the script's 250 ms poll, so the true figure
+is at most that. The measurement is now part of the kill e2e's output rather
+than a one-off.
+
+**What it costs, stated because a provider pays it.** One extra settlement per
+job, about 0.0103 MON at 102 gwei and 101k gas, covering a single token. That is
+the one settlement this node makes at a deliberate loss.
+`CHECKPOINT_FIRST_TOKENS=0` restores the old behaviour for an operator who would
+rather carry the window than the gas.
+
+**What is left, verified rather than assumed.** A node killed at the instant of
+its first frame still publishes nothing: killed 10 chars in, `getCheckpoint`
+empty, node A earned 0 for real work. There is always a gap between producing a
+token and a transaction confirming, so the residual is arithmetic and not a
+defect. The claim is written to match, in the README and in `TODO.md`: two
+providers are paid for disjoint ranges **once a checkpoint is on chain**, which
+is now within about a settle round trip of the first token rather than up to a
+minute.
 
 ---
 

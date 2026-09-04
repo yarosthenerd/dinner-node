@@ -48,6 +48,32 @@ const MAX_BODY = Number(process.env.MAX_BODY_BYTES ?? 1_000_000);
 const CONTEXT_TOKENS = Number(process.env.CONTEXT_TOKENS ?? 32768);
 const OUTPUT_RESERVE = Number(process.env.OUTPUT_RESERVE_TOKENS ?? 2048);
 const CHECKPOINT_EVERY = Number(process.env.CHECKPOINT_TOKENS ?? 64);
+// How much visible progress is enough to force a job's FIRST settlement, ahead
+// of the value trigger that governs every settlement after it.
+//
+// The window this closes, measured 2026-09-03 by
+// `scripts/kill-takeover-e2e.mjs KILL_ON=stream`: a node killed before its
+// first settle has published nothing, so `getCheckpoint` is empty, the dead
+// node earns nothing for work it really did, and the replacement bills the
+// whole answer because `_allowed`'s split bound is keyed on `cp.billed` and
+// that is still zero. Nothing about that is theoretical; it is what the run
+// recorded.
+//
+// The value trigger cannot close it, and that is the point. It settles once
+// the unsettled tokens are worth ten times the gas, which on node 1 is about
+// 3,000 tokens, with SETTLE_MAX_MS as the only backstop. So a real job could
+// run for a full minute with nothing on chain behind it.
+//
+// 1 means the first visible token forces the first settlement, which is the
+// smallest window this node can offer: after it, the exposure is one settle
+// round trip rather than up to SETTLE_MAX_MS.
+//
+// It is not free, and the cost is exactly one extra settlement per job, paid
+// by the provider: about 0.0103 MON at 102 gwei and 101k gas, against a
+// settlement that pays for a single token. An operator who would rather carry
+// the window than the gas raises this, and 0 restores the old behaviour of
+// waiting for the value trigger.
+const CHECKPOINT_FIRST = Number(process.env.CHECKPOINT_FIRST_TOKENS ?? 1);
 const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT_JOBS ?? 2);
 // How long a session job may sit idle before the provider closes it and
 // returns the guest's unspent escrow. Long enough to read an answer and think
@@ -596,7 +622,15 @@ setInterval(() => {
     if (j.delta <= 0) continue;
     const worthIt = settleValueWei(j.delta) >= threshold;
     const waitedLongEnough = now - j.since >= SETTLE_MAX_MS;
-    if (!worthIt && !waitedLongEnough) continue;
+    // A job with nothing on chain behind it yet settles as soon as it has the
+    // visible progress to publish, ahead of the value trigger. This is the one
+    // settlement this node makes at a deliberate loss, and it buys the thing
+    // the value trigger cannot: a checkpoint that survives the process, so a
+    // node dying early is still paid for what it produced and its replacement
+    // is bounded to the tail. See CHECKPOINT_FIRST.
+    const pr = progress.get(id);
+    const firstPublish = CHECKPOINT_FIRST > 0 && !!pr && pr.publishedVisible === 0 && pr.visible >= CHECKPOINT_FIRST;
+    if (!worthIt && !waitedLongEnough && !firstPublish) continue;
     // Held back rather than attempted on a job that requires checkpoints and
     // has produced nothing visible since the last one. The tokens stay in the
     // ledger and the next settlement with visible progress pays for them.
@@ -874,7 +908,13 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
       active.get(jobId)!.delta++;
       prog.visible++;
       prog.billed++;
-      if (++sinceCp >= CHECKPOINT_EVERY) {
+      // The first visible token always gets a frame, whatever the interval is.
+      // A replacement can only continue from a prefix it has been handed, so
+      // the interval decides how much work is lost on a handover, and between
+      // token 1 and token CHECKPOINT_EVERY the honest answer was "all of it".
+      // The frame costs nothing: it is a line on a stream this node is already
+      // writing.
+      if (produced === 1 || ++sinceCp >= CHECKPOINT_EVERY) {
         sinceCp = 0;
         // A checkpoint lets a different provider pick the answer up from here
         // and prove it has the same prefix, rather than starting over.
@@ -1391,6 +1431,7 @@ http.createServer(async (req, res) => {
         } : null,
       },
       contextTokens: CONTEXT_TOKENS, promptBudget: PROMPT_BUDGET, checkpointEvery: CHECKPOINT_EVERY,
+      checkpointFirst: CHECKPOINT_FIRST,
       maxBodyBytes: MAX_BODY, maxConcurrent: MAX_CONCURRENT, activeJobs: active.size,
       // The guest closes an unfinished job to recover its escrow, and closing
       // before this node's last flush lands trips settle()'s require(j.open)

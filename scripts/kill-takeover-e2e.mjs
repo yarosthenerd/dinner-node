@@ -120,7 +120,7 @@ async function streamUntilKilled(url, body, kill, ready, budgetMs = 240_000) {
   // hash mismatch`. The sibling suite never hit this because it breaks out of
   // the loop at the checkpoint; a run that keeps reading until the node dies
   // must remember where the checkpoint was.
-  let buf = '', text = '', think = '', cp = null, textAtCp = '', killedAt = 0, ending = 'deadline';
+  let buf = '', text = '', think = '', cp = null, textAtCp = '', killedAt = 0, ending = 'deadline', firstTokenAt = 0;
   const until = Date.now() + budgetMs;
   try {
     outer: while (Date.now() < until) {
@@ -139,7 +139,7 @@ async function streamUntilKilled(url, body, kill, ready, budgetMs = 240_000) {
         if (payload === '[DONE]') { ending = killedAt ? 'closed-after-kill' : 'finished-before-kill'; break outer; }
         let ev; try { ev = JSON.parse(payload); } catch { continue; }
         if (ev.th) think += ev.th;
-        if (ev.t) text += ev.t;
+        if (ev.t) { if (!firstTokenAt) firstTokenAt = Date.now(); text += ev.t; }
         if (ev.err) throw new Error(`${url} streamed an error: ${ev.err}`);
         if (ev.checkpoint || ev.cp) { cp = ev.checkpoint ?? ev.cp; textAtCp = text; }
         if (ev.done) { ending = killedAt ? 'closed-after-kill' : 'finished-before-kill'; break outer; }
@@ -160,7 +160,7 @@ async function streamUntilKilled(url, body, kill, ready, budgetMs = 240_000) {
     ending = killedAt ? `broke: ${e.cause?.code ?? e.name}` : `broke-before-kill: ${e.message}`;
   }
   await reader.cancel().catch(() => {});
-  return { text, think, cp, textAtCp, killedAt, ending };
+  return { text, think, cp, textAtCp, killedAt, ending, firstTokenAt };
 }
 
 async function main() {
@@ -225,13 +225,18 @@ async function main() {
   // chain, which is what the demo claims survives the death. Polled beside the
   // stream rather than inside it, because the frame loop must not block: the
   // stream is the thing being observed.
-  let onChainTokens = 0n;
+  let onChainTokens = 0n, firstOnChainAt = 0;
   const poll = KILL_ON === 'onchain' ? setInterval(async () => {
     try {
       const cp = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'getCheckpoint', args: [jobId] });
-      if (cp.tokens > onChainTokens) onChainTokens = cp.tokens;
+      if (cp.tokens > onChainTokens) {
+        // The instant this job's work first became recoverable by anyone but
+        // the client holding the stream. Everything before it is the window.
+        if (onChainTokens === 0n) firstOnChainAt = Date.now();
+        onChainTokens = cp.tokens;
+      }
     } catch { /* a read that fails is simply not-yet-ready */ }
-  }, 500) : null;
+  }, 250) : null;
   const ready = () => KILL_ON === 'stream' || onChainTokens > 0n;
 
   const first = await streamUntilKilled(NODE_A, { jobId: jobId.toString(), prompt, session: true }, doKill, ready);
@@ -315,7 +320,9 @@ async function main() {
   // The number this script exists to produce, alongside the assertions.
   const gap = firstTokenAt ? firstTokenAt - first.killedAt : 0;
   const detect = handoverStart - first.killedAt;
+  const protectedAfter = firstOnChainAt && first.firstTokenAt ? firstOnChainAt - first.firstTokenAt : 0;
   console.log(`\n--- what the person waiting experienced ---`);
+  if (protectedAfter) console.log(`first token to first on-chain checkpoint : ${protectedAfter} ms  <- the window a death inside is unattributed`);
   console.log(`death to handover request : ${detect} ms`);
   console.log(`death to first new token  : ${gap} ms`);
   console.log(`paid so far               : ${formatEther(job.paid)} MON over ${job.tokens} tokens`);

@@ -326,20 +326,44 @@ audit was written, which is why the section above them was stale for two days.
       both `source: announce`. The LAN address that blocked item 5 is gone.
 - [x] The legal half of the proxy question is settled. Done 2026-08-31, see the
       `<!--email_off-->` markers in `web/public/terms.html`.
-- [ ] **A node that dies between its checkpoint FRAME and its settle is not
-      paid for the work, and the replacement bills the whole answer.** Found
-      2026-09-03 by `scripts/kill-takeover-e2e.mjs KILL_ON=stream`, job#4 on
-      anvil. Node A streamed 50 chars, published a checkpoint frame, and was
-      killed 11 ms later. Nothing about it reached the chain: `getCheckpoint`
-      returned `tokens=0 billed=0`, node A earned 0, and node B then settled
-      the whole answer including node A's tokens. No double payment, and the
-      guest is not overcharged, but the bound in `_allowed` that exists to
-      split the payment is keyed on `cp.billed`, which is still zero in this
-      window, so it does not apply. The window is roughly one settle interval
-      wide and is the honest limit on "two providers are paid for disjoint
-      ranges": it is true once a checkpoint is on chain and not before.
-      Options are a checkpoint on the first token rather than the 64th, or
-      accepting the window and saying so.
+- [x] **The unattributed window, narrowed from 60s to one settle round trip.**
+      Decided and built 2026-09-04: the first token forces the job's first
+      settlement. `CHECKPOINT_FIRST_TOKENS`, default 1.
+
+      The cause was never the frame interval. Settlement already hashes the
+      prefix as it stands, so what governed the on-chain checkpoint was the
+      SETTLE ticker: it waits until unsettled tokens are worth ten times the
+      gas, about 3,000 tokens on node 1, with `SETTLE_MAX_MS` as the only
+      backstop. A job could therefore run a full minute with nothing on chain,
+      and a node dying in that window earned nothing for real work while its
+      replacement billed the whole answer, because `_allowed`'s split bound is
+      keyed on `cp.billed` and that was still zero.
+
+      Measured on anvil with the value trigger disabled so only the backstop
+      remained, `scripts/kill-takeover-e2e.mjs KILL_ON=onchain`:
+
+      ```
+      before  first token -> first on-chain checkpoint  60,298 ms, 1,985 tokens exposed
+      after   first token -> first on-chain checkpoint     244 ms, 6 tokens exposed
+      ```
+
+      The frame also now fires on the first visible token whatever the interval
+      is, which costs nothing and means a replacement always has a prefix to
+      continue from rather than only after token 64.
+
+      **It costs one extra settlement per job**, paid by the provider: about
+      0.0103 MON at 102 gwei and 101k gas, for a settlement covering a single
+      token. `CHECKPOINT_FIRST_TOKENS=0` restores the old behaviour for an
+      operator who would rather carry the window than the gas.
+
+- [ ] **The residual window cannot be closed, and the claim is written to
+      match.** A node killed at the instant of its first frame still publishes
+      nothing: verified 2026-09-04, killed 10 chars in, `getCheckpoint` empty,
+      node A earned 0. There is always a gap between producing a token and a
+      transaction confirming. So the honest form stays what section 3.2 of the
+      snapshot says: two providers are paid for disjoint ranges once a
+      checkpoint is on chain, and that is now within about one settle round
+      trip of the first token rather than up to a minute.
 
 - [x] ~~**A refused resume still burns one of the guest's authorised
       handovers.**~~ Fixed 2026-09-03 in `daead6e`, the same day it was found.
