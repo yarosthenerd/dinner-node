@@ -17,9 +17,18 @@
  * it registers, and this file stays pure enough to test.
  */
 
+// Pure, like the rest of this file: a canonical form and a table lookup.
+import { matchModel, type MatchHow } from './model-id.js';
+
 /** Our model tag to the OpenRouter id for the same weights. Verified by hand
  *  on 2026-08-27; an entry that is wrong prices a model against a different
- *  model, so this table is deliberately explicit rather than a fuzzy match. */
+ *  model, so this table is deliberately explicit rather than a fuzzy match.
+ *
+ *  Keyed by ollama tags, and reached from every other runtime's spelling of
+ *  the same model through `model-id.ts`. That indirection matches on equality
+ *  of a shared canonical form and refuses everything else, so it adds no
+ *  entries here and loosens nothing about them. See the header there for why
+ *  a near miss is answered with no price rather than a close one. */
 export const MARKET_ID: Record<string, string> = {
   'llama3.2:1b': 'meta-llama/llama-3.2-1b-instruct',
   'qwen3:8b': 'qwen/qwen3-8b',
@@ -248,6 +257,13 @@ export type Resolved = {
    *  guess whether a quoted price came from the market or from a default. */
   source: string;
   orId: string | null;
+  /** The market-table key this model was priced as. The model's own name when
+   *  the node runs ollama; the tag its id was matched to otherwise. */
+  matchedTag: string | null;
+  /** How that key was reached. Published for the same reason `source` is: a
+   *  price derived from a parsed model id is a weaker claim than one keyed
+   *  directly, and the difference belongs where a reader can see it. */
+  match: MatchHow;
   policy: Policy;
   discount: number;
 };
@@ -271,24 +287,29 @@ export async function resolveRate(opts: {
   const policy = opts.policy ?? 'median';
   const discount = opts.discount ?? 1;
   const monUsd = opts.monUsd ?? DEFAULT_MON_USD;
-  const orId = MARKET_ID[opts.model] ?? null;
+  // Every runtime spells a model differently and they are all the same weights
+  // at the same market price. `matchModel` reaches this table from any of
+  // those spellings, on equality of a canonical form, and returns nothing
+  // rather than a near miss.
+  const m = matchModel(opts.model, Object.keys(MARKET_ID));
+  const orId = m.tag ? MARKET_ID[m.tag] : null;
 
   if (opts.overrideWei && opts.overrideWei > 0n) {
     return {
       ratePerMillionWei: opts.overrideWei,
       usdPerMillion: usdPerMillion(opts.overrideWei, monUsd),
       band: orId ? PINNED[orId] ?? null : null,
-      source: 'override', orId, policy, discount,
+      source: 'override', orId, matchedTag: m.tag, match: m.how, policy, discount,
     };
   }
   if (!orId) {
-    return { ratePerMillionWei: 0n, usdPerMillion: 0, band: null, source: 'none', orId: null, policy, discount };
+    return { ratePerMillionWei: 0n, usdPerMillion: 0, band: null, source: 'none', orId: null, matchedTag: null, match: m.how, policy, discount };
   }
 
   const live = await fetchBand(orId, opts.fetchImpl ?? fetch);
   const band = live ?? PINNED[orId] ?? null;
   if (!band) {
-    return { ratePerMillionWei: 0n, usdPerMillion: 0, band: null, source: 'none', orId, policy, discount };
+    return { ratePerMillionWei: 0n, usdPerMillion: 0, band: null, source: 'none', orId, matchedTag: m.tag, match: m.how, policy, discount };
   }
   const usd = pickTarget(band, policy, discount);
   return {
@@ -296,7 +317,7 @@ export async function resolveRate(opts: {
     usdPerMillion: usd,
     band,
     source: live ? 'live' : 'pinned',
-    orId, policy, discount,
+    orId, matchedTag: m.tag, match: m.how, policy, discount,
   };
 }
 
@@ -307,9 +328,14 @@ export function describeRate(r: Resolved): string {
     : r.usdPerMillion < r.band.median ? 'below the median'
     : r.usdPerMillion === r.band.median ? 'at the median'
     : 'above the median';
+  // A price reached by parsing the engine's model id is a weaker claim than
+  // one keyed directly, and this line is where an operator would notice it
+  // being wrong. So it names the tag the model was priced as whenever that tag
+  // was not the model's own name.
+  const via = r.match === 'exact' || !r.matchedTag ? '' : `, priced as ${r.matchedTag} [${r.match}]`;
   return `$${r.usdPerMillion.toFixed(3)}/M output, ${pos} of ${r.band.providers} provider(s) `
     + `($${r.band.min.toFixed(3)} to $${r.band.max.toFixed(3)}, median $${r.band.median.toFixed(3)}) `
-    + `for ${r.orId} [${r.source}]`;
+    + `for ${r.orId} [${r.source}]${via}`;
 }
 
 /** The input-side line for the log, which is the part the output column hides. */

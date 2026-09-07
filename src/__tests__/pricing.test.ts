@@ -239,9 +239,66 @@ describe('free input', () => {
     const bandless = {
       ratePerMillionWei: 0n, usdPerMillion: 1,
       band: { min: 1, median: 1, max: 1, providers: 1, measured: '2026-08-27' },
-      source: 'pinned', orId: 'qwen/x', policy: 'median' as const, discount: 0.9,
+      source: 'pinned', orId: 'qwen/x', matchedTag: 'x', match: 'exact' as const,
+      policy: 'median' as const, discount: 0.9,
     };
     expect(describeFreeInput(bandless)).toBeNull();
     expect(describeFreeInput({ ...bandless, band: null })).toBeNull();
+  });
+});
+
+describe('resolveRate across runtimes', () => {
+  // No network: the pinned band is the floor of information this is meant to
+  // reach, and reaching it from a foreign model id is the whole point.
+  const offline = (async () => { throw new Error('offline'); }) as any;
+
+  it('prices a KoboldCpp gguf filename against the model it actually is', () => {
+    // Before this, every non-ollama node fell through to the built-in default
+    // rate, because nobody spells a model the way ollama does.
+    return Promise.all([
+      'qwen3:8b',
+      'qwen/qwen3-8b',
+      'koboldcpp/Qwen3-8B-Q4_K_M.gguf',
+      'qwen3-8b-q4_k_m.gguf',
+    ].map(async model => {
+      const r = await resolveRate({ model, fetchImpl: offline });
+      expect(r.orId).toBe('qwen/qwen3-8b');
+      expect(r.ratePerMillionWei).toBeGreaterThan(0n);
+      expect(r.matchedTag).toBe('qwen3:8b');
+    }));
+  });
+
+  it('leaves an ollama node on the exact path, with no new behaviour', async () => {
+    const r = await resolveRate({ model: 'qwen3:8b', fetchImpl: offline });
+    expect(r.match).toBe('exact');
+    expect(describeRate(r)).not.toContain('priced as');
+  });
+
+  it('says out loud when a price was derived from a parsed id', async () => {
+    // The disclosure that makes the derived path safe to run: an operator who
+    // disagrees can see the claim in the log line rather than infer it.
+    const r = await resolveRate({ model: 'koboldcpp/Qwen3-8B-Q4_K_M.gguf', fetchImpl: offline });
+    expect(r.match).toBe('derived');
+    expect(describeRate(r)).toContain('priced as qwen3:8b [derived]');
+  });
+
+  it('still refuses a fine-tune, and charges nothing rather than the wrong thing', async () => {
+    const r = await resolveRate({ model: 'qwen3-8b-abliterated', fetchImpl: offline });
+    expect(r.ratePerMillionWei).toBe(0n);
+    expect(r.source).toBe('none');
+    expect(r.matchedTag).toBe(null);
+    // Which leaves host.ts on whatever default it had, as it was before.
+  });
+
+  it('carries the match through an operator override, without using it to price', async () => {
+    // An override is the operator speaking and nothing here argues with it.
+    // The band still comes back, because it is what the log line compares to.
+    const r = await resolveRate({
+      model: 'qwen3-8b-q4_k_m.gguf', overrideWei: 42n, fetchImpl: offline,
+    });
+    expect(r.ratePerMillionWei).toBe(42n);
+    expect(r.source).toBe('override');
+    expect(r.matchedTag).toBe('qwen3:8b');
+    expect(r.band).not.toBe(null);
   });
 });
