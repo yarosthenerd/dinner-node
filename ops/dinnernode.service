@@ -1,0 +1,20 @@
+[Unit]
+Description=DinnerNode provider host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/yaros/monad-synapse
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# Node 1 takes its whole configuration from .env, which dotenv loads from the
+# working directory. There is no EnvironmentFile here for that reason: the
+# split that .env.node2 exists to create only applies to the second node.
+ExecStart=/usr/local/bin/npm run host
+# Restart=always is what makes the kill test survivable: stopping this unit to
+# prove failover does not require a person to start it again.
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

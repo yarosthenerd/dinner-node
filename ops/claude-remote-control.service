@@ -1,0 +1,29 @@
+[Unit]
+Description=Claude Code Remote Control server for the DinnerNode repo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/yaros/monad-synapse
+# claude lives in ~/.local/bin, node in /usr/local/bin.
+Environment=PATH=/home/yaros/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/yaros
+# Remote Control makes outbound HTTPS calls only and opens no inbound port, so
+# nothing here needs to be reachable from the network.
+#
+# Server mode serves several sessions from one process. --spawn=same-dir means
+# every session created from the phone works in this directory against the real
+# .env and the real keys, which is the point: cloud sessions cannot see those.
+# Switch to --spawn=worktree if you would rather each phone-started task get its
+# own git worktree and never collide with what is open on the desk.
+#
+# No --permission-mode is set, so tool calls that need approval prompt, and the
+# prompt arrives on the phone. Add --permission-mode acceptEdits for fewer taps
+# at the cost of unattended edits.
+ExecStart=/home/yaros/.local/bin/claude remote-control --name dinnernode
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
