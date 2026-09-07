@@ -447,10 +447,36 @@ not made or a cost not yet agreed.
 - **The kill e2e has never run against the live pair.** That means stopping node
   1, and nothing on this machine restarts it: the daemons are bare `tsx`
   processes, not systemd units. It wants a `RESTORE_CMD` and a deliberate act.
+
+  **Corrected 2026-09-07: the stated blocker is gone.** Both daemons are systemd
+  user units, `dinnernode.service` and `dinnernode2.service`, each with
+  `Restart=always` and `RestartSec=10`. `RESTORE_CMD` is therefore
+  `systemctl --user start dinnernode.service`, and stopping node 1 no longer
+  risks leaving it stopped. What remains is the deliberate act, which is the
+  half of this item that was always the operator's call.
+
+  The unit for node 1 was installed but never checked in, which is part of why
+  this line survived: `ops/` recorded five units and the primary provider was
+  not one of them. Added 2026-09-07 as `ops/dinnernode.service`, verified
+  identical to the installed copy.
 - **Everything committed today reaches the live nodes only on their next
   restart.** They have been up since 2026-09-03 19:18 and are running none of
   it: not the resume-ordering fix, not the first-token frame, not the `gasFor`
   change. That is a deliberate non-action, not an oversight.
+
+  **Closed 2026-09-07.** A restart on 2026-09-05 07:35 picked up all of the
+  2026-09-04 work, and a second on 2026-09-07 09:19 picked up the two commits
+  of that morning, `2731062` and `c6da42e`, both of which touch files the
+  daemons import. `/provider/models` is byte-identical across that restart on
+  both nodes, which is the expected result rather than a null one: `model-id`
+  changes what a node charges for a model named the way LM Studio or llama.cpp
+  names it, and these two nodes are named the way ollama names them.
+
+  The standing hazard is not this instance, it is the shape of it. A commit
+  changes nothing about a running node until someone restarts the unit, and
+  nothing on this machine notices the gap. The 2026-08-28 faucet hole stayed
+  open for two days for exactly this reason, which `SECURITY_REVIEW.md` section
+  0.1 already records.
 - **Time to first token is not being collected.** The probe works and is off,
   because each sample spends the operator's gas through `/lanjob`. The p50 and
   p99 that OpenRouter ranks on stay unmeasured until that budget is agreed.

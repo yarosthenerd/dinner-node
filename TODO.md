@@ -233,6 +233,20 @@ Ordered. Everything here is ahead of every remaining defect in this file.
          to do it. Against the live pair the two measured numbers also become
          real: the 9 ms and 36 ms from the mock run bound the protocol
          overhead, not the model reload behind it.
+
+         **Half of that is out of date, 2026-09-07.** The daemons are systemd
+         user units and have been for some time: `dinnernode.service` and
+         `dinnernode2.service`, both `Restart=always`, `RestartSec=10`. So
+         `RESTORE_CMD` is `systemctl --user start dinnernode.service`, and a
+         kill that goes wrong self-heals within ten seconds rather than leaving
+         node 1 down until somebody notices. The deliberate decision is the
+         only part of this item still open, and it is the operator's.
+
+         One caveat that `Restart=always` introduces rather than removes: the
+         unit will bring node 1 back on its own about ten seconds after the
+         kill, so a run that wants to observe the outage for longer has to stop
+         the unit rather than kill the process, and `KILL_CMD` should be
+         `systemctl --user stop dinnernode.service` for that reason.
    - [x] Point the site and both nodes at the new address. Done 2026-09-03 by
          the new `scripts/set-registry.mjs`, which owns all nine places rather
          than the three this item guessed at, and refuses an address with no
