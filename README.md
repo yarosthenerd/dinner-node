@@ -28,11 +28,158 @@ check and changes nothing.
 **The one prerequisite is node 20 or newer.** Everything here runs on it, so a
 machine without one cannot be repaired by anything in this repo; both launchers
 stop with the install command for that platform. From there the wizard handles
-the rest: it offers to install ollama, starts it when it is installed and not
-serving, sizes a model against the memory actually present and offers to pull
-one, generates the node wallet, asks the faucet for gas, and fetches
-cloudflared. Every one of those is a confirm, and declining any of them leaves
-the machine exactly as it was.
+the rest: it finds or installs an inference engine, starts it when it is
+installed and not serving, sizes a model against the memory actually present
+and offers to pull one, generates the node wallet, asks the faucet for gas, and
+fetches cloudflared. Every one of those is a confirm, and declining any of them
+leaves the machine exactly as it was.
+
+### Which engine, and on which Linux
+
+**ollama** is the reference engine: the model sizing, the price table and the
+warm-up are written against it. But a node serves through anything speaking
+`/v1/chat/completions`, and setup looks for all of them before it offers to
+install anything, because telling someone who already runs a local model to
+install a second runtime and re-download the same weights is the step they stop
+at.
+
+| Runtime | Port | Identified by |
+|---|---|---|
+| LM Studio | 1234 | `/api/v0/models` |
+| KoboldCpp | 5001 | `/api/extra/version` |
+| llama.cpp `llama-server` | 8080 | `/props` |
+| Jan | 1337 | nothing; port only |
+| vLLM | 8000 | nothing; port only |
+| text-generation-webui | 5000 | nothing; port only |
+| GPT4All | 4891 | nothing; port only |
+
+Two rules govern that table, and `src/runtimes.ts` is built around them.
+
+**A port does not identify a runtime.** Four local inference servers default to
+`:8080`, and so does half the software on a developer's laptop. A candidate is
+accepted only when it answers `/v1/models` with an OpenAI-shaped model list,
+and it is named only when an endpoint unique to that runtime confirms it.
+Where no such endpoint exists, setup says "an OpenAI-compatible server on
+:1337, which is Jan's default port, but nothing confirmed it" and leaves the
+operator to settle it. A confident wrong name sends a paying node's traffic
+somewhere nobody chose.
+
+**Context is read wherever the runtime will say it.** The context a model is
+loaded with lives in the server, not in the request, so a node advertising more
+than the server honours has its prompts truncated in silence and is paid for
+answering a question the model never fully saw. KoboldCpp reports it at
+`/api/extra/true_max_context_length`, llama.cpp at
+`default_generation_settings.n_ctx`, LM Studio per loaded model. Setup offers
+to lower `CONTEXT_TOKENS` to match, and says so plainly when a runtime reports
+nothing. ollama is the one engine where this is fixable per request.
+
+A password-protected KoboldCpp is found, named, and refused, because it would
+reject every request this node made and finding that out at setup beats finding
+it out after a guest has paid.
+
+### Pricing a model nobody spells the same way
+
+The market table in `pricing.ts` is keyed by ollama tags, and no other runtime
+names a model that way:
+
+```
+ollama       qwen3:8b
+LM Studio    qwen/qwen3-8b
+KoboldCpp    koboldcpp/Qwen3-8B-Q4_K_M.gguf
+llama.cpp    qwen3-8b-q4_k_m.gguf
+HuggingFace  lmstudio-community/Qwen3-8B-GGUF
+```
+
+Those are the same weights at the same market price. Left unmatched, every
+node serving through anything but ollama fell through to the built-in default
+rate, which for an 8B model is about twice what the market charges for it, so
+the node overcharged and lost work it should have won.
+
+`src/model-id.ts` reaches the table from any of those spellings. It puts both
+sides through one canonical form and declares a match only when the two are
+**equal**. There is no closest match, no prefix match and no edit distance.
+Publisher prefixes, quantization suffixes, file extensions and instruct
+markers are recognised as decoration and removed; anything else left over
+means no match, and no match means the node prices as it did before rather
+than guessing.
+
+That is what keeps it safe to run in front of money. `qwen3-8b-abliterated` is
+a fine-tune, its leftover token is not recognised, and it gets no band rather
+than the base model's price. A base build (`-base`, `-pt`) is refused for the
+same reason, since the instruct band would be the wrong one. So is a different
+size, a different version, and anything that merely contains a priced name.
+
+A derived price is disclosed rather than presented as a keyed one. Setup says
+"priced as qwen3:8b, matched from the id above", the startup log says
+`priced as qwen3:8b [derived]`, and `/health` publishes `pricedAs` and `match`
+alongside the reference. An operator who thinks the match is wrong can see the
+claim instead of inferring it, and `RATE_PER_MILLION` overrides it.
+
+`lms server start` is run for you when LM Studio is installed but closed. No
+other runtime is started: llama.cpp and vLLM need a model path this wizard does
+not have and must not guess at, and KoboldCpp is a file someone double-clicks
+with no PATH entry to find. Set `ENGINE_PORTS=9000,9001` for a server the table
+does not know; it is found on exactly the same terms, and never named.
+
+**On Arch, and on Omarchy**, the vendor `install.sh` is not the route. It
+writes ollama into `/usr/local`, outside pacman's file database, where it sits
+alongside anything a later `pacman -S ollama` puts in `/usr/bin` and never gets
+upgraded with the rest of the system. Setup reads `/etc/os-release`, and on
+Arch or an Arch derivative (EndeavourOS, CachyOS, Manjaro) it offers
+`pacman -S` with the package that matches the card it just probed:
+`ollama-cuda` for NVIDIA, `ollama-rocm` for AMD, plain `ollama` only when there
+is no GPU. That distinction is not cosmetic. The plain package is CPU
+inference, and a node that installs it on a machine with a 4070 registers,
+takes jobs, and serves them at four tokens a second.
+
+On Omarchy the same install runs through `omarchy-pkg-add`, which is that
+machine's own wrapper around pacman, so an operator's shell history shows one
+convention rather than two. Where an `ollama.service` exists, setup asks
+systemd to start it instead of spawning a server that `systemctl status ollama`
+would not show. `cloudflared` and `nodejs` come from pacman there too.
+
+### Systems whose root is not installed into
+
+A Bazzite or SteamOS machine is, by definition, a discrete GPU that sits idle
+most of the day, which is the whole premise here. They are also the machines
+where every install route this repo knew was wrong.
+
+| System | Detected by | Route |
+|---|---|---|
+| Bazzite, Bluefin, Aurora, Silverblue, Kinoite | `/run/ostree-booted`, else `ID` or `VARIANT_ID` | distrobox, with the GPU flag |
+| SteamOS | `ID=steamos`, `/usr/bin/steamos-readonly` | named plainly, see below |
+| NixOS | `/etc/NIXOS`, `ID=nixos` | `configuration.nix`, printed only |
+| openSUSE MicroOS, Aeon | `VARIANT_ID`, `transactional-update` | transactional-update, or a container |
+
+`immutable` is checked **before** `arch` everywhere a route is chosen, and that
+ordering is the point. SteamOS reports `ID_LIKE=arch` and really is Arch
+underneath, so a route that reads `arch` first hands a Steam Deck
+`sudo pacman -S ollama-cuda`. That fails on a read-only root, and if the
+operator gets past it with `steamos-readonly disable`, the next SteamOS update
+deletes it again, leaving a node that worked once.
+
+On an ostree system the container command carries `--nvidia` when an NVIDIA
+card was probed. Without it the container cannot see the card and ollama
+serves from the CPU without ever saying so, which is the same silent
+half-speed failure the Arch package split exists to prevent, one layer down.
+After the install, setup **probes** rather than assumes: distrobox shares the
+host network by default, which is what puts the container's `:11434` where
+this node looks, and a container built with `--unshare-netns` does not. If
+nothing answers, setup says so and names that as the likely cause, because
+"installed" and "reachable" are two different facts and only the second earns
+anything.
+
+NixOS gets no command to run. Packages there come from a file the operator
+owns, so setup prints the three lines for `configuration.nix` and stops.
+SteamOS gets the truth: every route into its root is erased by the next
+update, a container survives once it exists but neither distrobox nor podman
+is preinstalled to build one, and a Deck's APU is a weak provider anyway, so
+pointing `LLM_BASE_URL` at a stronger machine may be the better answer.
+
+The tunnel half already worked on all of these and still does: `cloudflared`
+is a static binary this node fetches into `bin/` and runs as the operator, with
+no package manager, no root and no reboot. Only the engine was ever the
+problem.
 
 Both launchers are shims. Dependency freshness lives in
 `scripts/deps-stale.mjs` and the public tunnel in `src/tunnel.ts`, so the two

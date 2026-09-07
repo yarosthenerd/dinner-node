@@ -30,10 +30,22 @@ if ! command -v node >/dev/null 2>&1; then
   case "$(uname -s)" in
     Darwin) say "    brew install node" ;;
     Linux)
-      # A distro package is often older than 20, so nvm is named first: it
-      # needs no root and gives a current runtime.
-      say "    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash"
-      say "    then: nvm install --lts"
+      # Arch keeps nodejs current, so on Arch the package manager is the whole
+      # answer and nvm is a second runtime nobody needed. Omarchy is Arch with
+      # its own wrapper around pacman; named where it is present because it is
+      # the command that machine's own scripts use.
+      if command -v pacman >/dev/null 2>&1; then
+        if command -v omarchy-pkg-add >/dev/null 2>&1; then
+          say "    omarchy-pkg-add nodejs npm"
+        else
+          say "    sudo pacman -S --needed nodejs npm"
+        fi
+      else
+        # A distro package is often older than 20, so nvm is named first: it
+        # needs no root and gives a current runtime.
+        say "    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash"
+        say "    then: nvm install --lts"
+      fi
       ;;
   esac
   say "    or download it: https://nodejs.org"

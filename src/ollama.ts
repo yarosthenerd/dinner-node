@@ -15,7 +15,8 @@
  * left with exactly the machine they had, and told what to run themselves.
  */
 import { spawn, spawnSync, type spawnSync as SpawnSync } from 'node:child_process';
-import { hasCommand } from './platform.js';
+import { hasCommand, detectDistro, hasSystemdUnit, type Distro } from './platform.js';
+import type { Gpu } from './hardware.js';
 
 /**
  * Where ollama answers. Hardcoded to match src/host.ts and src/engines.ts,
@@ -48,6 +49,9 @@ export type StartOptions = {
   spawnFn?: typeof spawn;
   probeFn?: (url: string, timeoutMs: number) => Promise<Probe>;
   sleep?: (ms: number) => Promise<void>;
+  /** Whether a systemd unit of that name exists. Injected for the tests, which
+   *  have to exercise the branch this machine is not on. */
+  hasUnit?: (unit: string) => boolean;
 };
 
 const nap = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
@@ -68,14 +72,42 @@ export async function startOllama(opts: StartOptions = {}): Promise<Probe> {
   const {
     url = OLLAMA_URL, timeoutMs = 20_000, intervalMs = 500,
     log = () => {}, spawnFn = spawn, probeFn = probeOllama, sleep = nap,
+    hasUnit = hasSystemdUnit,
   } = opts;
 
   if (!hasCommand('ollama')) return { reachable: false, models: [] };
 
+  // Where a service manager owns this daemon, ask the service manager. Arch's
+  // ollama package ships ollama.service, and on those machines a spawned
+  // `ollama serve` either loses the race to bind :11434 and dies, or wins it
+  // and leaves a server that the operator's own `systemctl status ollama` does
+  // not show and `systemctl restart ollama` does not restart. Neither failure
+  // announces itself.
+  //
+  // `--now` on enable rather than a bare start: an operator setting up a node
+  // wants the engine back after a reboot, and this is the one moment where
+  // saying so costs nothing.
+  const unit = hasUnit('ollama.service');
   try {
-    const child = spawnFn('ollama', ['serve'], { detached: true, stdio: 'ignore', windowsHide: true });
-    child.unref?.();
-    log('started ollama in the background');
+    if (unit) {
+      const r = spawnFn('systemctl', ['enable', '--now', 'ollama'], { stdio: 'inherit' });
+      // Fire and forget is not available here: systemctl returns immediately
+      // on success but the socket is not up yet, which is what the poll below
+      // is for. A failure to become root, though, is worth saying out loud
+      // rather than leaving as twenty seconds of silent polling.
+      await new Promise<void>(res => {
+        (r as any).on?.('exit', (code: number) => {
+          if (code !== 0) log(`systemctl enable --now ollama exited ${code}`);
+          res();
+        });
+        if (!(r as any).on) res();
+      });
+      log('asked systemd to start ollama');
+    } else {
+      const child = spawnFn('ollama', ['serve'], { detached: true, stdio: 'ignore', windowsHide: true });
+      child.unref?.();
+      log('started ollama in the background');
+    }
   } catch (e: any) {
     log(`could not start ollama: ${e?.message ?? e}`);
     return { reachable: false, models: [] };
@@ -93,21 +125,110 @@ export async function startOllama(opts: StartOptions = {}): Promise<Probe> {
 export type InstallCommand = { cmd: string; args: string[]; shown: string };
 
 /**
+ * Which ollama package this machine wants, on distributions that ship more
+ * than one.
+ *
+ * Arch splits the runtime by accelerator, and the split is not cosmetic: the
+ * plain `ollama` package is CPU inference. An operator with a 4090 who
+ * installs it gets a node that works, registers on chain, takes jobs and
+ * serves them at four tokens a second, which is the exact silent half-speed
+ * failure the model sizing in models.ts exists to prevent. Getting this wrong
+ * is worse than not installing at all.
+ *
+ * Vendor is read from what hardware.ts already probed rather than probed
+ * again, so there is one answer to "what card is in this machine" per run.
+ */
+export function gpuVendor(gpus: Gpu[] = []): 'nvidia' | 'amd' | 'none' {
+  // `source` is the probe that found the card, and it names the vendor more
+  // reliably than the marketing string in `name` does.
+  if (gpus.some(g => g.source === 'nvidia-smi' || /nvidia|geforce|rtx|quadro|tesla/i.test(g.name))) return 'nvidia';
+  if (gpus.some(g => g.source.startsWith('sysfs') || g.source === 'rocm-smi' || /\bamd\b|radeon/i.test(g.name))) return 'amd';
+  return 'none';
+}
+
+export function ollamaPackage(gpus: Gpu[] = []): 'ollama-cuda' | 'ollama-rocm' | 'ollama' {
+  const v = gpuVendor(gpus);
+  return v === 'nvidia' ? 'ollama-cuda' : v === 'amd' ? 'ollama-rocm' : 'ollama';
+}
+
+/**
+ * The container route, for a system whose root cannot be installed into.
+ *
+ * One command rather than two, in the same shape as the vendor script's
+ * `curl | sh`, so it can be shown in full and confirmed once. The `&&` matters:
+ * entering a container that was never created would otherwise run the
+ * installer nowhere and report success.
+ *
+ * Null on the systems where no single command is honest. On NixOS the packages
+ * come from a file the operator owns, and on SteamOS distrobox is not
+ * preinstalled, so there is nothing here to offer running; `immutableHint`
+ * says what to do instead.
+ *
+ * Whether the container can reach the GPU is decided by one flag, and getting
+ * it wrong produces an ollama that works, registers, takes jobs and serves
+ * them from the CPU without ever saying so.
+ */
+export function containerInstall(
+  distro: Distro,
+  gpus: Gpu[] = [],
+  hasCmd: (c: string) => boolean = hasCommand,
+): InstallCommand | null {
+  if (distro.immutable === 'nixos') return null;
+  if (!hasCmd('distrobox')) return null;
+
+  const nvidia = gpuVendor(gpus) === 'nvidia' ? ' --nvidia' : '';
+  const script =
+    `distrobox create --name dinnernode --image fedora:latest${nvidia} --yes && ` +
+    `distrobox enter dinnernode -- sh -c 'curl -fsSL https://ollama.com/install.sh | sh'`;
+  return { cmd: '/bin/sh', args: ['-c', script], shown: script };
+}
+
+/**
  * How to install ollama on this machine, when there is a route that can be run
  * unattended-but-confirmed. Null where the only honest answer is a download
  * page, which is macOS without homebrew (a .dmg holding a GUI app) and Windows
  * without winget.
  *
- * The Linux route pipes a vendor script into a shell, which is what Ollama
- * publishes and what its own documentation tells people to run. It is shown in
- * full and confirmed before it runs, never assumed from --yes, because a
- * script that escalates to root is not something to start on someone's behalf.
+ * On Arch the package manager owns this, and the vendor script does not. The
+ * script installs into /usr/local, outside pacman's file database, where it
+ * sits alongside whatever `pacman -S ollama` later puts in /usr/bin: two
+ * binaries, two ideas about the systemd unit, and a PATH order deciding which
+ * one an operator is actually running. Neither ever gets upgraded with the
+ * rest of the system. So Arch and its derivatives get pacman, with the GPU
+ * package `ollamaPackage` chose.
+ *
+ * Everywhere else on Linux the route pipes a vendor script into a shell, which
+ * is what Ollama publishes and what its own documentation tells people to run.
+ * Both are shown in full and confirmed before they run, never assumed from
+ * --yes, because a command that escalates to root is not something to start on
+ * someone's behalf.
  */
 export function installCommand(
   platform: NodeJS.Platform = process.platform,
   hasCmd: (c: string) => boolean = hasCommand,
+  distro: Distro = detectDistro(),
+  gpus: Gpu[] = [],
 ): InstallCommand | null {
   if (platform === 'linux') {
+    // Before the Arch branch. SteamOS is Arch underneath and says so in
+    // ID_LIKE, and a pacman install there fails on a read-only root or, worse,
+    // succeeds after the operator disables the read-only flag and is then
+    // deleted by the next SteamOS update, leaving a node that worked once.
+    if (distro.immutable) return containerInstall(distro, gpus, hasCmd);
+    if (distro.arch) {
+      const pkg = ollamaPackage(gpus);
+      // Omarchy ships its own wrapper, which is `pacman -S --noconfirm
+      // --needed` plus a check that the package really landed. Preferred where
+      // it exists because it is the command that machine's own scripts use,
+      // and an operator reading their shell history should see one convention
+      // rather than two.
+      if (distro.omarchy && hasCmd('omarchy-pkg-add')) {
+        return { cmd: 'omarchy-pkg-add', args: [pkg], shown: `omarchy-pkg-add ${pkg}` };
+      }
+      if (!hasCmd('pacman')) return null;
+      const args = ['pacman', '-S', '--needed', '--noconfirm', pkg];
+      return { cmd: 'sudo', args, shown: `sudo ${args.join(' ')}` };
+    }
     if (!hasCmd('curl')) return null;
     const script = 'curl -fsSL https://ollama.com/install.sh | sh';
     return { cmd: '/bin/sh', args: ['-c', script], shown: script };

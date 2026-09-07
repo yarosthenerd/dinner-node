@@ -226,8 +226,51 @@ async function pickEngine(): Promise<Engine> {
     return { kind: 'mock', model: process.env.MODEL ?? 'mock-7b', gen: mock };
   }
   if (process.env.LLM_BASE_URL) {
-    const model = process.env.LLM_MODEL ?? 'local';
-    return { kind: 'openai-compat', model, gen: (p, s) => openai(p, process.env.LLM_BASE_URL!, model, s) };
+    const base = process.env.LLM_BASE_URL.replace(/\/+$/, '');
+    let model = process.env.LLM_MODEL ?? '';
+
+    // The default here used to be the literal string "local", which is not a
+    // model. It went into registerProvider as this node's advertised weights,
+    // it was what a guest chose from, and resolveRate looked it up in a table
+    // keyed by real model names and found nothing, so the node served at
+    // whatever default rate it had. Three wrong answers from one placeholder.
+    //
+    // Every OpenAI-compatible server answers /models with what it actually
+    // holds, so ask it rather than invent a name. LM Studio, vLLM, llama.cpp
+    // and OpenRouter all do. Retried on the same schedule as ollama below,
+    // because an engine started by the same hand that started this daemon is
+    // not listening for the first few seconds.
+    for (let attempt = 0; attempt < ENGINE_PROBE_ATTEMPTS && !model; attempt++) {
+      try {
+        const r = await fetch(`${base}/models`, { signal: AbortSignal.timeout(4000) });
+        if (r.ok) {
+          const rows = ((await r.json()) as any)?.data ?? [];
+          const ids: string[] = rows.map((m: any) => m?.id).filter(Boolean);
+          if (ids.length === 1) model = ids[0];
+          else if (ids.length > 1) {
+            // More than one and no LLM_MODEL is not a thing to guess at: the
+            // choice decides the price and the on-chain record. Naming them is
+            // the whole fix.
+            console.error(`${base} holds ${ids.length} models and LLM_MODEL is unset.`);
+            console.error(`installed: ${ids.join(', ')}`);
+            console.error('set LLM_MODEL in .env to one of the above, or run `npm run setup`.');
+            process.exit(1);
+          }
+        }
+      } catch { /* not up yet */ }
+      if (!model) {
+        if (attempt === 0) console.log(`waiting for an OpenAI-compatible engine on ${base}`);
+        await new Promise(r => setTimeout(r, ENGINE_PROBE_INTERVAL_MS));
+      }
+    }
+
+    if (!model) {
+      console.error(`no model at ${base}: it did not answer /models, or holds none.`);
+      console.error('start it (LM Studio: `lms server start`), or set LLM_MODEL to name the model yourself.');
+      process.exit(1);
+    }
+    if (!process.env.LLM_MODEL) console.log(`LLM_MODEL unset, serving ${model} and registering it on chain`);
+    return { kind: 'openai-compat', model, gen: (p, s) => openai(p, base, model, s) };
   }
   // ollama is usually started by the same hand that starts this daemon, and it
   // is not listening for the first few seconds. A single probe here loses that
@@ -1284,6 +1327,43 @@ function measureFirstToken(model: string): void {
 }
 
 /**
+ * The same measurement for an OpenAI-compatible engine, and the same warm-up.
+ *
+ * Both jobs at once, deliberately. LM Studio loads a model on demand when a
+ * request names one, so the first guest to arrive at a cold server pays the
+ * whole load time as time-to-first-token; sending this question at startup
+ * moves that cost to a moment nobody is waiting. And the number it produces is
+ * the one the browser sizes its abort budget from, which was previously
+ * measured only for ollama and left null here, so a guest's client was told
+ * nothing about how long this node takes to answer.
+ *
+ * `gpuFraction` stays null on purpose. Ollama's /api/ps reports how much of
+ * the model stayed in VRAM; there is no equivalent on the OpenAI-compatible
+ * wire, and a guessed number in that field is worse than an absent one.
+ */
+function measureFirstTokenOpenAI(base: string, model: string): void {
+  const t0 = Date.now();
+  (async () => {
+    // Same question as the ollama probe, for the same reason: how long a
+    // reasoning model thinks depends on what it was asked.
+    for await (const c of openai('In two sentences, what is idle compute?', base, model)) {
+      // Visible output only. Reasoning frames are proof of life, not an answer,
+      // and counting them here would publish the same optimistic figure the
+      // ollama probe used to.
+      if (c.t) {
+        firstTokenMs = Date.now() - t0;
+        console.log(`first token in ${(firstTokenMs / 1000).toFixed(1)}s`);
+        if (firstTokenMs > 20000) {
+          console.log('  !  that is slow enough that guests will time out. Check the model size and\n' +
+                      '     GPU offload settings in your engine, then: npm run setup');
+        }
+        return;
+      }
+    }
+  })().catch(() => { /* a node that cannot measure still serves */ });
+}
+
+/**
  * Open a job this node pays for itself, and return its id.
  *
  * Two callers, one shape. The LAN guest page, where the point is that someone
@@ -1433,6 +1513,11 @@ http.createServer(async (req, res) => {
       pricing: pricing && {
         usdPerMillion: Number(pricing.usdPerMillion.toFixed(4)),
         source: pricing.source, reference: pricing.orId,
+        // How this node's model id reached that reference. "exact" is an
+        // ollama tag keyed straight into the table; "derived" means the id was
+        // parsed to get there, which is a weaker claim and is published as one
+        // rather than presented as the same thing.
+        pricedAs: pricing.matchedTag, match: pricing.match,
         policy: pricing.policy, discount: pricing.discount,
         band: pricing.band, monUsd: MON_USD,
         breakEvenTokens: breakEvenTokens(settleGasUnits, gasPriceWei, RATE),
@@ -1972,6 +2057,9 @@ http.createServer(async (req, res) => {
       : `warm failed: ollama ${r.status}`))
       .catch(err => console.log('warm failed (non-fatal):', err?.message ?? err));
     measureFirstToken(e.model);
+  } else if (e.kind === 'openai-compat') {
+    console.log(`warming ${e.model} on ${process.env.LLM_BASE_URL}…`);
+    measureFirstTokenOpenAI(process.env.LLM_BASE_URL!.replace(/\/+$/, ''), e.model);
   }
   // A public URL before the first announce, for the operator who installed
   // cloudflared and nothing else. Awaited rather than fired and forgotten: the

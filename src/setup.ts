@@ -20,16 +20,24 @@ import { spawnSync } from 'node:child_process';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { formatEther } from 'viem';
 import { pub, DEFAULT_ADDR } from './chain.js';
-import { probeHardware, describeHardware } from './hardware.js';
+import { probeHardware, describeHardware, type Gpu } from './hardware.js';
 import { gb, rankInstalled, recommend } from './models.js';
-import { hasCommand, repoEnvPath, installHint, OLLAMA_SERVE_HINT } from './platform.js';
+import { hasCommand, repoEnvPath, installHint, immutableHint, ollamaServeHint, detectDistro } from './platform.js';
 import { resolveCloudflared, downloadCloudflared, approxMB } from './cloudflared.js';
-import { probeOllama, startOllama, installCommand, runInstall, OLLAMA_URL } from './ollama.js';
+import { probeOllama, startOllama, installCommand, runInstall, ollamaPackage, gpuVendor, OLLAMA_URL } from './ollama.js';
+import { startLmStudio, servable, defaultModel } from './lmstudio.js';
+import { discover, describe as describeRuntime, KNOWN, type Found } from './runtimes.js';
+import { MARKET_ID } from './pricing.js';
+import { matchModel } from './model-id.js';
 
 // Overridable so the fresh-operator path (generates a key, writes a new file)
 // can be exercised against a throwaway file instead of a real one.
 const ENV_PATH = process.env.DINNERNODE_ENV_PATH ?? repoEnvPath(import.meta.url);
 const OLLAMA = OLLAMA_URL;
+// One answer per run to "what machine is this", read once and passed down.
+// Every install route below branches on it, and a probe that can disagree with
+// itself between two prompts in the same wizard is worse than no probe.
+const DISTRO = detectDistro();
 const FAUCET = 'https://agents.devnads.com/v1/faucet';
 // Enough for registerProvider plus a long tail of settle and closeJob calls.
 // Monad charges the gas limit, so a node that registers and then runs dry mid
@@ -117,6 +125,18 @@ function setEnv(key: string, value: string): void {
 
 const has = hasCommand;
 
+/**
+ * How to get an engine on THIS machine, in the operator's own words.
+ *
+ * A thin wrapper so the GPU vendor reaches the immutable branch. That branch
+ * prints a container command, and whether the container can see the card is
+ * one flag: without it the operator gets an ollama that works, registers,
+ * takes jobs and serves them from the CPU without ever saying so.
+ */
+const ollamaRoute = (gpus: Gpu[]) => DISTRO.immutable
+  ? immutableHint(DISTRO, gpuVendor(gpus))
+  : installHint('ollama', DISTRO);
+
 async function main() {
   console.log(`\n${C.b}DinnerNode node setup${C.x}\n`);
   if (!INTERACTIVE && !CHECK_ONLY) {
@@ -135,51 +155,256 @@ async function main() {
   const hw = probeHardware();
   ok(`${describeHardware(hw)}`);
   ok(`model budget ${gb(hw.budgetMB)} ${C.d}(${hw.budgetSource})${C.x}`);
+  // Said out loud because it changes what this wizard offers to run, and an
+  // operator who sees the wrong answer here knows why the install command
+  // underneath it looks unfamiliar.
+  if (DISTRO.pretty || DISTRO.immutable) {
+    const flavour = DISTRO.omarchy ? `${DISTRO.pretty}, Omarchy` : (DISTRO.pretty || DISTRO.id);
+    const tail = DISTRO.immutable
+      // Said here rather than only at the point of failure, because it is the
+      // reason the install command further down will not look like the one
+      // this operator has seen in every other guide.
+      ? `${C.d} (${DISTRO.immutable}: the root filesystem is not installed into)${C.x}`
+      : DISTRO.arch ? `${C.d} (pacman routes below)${C.x}` : '';
+    ok(`${flavour}${tail}`);
+  }
 
-  // ---- ollama -----------------------------------------------------------
-  // Three states, and this wizard can fix two of them. Not installed, and
-  // installed but not serving, were both reported as instructions for the
-  // operator to carry out by hand; each one is a step some operators stop at,
-  // and neither needs a human. The third, a machine with no node at all, never
-  // reaches this code, because this code runs on node.
+  // ---- engine -----------------------------------------------------------
+  // ollama, plus whatever else on this machine already speaks the
+  // OpenAI-compatible wire.
+  //
+  // ollama is the reference: the model sizing in models.ts, the price table in
+  // pricing.ts and the warm-up in host.ts are all written against it. But the
+  // machines this project wants are Windows and Linux boxes with an idle
+  // discrete GPU, and the people who own one and already run a model did not
+  // all arrive the same way. Some have LM Studio, some have a KoboldCpp exe in
+  // a folder, some compiled llama-server themselves. Telling any of them to
+  // install a second runtime and re-download the same weights is the step they
+  // stop at, and src/runtimes.ts exists so nobody is asked to.
+  //
+  // Everything is probed before anything is offered. The wrong question here
+  // is "install ollama?" asked of a machine already serving on :5001.
+  let engine: 'ollama' | 'runtime' | 'external' = 'ollama';
   let { reachable, models } = await probeOllama(OLLAMA);
+  let runtimes = await discover();
+  /** The one chosen, when the answer is not ollama. */
+  let picked: Found | null = null;
 
-  if (!reachable && !CHECK_ONLY) {
-    if (!has('ollama') && INTERACTIVE) {
-      const inst = installCommand();
-      console.log(`  ${C.b}?${C.x} ollama is not installed, and there is nothing for this node to serve without it.`);
+  // An operator who set LLM_BASE_URL themselves has said something this wizard
+  // does not argue with, unless it points at something discovery just found,
+  // in which case it is this wizard's own earlier answer and is re-checked.
+  const configuredBase = (env.get('LLM_BASE_URL') ?? process.env.LLM_BASE_URL ?? '').trim();
+  const externalBase = configuredBase && !runtimes.some(r => r.base === configuredBase) ? configuredBase : '';
+
+  if (process.env.ENGINE === 'mock') {
+    // Not a state to fix. It is a state to name, because a node serving canned
+    // text is not a node earning, and the operator should see it said out loud
+    // rather than discover it in a guest's transcript.
+    engine = 'external';
+    warn('ENGINE=mock: this node will serve the canned demo passage, not a model');
+  } else if (externalBase) {
+    engine = 'external';
+    ok(`engine ${externalBase} ${C.d}(LLM_BASE_URL, set by hand)${C.x}`);
+    if (!(env.get('LLM_MODEL') ?? process.env.LLM_MODEL)) {
+      warn('LLM_MODEL is unset, so the node will ask that server which model it holds');
+    }
+  } else {
+    if (!reachable && !runtimes.length && !CHECK_ONLY) {
+      // Nothing is answering. Start what is installed before offering to
+      // install anything: an operator with LM Studio on the machine but closed
+      // does not need a second runtime, they need their own one running.
+      //
+      // Only LM Studio can be started this way, and the table says so rather
+      // than this code assuming it. Starting llama-server or vLLM needs a
+      // model path this wizard does not have and must not guess at, and
+      // KoboldCpp is a file someone double-clicks with no PATH entry to find.
+      for (const spec of KNOWN) {
+        if (!spec.startable || !spec.cli || !has(spec.cli)) continue;
+        if (spec.id === 'lmstudio') await startLmStudio({ log: l => console.log(`    ${C.d}${l}${C.x}`) });
+      }
+      runtimes = await discover();
+      if (!runtimes.length && has('ollama')) {
+        ({ reachable, models } = await startOllama({ log: l => console.log(`    ${C.d}${l}${C.x}`) }));
+      }
+    }
+
+    const installedButClosed = KNOWN.filter(s => s.cli && has(s.cli) && !runtimes.some(r => r.spec.id === s.id));
+
+    if (!reachable && !runtimes.length && !CHECK_ONLY && !has('ollama') && !installedButClosed.length && INTERACTIVE) {
+      const inst = installCommand(process.platform, has, DISTRO, hw.gpus);
+      console.log(`  ${C.b}?${C.x} no inference engine on this machine, and there is nothing for this node to serve without one.`);
       if (inst) {
-        // Shown in full first. On Linux this is a vendor script piped into a
-        // shell that escalates to root, which is what Ollama publishes and
-        // what its own docs tell people to run, and is not something to start
-        // on an operator's behalf from a default.
+        // Shown in full first. On Arch this is a package install that asks for
+        // root, and everywhere else on Linux it is a vendor script piped into
+        // a shell that escalates to root. Neither is something to start on an
+        // operator's behalf from a default.
         console.log(`    ${C.d}${inst.shown}${C.x}`);
+        if (DISTRO.arch && !DISTRO.immutable) {
+          console.log(`    ${C.d}${ollamaPackage(hw.gpus)} is the package for the card found above${C.x}`);
+        }
+        if (DISTRO.immutable) {
+          console.log(`    ${C.d}a container, because ${DISTRO.immutable} keeps /usr read only${C.x}`);
+          if (gpuVendor(hw.gpus) === 'nvidia') {
+            console.log(`    ${C.d}--nvidia shares the host driver, without which it would serve from the CPU${C.x}`);
+          }
+        }
         if (await confirm('run that now?')) {
           console.log();
           const okRun = runInstall(inst);
           console.log();
           if (!okRun) warn('the installer did not finish cleanly');
-          // The Linux script starts its own systemd service, so ask before
-          // starting a second server that would fail to bind.
           ({ reachable, models } = await probeOllama(OLLAMA));
+          // The Arch package installs a stopped service, and the vendor script
+          // starts one itself. Only the first case needs a nudge.
+          if (!reachable && !DISTRO.immutable) {
+            ({ reachable, models } = await startOllama({ log: l => console.log(`    ${C.d}${l}${C.x}`) }));
+          }
+          if (!reachable && DISTRO.immutable) {
+            // The install can succeed and still leave nothing this node can
+            // talk to. distrobox shares the host network by default, which is
+            // what puts the container's :11434 where the probe above looks;
+            // a container made with --unshare-netns does not, and the failure
+            // is silent from in here. Verified rather than assumed, and the
+            // likely cause named, because "installed" and "reachable" are two
+            // different facts and only the second one earns anything.
+            warn('installed, but nothing is answering on :11434 from here');
+            console.log(`    ${C.d}start it: distrobox enter dinnernode -- ollama serve${C.x}`);
+            console.log(`    ${C.d}if it is running in there and still not visible, the container does not${C.x}`);
+            console.log(`    ${C.d}share the host network: recreate it without --unshare-netns${C.x}`);
+          }
         }
       } else {
-        for (const l of installHint('ollama')) console.log(`    ${C.d}${l}${C.x}`);
+        for (const l of ollamaRoute(hw.gpus)) console.log(`    ${C.d}${l}${C.x}`);
+        console.log(`    ${C.d}or LM Studio, if you would rather manage models in a GUI:${C.x}`);
+        for (const l of installHint('lmstudio', DISTRO)) console.log(`    ${C.d}  ${l}${C.x}`);
       }
     }
-    if (!reachable && has('ollama')) {
-      ({ reachable, models } = await startOllama({ log: l => console.log(`    ${C.d}${l}${C.x}`) }));
+
+    // A runtime holding nothing this node can serve a chat from is not a
+    // choice. Nor is a KoboldCpp that wants a password we do not have: it
+    // would refuse every request, and finding that out here is far cheaper
+    // than finding it out after a guest has paid.
+    const usable = runtimes.filter(r => servable(r.models).length && !r.needsPassword);
+    for (const r of runtimes) {
+      if (r.needsPassword) warn(`${describeRuntime(r)} is password protected, so this node cannot use it`);
+      else if (!servable(r.models).length) warn(`${describeRuntime(r)} holds no chat model`);
+    }
+
+    const ollamaUsable = reachable && models.length > 0;
+    if (ollamaUsable && usable.length) {
+      console.log(`  ${C.d}${usable.length + 1} engines are running here${C.x}`);
+      console.log(`    ${C.d}[1] ollama${' '.repeat(9)}${models.length} model${models.length > 1 ? 's' : ''}, sized against your GPU below${C.x}`);
+      usable.forEach((r, i) => {
+        const n = servable(r.models).length;
+        console.log(`    ${C.d}[${i + 2}] ${describeRuntime(r)}, ${n} model${n > 1 ? 's' : ''}${C.x}`);
+      });
+      // ollama is the default because everything downstream is measured
+      // against it: the fit check knows its KV geometry and the price table is
+      // keyed by its tags. Neither is a reason to refuse the others, and both
+      // are reasons not to pick one silently.
+      const answer = Number((await ask(`serve through which? (1 to ${usable.length + 1})`, '1')).trim());
+      if (answer >= 2 && answer <= usable.length + 1) { engine = 'runtime'; picked = usable[answer - 2]; }
+      else engine = 'ollama';
+    } else if (usable.length === 1) {
+      engine = 'runtime';
+      picked = usable[0];
+    } else if (usable.length > 1) {
+      usable.forEach((r, i) => {
+        const n = servable(r.models).length;
+        console.log(`    ${C.d}[${i + 1}] ${describeRuntime(r)}, ${n} model${n > 1 ? 's' : ''}${C.x}`);
+      });
+      const answer = Number((await ask(`serve through which? (1 to ${usable.length})`, '1')));
+      engine = 'runtime';
+      picked = usable[answer - 1] ?? usable[0];
+    } else if (reachable) {
+      engine = 'ollama';
+    } else {
+      const closed = installedButClosed[0];
+      bad('no inference engine is reachable',
+        has('ollama') ? ollamaServeHint()
+          : closed?.id === 'lmstudio' ? 'LM Studio is installed but not serving: lms server start'
+          : closed ? `${closed.name} is installed but not serving: start it on :${closed.port}`
+          : undefined);
+      if (!has('ollama') && !closed) {
+        for (const l of ollamaRoute(hw.gpus)) console.log(`    ${C.d}${l}${C.x}`);
+      }
     }
   }
 
-  if (reachable) {
-    if (models.length) ok(`ollama running, ${models.length} model${models.length > 1 ? 's' : ''} installed`);
-  } else {
-    bad('ollama is not reachable on :11434', has('ollama') ? OLLAMA_SERVE_HINT : undefined);
-    if (!has('ollama')) for (const l of installHint('ollama')) console.log(`    ${C.d}${l}${C.x}`);
+  // ---- the chosen runtime: model, context, price ------------------------
+  if (engine === 'runtime' && picked) {
+    const r = picked;
+    const usable = servable(r.models);
+    const current = env.get('LLM_MODEL') ?? process.env.LLM_MODEL;
+    const currentUsable = current && usable.some(m => m.id === current);
+    let chosen = currentUsable ? current! : (defaultModel(usable) ?? usable[0].id);
+
+    if (!CHECK_ONLY && !currentUsable && usable.length > 1) {
+      const order = usable.map(m => m.id);
+      console.log(order.map((id, i) => {
+        const m = usable[i];
+        const tail = !m.maxCtx && !m.loadedCtx ? `${C.d}context not reported${C.x}`
+          : m.loaded ? `${C.g}loaded${C.x} ${C.d}serving ${m.loadedCtx || m.maxCtx} context${C.x}`
+          : `${C.d}up to ${m.maxCtx} context${C.x}`;
+        return `    [${i + 1}] ${id.padEnd(34)} ${tail}`;
+      }).join('\n'));
+      const pick = await ask('serve which model? (number or name)', String(order.indexOf(chosen) + 1 || 1));
+      chosen = order[Number(pick) - 1] ?? (order.includes(pick) ? pick : chosen);
+    }
+
+    const m = usable.find(x => x.id === chosen);
+    if (!CHECK_ONLY) {
+      setEnv('LLM_BASE_URL', r.base);
+      setEnv('LLM_MODEL', chosen);
+    }
+    ok(`${describeRuntime(r)} ${C.d}serving ${chosen}${C.x}`);
+    if (!r.identified) {
+      // Said once, plainly. The node will work; what is unverified is only the
+      // name printed above it.
+      console.log(`    ${C.d}nothing on that port identified itself, so the name above is the port's default${C.x}`);
+    }
+
+    // The same defect the missing num_ctx was, in a different runtime. The
+    // context a model is loaded with lives in the server, not in the request,
+    // and a longer prompt is truncated in silence. A node advertising more
+    // than that returns a confident answer to a question the model never fully
+    // saw, and gets paid for it. Ollama is the one engine where this is
+    // fixable per request; everywhere else the node's own figure has to move.
+    const served = (m?.loadedCtx || m?.maxCtx || r.ctx) ?? 0;
+    if (!served) {
+      warn(`${r.spec.name} did not report a context length, so ${CONTEXT_TOKENS} is unverified`);
+      console.log(`    ${C.d}check it in that server; if it is lower, set CONTEXT_TOKENS to match${C.x}`);
+    } else if (served < CONTEXT_TOKENS) {
+      warn(`${chosen} serves ${served} tokens of context, this node advertises ${CONTEXT_TOKENS}`);
+      if (!CHECK_ONLY && await confirm(`advertise ${served} instead, so nothing gets truncated in silence?`)) {
+        setEnv('CONTEXT_TOKENS', String(served));
+        ok(`context ${served} ${C.d}(written to .env)${C.x}`);
+      } else {
+        bad('advertising more context than the engine serves',
+          `raise the context in ${r.spec.name} for ${chosen}, or set CONTEXT_TOKENS=${served}`);
+      }
+    } else {
+      ok(`context ${CONTEXT_TOKENS} ${C.d}of ${served} the engine serves${C.x}`);
+    }
+
+    // Price. The rate table is keyed by ollama tags, and none of these
+    // runtimes name a model the way ollama does. `matchModel` reaches the
+    // table from any spelling, on equality of a canonical form, and returns
+    // nothing rather than a near miss. Both outcomes are shown: a derived
+    // match is a claim about money made by parsing a filename, and the
+    // operator is the only one who can say it is wrong.
+    const priced = matchModel(chosen, Object.keys(MARKET_ID));
+    if (priced.tag && priced.how !== 'exact') {
+      ok(`priced as ${priced.tag} ${C.d}(matched from the id above; the node prices against that model's market band)${C.x}`);
+    } else if (!priced.tag) {
+      warn(`no price band for "${chosen}"`);
+      console.log(`    ${C.d}it reduces to "${priced.canonical}", which is not a model this node has a market price for${C.x}`);
+      console.log(`    ${C.d}so this node will serve at the built-in default rate${C.x}`);
+      console.log(`    ${C.d}set RATE_PER_MILLION in .env (wei per million output tokens) to price it yourself${C.x}`);
+    }
   }
 
-  // ---- model choice -----------------------------------------------------
+  // ---- ollama: model choice ---------------------------------------------
   // The one decision an operator cannot make well without help, and the one
   // that decides whether the node is usable. Ollama does not refuse a model
   // that is too large for the GPU: it loads what fits and runs the remaining
@@ -189,27 +414,37 @@ async function main() {
   //
   // So the wizard sizes rather than lists: weights plus the KV cache at the
   // advertised context, against the memory actually present.
-  if (reachable && !models.length) {
-    const { pick, fit: f, fitsWhole } = recommend(hw, CONTEXT_TOKENS);
-    bad('ollama has no models installed');
-    console.log(`    ${C.d}for ${gb(hw.budgetMB)} the best fit is ${C.x}${C.b}${pick.tag}${C.x}` +
-      ` ${C.d}(${pick.note}; needs ${gb(f.needMB)} at ${CONTEXT_TOKENS} context)${C.x}`);
-    if (!fitsWhole) console.log(`    ${C.d}nothing in the catalog fits whole here, so this is the smallest one${C.x}`);
-    if (!CHECK_ONLY && INTERACTIVE && has('ollama') && await confirm(`pull ${pick.tag} now?`)) {
-      console.log();
-      // Inherit stdio: the pull is minutes long and its progress bar is the
-      // only thing telling the operator the machine has not hung.
-      const r = spawnSync('ollama', ['pull', pick.tag], { stdio: 'inherit' });
-      console.log();
-      if (r.status === 0) { models = [pick.tag]; failed = false; ok(`pulled ${pick.tag}`); }
-      else bad(`ollama pull ${pick.tag} failed`, 'pull it yourself and re-run');
-    } else if (!CHECK_ONLY) {
-      // A multi-gigabyte download is not something to start unattended.
-      console.log(`    ${C.d}then: ollama pull ${pick.tag}${C.x}`);
-    }
-  }
+  if (engine === 'ollama') {
+    // An LLM_BASE_URL left behind by an earlier run pointing at LM Studio
+    // would win in host.ts, which reads it before it looks for ollama. Blanked
+    // rather than deleted, so an operator can see the decision in the file.
+    if (!CHECK_ONLY && configuredBase && !externalBase) setEnv('LLM_BASE_URL', '');
 
-  if (models.length) {
+    if (reachable) {
+      if (models.length) ok(`ollama running, ${models.length} model${models.length > 1 ? 's' : ''} installed`);
+    }
+
+    if (reachable && !models.length) {
+      const { pick, fit: f, fitsWhole } = recommend(hw, CONTEXT_TOKENS);
+      bad('ollama has no models installed');
+      console.log(`    ${C.d}for ${gb(hw.budgetMB)} the best fit is ${C.x}${C.b}${pick.tag}${C.x}` +
+        ` ${C.d}(${pick.note}; needs ${gb(f.needMB)} at ${CONTEXT_TOKENS} context)${C.x}`);
+      if (!fitsWhole) console.log(`    ${C.d}nothing in the catalog fits whole here, so this is the smallest one${C.x}`);
+      if (!CHECK_ONLY && INTERACTIVE && has('ollama') && await confirm(`pull ${pick.tag} now?`)) {
+        console.log();
+        // Inherit stdio: the pull is minutes long and its progress bar is the
+        // only thing telling the operator the machine has not hung.
+        const r = spawnSync('ollama', ['pull', pick.tag], { stdio: 'inherit' });
+        console.log();
+        if (r.status === 0) { models = [pick.tag]; failed = false; ok(`pulled ${pick.tag}`); }
+        else bad(`ollama pull ${pick.tag} failed`, 'pull it yourself and re-run');
+      } else if (!CHECK_ONLY) {
+        // A multi-gigabyte download is not something to start unattended.
+        console.log(`    ${C.d}then: ollama pull ${pick.tag}${C.x}`);
+      }
+    }
+
+    if (models.length) {
     const ranked = await rankInstalled(hw.budgetMB, CONTEXT_TOKENS, OLLAMA).catch(() => []);
     const byName = new Map(ranked.map(r => [r.name, r]));
     const best = ranked.find(r => r.fit?.fits);
@@ -283,6 +518,7 @@ async function main() {
         warn('serving with layers on the CPU: expect single-digit tokens per second');
         console.log(`    ${C.d}this is the state where a guest's client gives up before the first token${C.x}`);
       }
+    }
     }
   }
 
