@@ -1,3 +1,244 @@
+# Session snapshot, 2026-09-07
+
+> The session that began with a question about working from a phone and ended
+> by finding that the repository had been arguing with itself for a week.
+>
+> The theme is the 2026-09-04 theme again, one turn tighter. That session found
+> the front door describing a different project than the one running. This one
+> found two documents describing a different machine than the one running, and
+> a third document that had the machine right since 2026-08-31 and was never
+> read against them. A claim nobody re-reads goes stale silently. A claim
+> contradicted by a file three directories away goes stale just as silently,
+> and looks better while it does it.
+
+## 0. Results, in one list
+
+Two commits, `d7a269a` and `f471091`, plus a restart, a deletion and a pull
+request. The two commits earlier the same morning, `2731062` and `c6da42e`,
+were made before this session and are the reason the restart mattered.
+
+| # | Result | Evidence |
+|---|---|---|
+| 1 | **The operator can drive this machine from a phone.** Remote Control keeps the session here, so a task sees the real `.env` and the real keys. | section 1 |
+| 2 | **`dinnernode.service` was never checked in.** `ops/` recorded five units and not the one running node 1. | section 2 |
+| 3 | **The kill e2e's stated blocker had not been true for at least a week.** `Restart=always` was already there. | section 2 |
+| 4 | **`SECURITY_REVIEW.md` had it right on 2026-08-31** and neither `SNAPSHOT.md` nor `TODO.md` was ever read against it. | section 2.1 |
+| 5 | **The live nodes were two commits behind.** Restarted 09:19; registered, warm in 24.1s, announced, 200 through both tunnels. | section 3 |
+| 6 | **`/provider/models` is byte-identical across that restart**, which is the expected result and is explained rather than waved at. | section 3.1 |
+| 7 | **`is_ready: false` is deliberate**, gated on `PROVIDER_IS_READY`. Checked before it was reported as a defect. | section 3.2 |
+| 8 | **The 2026-08-31 probe set re-run against the live nodes**, six probes, all matching. | section 4 |
+| 9 | **PR #1 opened into `main`:** 107 commits, 189 files. `main` has not moved since the branch left it. | section 5 |
+| 10 | **A Telegram bridge was built, verified working, and deleted**, because Remote Control answered the question that prompted it. | section 6 |
+| 11 | **One claim in this session's own commit message is wrong**, and is corrected here rather than rebased away. | section 2.1 |
+
+Commits, oldest first:
+
+```
+d7a269a  ops: the unit that runs node 1, and the one that answers the phone
+f471091  docs: two blockers that stopped being true, and one restart that proved it
+```
+
+## 1. The question was how to work from a phone
+
+The operator asked how to reach this project while away. Two shapes answer
+that, and they are not equivalent.
+
+**Claude Code on the web** runs in a cloud sandbox against a clone. It cannot
+see `.env`, cannot sign with the provider keys, and cannot talk to the two
+daemons on this machine, which is most of what a DinnerNode question is about.
+
+**Remote Control** keeps the session on this machine and turns the phone into a
+window onto it. Execution and filesystem access stay here. Every requirement
+was already met: Pro plan, claude.ai auth, no `ANTHROPIC_BASE_URL` and none of
+the four telemetry variables that silently disable the feature flag it depends
+on, workspace already trusted, version 2.1.263.
+
+`ops/claude-remote-control.service` runs the server mode of it in this
+directory so the phone has something to reach when no terminal is open. No
+`--permission-mode` is set, so a tool call that needs approval prompts, and the
+prompt arrives on the phone. That is the property the alternative in section 6
+could not offer at all.
+
+One tradeoff, recorded because it is a real one: while Remote Control is
+connected the transcript is stored on Anthropic servers to sync across devices.
+Execution stays here. It is the same posture as any Claude Code session, and it
+is worth being deliberate about on a machine that holds `DELTAV_API_KEY` and
+two provider keys.
+
+## 2. `ops/` was missing the unit that matters most
+
+Node 1 has been running under `dinnernode.service` for some time. The unit was
+installed by hand into `~/.config/systemd/user/` and never committed, so `ops/`,
+which exists so a second machine can be set up from the repo rather than from
+memory, recorded five units and left out the primary provider.
+
+Added as `ops/dinnernode.service` and verified identical to the installed copy
+once comments are stripped.
+
+The interesting part is what that absence was holding up. Both of these were
+open, and both gave the same reason:
+
+- `SNAPSHOT.md` section 10: "The kill e2e has never run against the live pair.
+  That means stopping node 1, and nothing on this machine restarts it: the
+  daemons are bare `tsx` processes, not systemd units."
+- `TODO.md`, the roadmap's kill-e2e item: the same sentence, near enough.
+
+The unit says `Restart=always` and `RestartSec=10`. `RESTORE_CMD` is
+`systemctl --user start dinnernode.service`. The blocker those two documents
+describe stopped being true before either sentence was last edited, and the
+only reason it survived is that the file which would have shown it was not in
+the repository.
+
+`Restart=always` also changes how the kill should be run, which is cheaper to
+write down now than to discover mid-test. The unit brings node 1 back about ten
+seconds after a SIGKILL, so a run that wants to observe the outage has to stop
+the unit rather than kill the process. `scripts/kill-takeover-e2e.mjs` already
+suggested `KILL_CMD='systemctl --user stop dinnernode'` in its own header. The
+roadmap now says why that is the one to use.
+
+What remains of that item is the deliberate act and the gas it spends, which
+was always the operator's half of it.
+
+### 2.1 The repository already knew, in a file nobody cross-read
+
+`SECURITY_REVIEW.md` section 0, last updated 2026-08-31:
+
+> The machine rebooted at 21:33:28 on 2026-08-30 and all four user units came
+> back. `dinnernode.service` runs `npm run host` and `dinnernode2.service` runs
+> `npx tsx src/host.ts`.
+
+So the correct fact was written down, dated, and committed a week before this
+session, in a document whose entire job is auditing what is RUNNING. Two other
+documents asserted the opposite for that whole week. Nothing flagged it,
+because nothing reads these three files against each other.
+
+That is worth more than the fix. The 2026-09-04 snapshot's lesson was that a
+claim nobody re-reads goes stale. This is the sharper version: the repository
+can hold both a claim and its refutation, indefinitely, and look internally
+consistent from inside any one file.
+
+**A correction to this session's own work.** The commit message of `d7a269a`
+says "nothing in the repo contradicted them." That is false, and the paragraph
+above is the contradiction. It was written before `SECURITY_REVIEW.md` section
+0 had been read. The commit is pushed and stays as it is; the correction lives
+here, which is the same rule this file applies to everything else.
+
+## 3. The live nodes were two commits behind
+
+Both daemons had been up since 2026-09-05 07:35. `2731062` and `c6da42e`
+landed at 08:38 and 08:39 on 2026-09-07 and touch `src/host.ts`,
+`src/pricing.ts`, `src/platform.ts`, `src/runtimes.ts` and `src/setup.ts`,
+every one of which the running process imports. `tsx` reads the tree at start,
+so the nodes were serving the 09-05 code.
+
+Restarted at 09:19 after `tsc --noEmit` clean and 368 tests green. Node 1 came
+back:
+
+```
+price $1.002/M output, below the median of 10 provider(s) for qwen/qwen3.6-35b-a3b [live]
+price break-even 309 tokens per settle at 102 gwei
+registered ollama/qwen3.6:35b-a3b
+registry: active as qwen3.6:35b-a3b at 33412500000000000000 wei per million tokens
+provider 0x055a2e… listening on :4173
+warming qwen3.6:35b-a3b…
+warm in 24.1s
+[announce] 200 {"ok":true,"url":"https://node1.dinnernode.xyz"}
+```
+
+### 3.1 The endpoint did not change, and that is the expected result
+
+`/provider/models` was captured before and after on both nodes and is
+byte-identical. Recorded because a null diff invites the wrong conclusion.
+
+`2731062` adds `src/model-id.ts`, which canonicalises the seven ways one model
+gets named so that a node serving through LM Studio, KoboldCpp or llama.cpp is
+priced off the same market band as the ollama one. Both nodes here serve
+through ollama and are named the way ollama names them, so the canonical form
+of their ids is the form they were already in. The commit changes what a
+differently-named node would charge. It has nothing to change here.
+
+The pre-restart response also already carried the aliased ids and the GPU
+string, which is what made the null diff look like evidence of a failed
+restart. Those predate both commits. `ActiveEnterTimestamp` is the fact that
+settles it, and the log above is the confirmation.
+
+### 3.2 `is_ready: false` is a setting
+
+Both nodes report `is_ready: false` on every model, before and after the
+restart and after the model is warm. It reads like a defect and is not one.
+`src/host.ts` gates it on `PROVIDER_IS_READY`, unset here on purpose, with the
+reason in the comment above the route: the catalogue is a price list and a
+capability list that a router has to read before it holds a key, and publishing
+it should not by itself invite traffic.
+
+Checked before it was reported. Worth the thirty seconds.
+
+## 4. The 2026-08-31 probe set, re-run
+
+Against the live nodes on 2026-09-07, after the restart, through the public
+tunnels rather than localhost:
+
+```
+POST /lanjob        (public)  -> 403   the free LAN path serves this network only
+POST /challenge               -> 400   on a malformed nonce, so the route exists
+GET  /provider/models         -> 200
+GET  /v1/models               -> 501   endpoint_disabled, no API_KEYS set
+GET  /announce/nonce          -> 400   discovery, port 4175
+GET  node2 /provider/models   -> 200
+```
+
+Every one matches the 2026-08-31 audit. This is the deployment state only. No
+other section of `SECURITY_REVIEW.md` was re-audited, and section 2c.1's
+browser half is still carried as unverified since 2026-08-31.
+
+## 5. PR #1
+
+`https://github.com/yarosthenerd/dinner-node/pull/1`, from
+`session/2026-08-26-hardening-and-node-setup` into `main`. 107 commits, 189
+files, 36,795 insertions. `main` has not moved since the branch left it, so it
+is a fast-forward in substance despite the size.
+
+The branch had 20 commits that had never been pushed anywhere. Until this
+session the only copy of about two weeks of work was this laptop.
+
+## 6. A Telegram bridge, built and then deleted
+
+The first answer to section 1's question was a bridge: long-poll Telegram, pipe
+each message into `claude -p` in this directory, stream tool activity back.
+About 300 lines, no dependencies, chat allowlist, one resumable session per
+chat, three permission modes, a serial queue. It was written, syntax-checked
+and its flag combination verified against the real CLI.
+
+Then Remote Control turned out to answer the question better, on one point that
+decides it: a bridge driving `claude -p` has to pre-authorise everything,
+because there is nobody at the terminal to answer a permission prompt. Remote
+Control sends the prompt to the phone. One approves tool calls in advance and
+hopes; the other asks.
+
+Deleted at the operator's instruction. Never committed, so nothing survives in
+history, and this paragraph is the only record that it existed.
+
+## 7. Open, unchanged by this session
+
+Every item in section 10 of the 2026-09-04 snapshot below still stands except
+the two this session closed. Restating the live ones so they are not lost in a
+scroll:
+
+- **Time to first token is not being collected.** Each sample spends the
+  operator's gas. The p50 and p99 that OpenRouter ranks on stay unmeasured
+  until that budget is agreed.
+- **The canary has one vantage point**, on the same machine as the nodes. The
+  caveat is published, which is honest and is not a second vantage point.
+- **The checkpoint window is open on purpose**, measured at 247x, priced, and
+  turned off because it costs more than the work it protects on any job under a
+  few thousand tokens.
+- **The kill e2e still has not run against the live pair.** The blocker is now
+  the gas and the decision rather than the missing restart path.
+- **A4 has no falsification test and no date**, which `REFRAME.md` section 10
+  already calls the most expensive line in it.
+
+---
+
 # Session snapshot, 2026-09-04
 
 > The session that began with a strategy question and became ten commits of

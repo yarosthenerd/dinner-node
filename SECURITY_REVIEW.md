@@ -1,9 +1,21 @@
 # DinnerNode security review
 
-Status: in progress. Last updated 2026-08-31, from an audit of what is
+Status: in progress. Last audited in full 2026-08-31, from an audit of what is
 RUNNING rather than of what is written. Read section 0 first: the node-side
 controls in section 2c went live with a reboot on 2026-08-30, and the browser
 half of 2c.1 is still the old deployed bundle.
+
+**Deployment state re-probed 2026-09-07** after a restart of both providers.
+Section 0.2 has the results. Only the deployment state was checked. Every other
+section of this file still carries its 2026-08-31 date, 2c.1 included.
+
+This file was right about something the rest of the repository got wrong for a
+week. Section 0 recorded on 2026-08-31 that both providers run as systemd user
+units. `SNAPSHOT.md` and `TODO.md` both went on asserting they were bare `tsx`
+processes, and used that to explain why the kill e2e could not run. Nothing
+cross-reads these three documents. Worth knowing when the next audit here
+disagrees with a roadmap item: this file audits what runs, and that is the one
+that wins.
 
 This file is the checklist that P0-OPS gates on ("wallet and contract review
 before real wallets"). It was listed in `.context/HANDOFF.md` section 4 as an
@@ -79,6 +91,50 @@ warning in that audit assumed the nodes 404 on `/challenge`, and they do not.
 every request with `endpoint_disabled` because no node sets `API_KEYS`. Before
 any node sets it, the API path needs its own notice; see `TODO.md`. Sections 1,
 2 and 2b are unaffected by the tree and production split.
+
+### 0.2 Deployment state re-probed 2026-09-07
+
+Both providers were restarted at 09:19 to pick up `2731062` and `c6da42e`,
+which had been committed that morning and touch files the running processes
+import. The daemons had been up since 2026-09-05 07:35 and were therefore
+serving the older tree.
+
+The 2026-08-31 probe set, re-run afterwards through the public tunnels rather
+than against localhost, so the answers are what a stranger gets:
+
+```
+POST /lanjob        (public)  -> 403  the free LAN path serves this network only
+POST /challenge               -> 400  on a malformed nonce, so the route exists
+GET  /provider/models         -> 200
+GET  /v1/models               -> 501  endpoint_disabled, no API_KEYS set
+GET  /announce/nonce          -> 400  discovery, port 4175
+GET  node2 /provider/models   -> 200
+```
+
+Every answer matches 2026-08-31. Node 1 came back registered on chain, warm in
+24.1s, and announced to discovery.
+
+Two notes on reading these:
+
+- `is_ready` is `false` on every model in `/provider/models`, on both nodes,
+  including after the model is warm. That is the `PROVIDER_IS_READY` gate doing
+  its job. The catalogue is published unauthenticated on purpose, because a
+  router has to read a price list before it holds a key, and the flag is what
+  stops publishing it from inviting traffic on its own.
+- `/provider/models` is byte-identical across the restart on both nodes.
+  `2731062` changes what a node charges for a model named the way LM Studio or
+  llama.cpp names it, and both nodes here are named the way ollama names them,
+  so there was nothing for it to change. `SNAPSHOT.md` section 3.1 of the
+  2026-09-07 snapshot has the longer form.
+
+**This is the deployment state only.** No control in sections 1 through 2c was
+re-audited on 2026-09-07, and the browser half of 2c.1 is still carried as
+unverified since 2026-08-31.
+
+The standing hazard this section keeps demonstrating is unchanged: a commit
+changes nothing about a running node until somebody restarts the unit, and
+nothing on this machine notices the gap. Section 0.1 is what that costs when
+the commit is a security fix.
 
 ---
 

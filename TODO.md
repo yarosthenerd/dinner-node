@@ -10,7 +10,21 @@ stale and marks several things done that never existed. Read alongside:
 Legend: `[x]` done and verified, `[~]` done but not verified against a live run,
 `[ ]` open.
 
-Last updated 2026-09-02. Now items 0 through 4 are closed and 7 is struck.
+Last updated 2026-09-07. Item 5 is closed: the registry is redeployed and the
+handover is proven against the two live nodes. The whole branch is now pushed
+and open as PR #1 into `main`, 107 commits over 189 files, which until this
+week existed only on the operator's laptop.
+
+**One correction worth reading before the items below.** The kill-e2e item said
+the daemons are bare `tsx` processes with nothing to restart them. They are
+systemd units and have been since at least 2026-08-30, which
+`SECURITY_REVIEW.md` section 0 recorded at the time and this file never checked
+itself against. `ops/dinnernode.service` was the missing piece and is committed
+now. What is left of that item is the gas and the decision. `SNAPSHOT.md`
+section 2.1 of the 2026-09-07 snapshot is the fuller account, including why
+three documents can disagree for a week without anything noticing.
+
+Earlier note, 2026-09-02. Items 0 through 4 are closed and 7 is struck.
 **The tunnel blocker is gone:** all three named tunnels are installed and
 running, and both nodes announce public hostnames, so item 5's stated blocker
 no longer exists. Item 5 itself is most of the way there and is now blocked on
