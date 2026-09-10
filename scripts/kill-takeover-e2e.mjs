@@ -38,13 +38,38 @@
 // is keyed on `cp.billed`, which was still zero. The window is real and this
 // mode is how it stays visible.
 //
-// Against the live pair, which stops node 1 and is therefore a deliberate act:
+// Against the live pair, which stops node 1 and is therefore a deliberate act.
+// This is the invocation that passed on 2026-09-10, job#15:
 //
 //   set -a; . ./.env; set +a
 //   RPC_URL=https://testnet-rpc.monad.xyz CHAIN_ID=10143 \
 //   NODE_A=https://node1.dinnernode.xyz NODE_B=https://node2.dinnernode.xyz \
-//   KILL_PID=$(pgrep -f 'tsx src/host.ts' | head -1) \
-//   RESTORE_CMD='npm run node1 &' BUDGET=0.05 node scripts/kill-takeover-e2e.mjs
+//   BUDGET=0.3 KILL_ON=onchain \
+//   KILL_CMD='systemctl --user stop dinnernode.service' \
+//   RESTORE_CMD='systemctl --user start dinnernode.service' \
+//   node scripts/kill-takeover-e2e.mjs
+//
+// Three corrections to the recipe this comment used to carry, all found by
+// running it on 2026-09-10:
+//
+//   BUDGET was 0.05, and no answer of any length could have failed over on it.
+//   `refuseTakeover` wants the escrow to cover the handover's gas MIN_MARGIN
+//   times over, which at 102 gwei is 0.098 MON, or twice the whole budget.
+//   Job#14 died with `paid` exactly equal to its 0.05 escrow and node B
+//   refused with "job cannot cover the handover", which was the correct
+//   answer to a question that should never have been asked.
+//
+//   KILL_PID via `pgrep -f 'tsx src/host.ts' | head -1` resolves to NODE 2 on
+//   this machine, because dinnernode2 runs `npx tsx src/host.ts` directly
+//   while node 1 runs it under `npm run host`. It would have killed the
+//   failover target. Even matched to node 1 it returns the npm wrapper rather
+//   than the process holding the socket, so the stream would not have broken.
+//   KILL_CMD against the unit kills the whole cgroup and is unambiguous.
+//
+//   RESTORE_CMD was 'npm run node1 &', which leaves the node outside systemd.
+//   Note that `Restart=always` does NOT rescue this run: systemd honours an
+//   explicit stop, so if this script exits early on a failed check, node 1
+//   stays down until RESTORE_CMD is run by hand.
 import { execSync } from 'node:child_process';
 import { createPublicClient, createWalletClient, defineChain, formatEther, http, keccak256, parseAbi, parseEther, parseEventLogs, stringToHex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';

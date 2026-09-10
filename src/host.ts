@@ -13,7 +13,7 @@ import { describeHardware, probeHardware, probeHardwareReady } from './hardware'
 import { PLAN_LIMITS, planCostWei, planHash, validatePlan, type Plan } from './plan';
 import { describePlan, makePlan } from './planner';
 import { executePlan, type Dispatch } from './executor';
-import { bill, flush, hold, newLedger, writeOff, type Ledger } from './billing';
+import { affordableTokens, bill, flush, hold, newLedger, serveCeiling, writeOff, type Ledger } from './billing';
 import { authorize, chunk, completion, DONE, errorBody, errorChunk, modelsBody, parseChat, parseKeys, usage, usageChunk, type Finish } from './openai-api';
 import { announceMessage, controlMessage, originOf, validNonce } from './attest';
 import { reach } from './reach';
@@ -630,6 +630,19 @@ const TAKEOVER_MIN_MARGIN = BigInt(process.env.TAKEOVER_MIN_MARGIN ?? 3);
 /// Refused outright when 0. An operator who does not want their node fronting
 /// gas for handovers sets this and the standby simply declines.
 const TAKEOVER = (process.env.TAKEOVER ?? 'on').toLowerCase();
+
+/// What a handover costs in gas units, used to size the escrow this node holds
+/// back while serving. The same 320,000 the takeover path falls back to when
+/// estimation fails, so the reserve and the refusal agree on the number.
+const HANDOVER_GAS_UNITS = 320_000n;
+
+/// The escrow a job must still hold for a standby to be willing to take it
+/// over. Mirrors the bound in `refuseTakeover`, which is what makes this
+/// reserve the right size rather than a guess: serving past it is what makes
+/// a job unfailoverable. Zero when this node's operator has turned takeovers
+/// off, since there is then nothing to reserve for.
+const handoverReserveWei = () =>
+  (TAKEOVER === 'off' ? 0n : HANDOVER_GAS_UNITS * gasPriceWei * TAKEOVER_MIN_MARGIN);
 
 /// Returns null on success, or the reason to send back as a 400.
 async function takeOver(jobId: bigint, rawAuth: any): Promise<string | null> {
@@ -1825,7 +1838,28 @@ http.createServer(async (req, res) => {
         job = await readJob(BigInt(jobId));
       }
       if (!isMine(job, me)) { res.statusCode = 400; return res.end('job not mine / closed'); }
-      return serveJob(BigInt(jobId), prompt, res, r, session === true);
+      // How far this job may be served, which is not simply what it can
+      // afford. Serving to the last wei leaves nothing to pay for a handover,
+      // so a job that spends everything has also spent its own failover.
+      // Found against the live pair on 2026-09-10, job#14.
+      const reserve = handoverReserveWei();
+      let ceiling = serveCeiling({
+        remainingWei: remaining(job),
+        ratePerMillion: job.ratePerMillion,
+        reserveWei: reserve,
+      });
+      // A budget too small to carry the reserve at all is served without one
+      // rather than refused. The site opens at 1.00 MON and clears this by a
+      // wide margin, but the CLI, a fronted /v1 job and anything a third party
+      // opens do not have to, and a job that was never large enough to fail
+      // over loses nothing it had by being served. It is logged because it is
+      // the operator's signal that a client is opening below what failover
+      // needs.
+      if (ceiling === 0 && remaining(job) > 0n) {
+        ceiling = affordableTokens(remaining(job), job.ratePerMillion);
+        console.log(`job#${jobId} escrow ${formatEther(remaining(job))} MON is under the ${formatEther(reserve)} MON handover reserve: serving ${ceiling} tokens with no failover margin`);
+      }
+      return serveJob(BigInt(jobId), prompt, res, r, session === true, { maxTokens: ceiling });
     }
 
     // ---- plan as a job ---------------------------------------------------

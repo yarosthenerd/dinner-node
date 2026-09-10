@@ -69,3 +69,49 @@ export function flush(l: Ledger, now = Date.now()): number {
   l.since = now;
   return n;
 }
+
+/**
+ * How many tokens an escrow can still pay for, at a rate.
+ *
+ * Integer division, so it rounds DOWN: a remainder that cannot buy a whole
+ * token buys none. That direction is the safe one. Rounding up would let a
+ * stream produce a token the escrow cannot cover, and the contract caps
+ * payment at the escrow rather than refusing it, so the overshoot is not a
+ * revert the operator would notice. It is unpaid work.
+ *
+ * A rate of zero means this node is not charging, and an escrow that cannot
+ * run out imposes no ceiling at all.
+ */
+export function affordableTokens(remainingWei: bigint, ratePerMillion: bigint): number {
+  if (ratePerMillion <= 0n) return Infinity;
+  if (remainingWei <= 0n) return 0;
+  const n = (remainingWei * 1_000_000n) / ratePerMillion;
+  return n > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(n);
+}
+
+/**
+ * The token ceiling this node should serve a job to, which is NOT the same as
+ * what the job can afford.
+ *
+ * A job served to the last wei of its escrow is a job no other node will take
+ * over, because `refuseTakeover` requires the escrow to still cover the
+ * handover's gas several times before a standby will front it. So a stream
+ * that spends everything has, at the moment it finishes, also removed its own
+ * failover. Measured against the live pair on 2026-09-10, job#14: node 1
+ * served 2,562 tokens against an escrow good for 1,666, `paid` hit the escrow
+ * exactly, and the handover was then refused with "job cannot cover the
+ * handover" because nothing was left to pay for it.
+ *
+ * `reserveWei` is what stays unspent so the failover stays possible. It is a
+ * policy, not a constant: an operator who does not want the reserve sets it to
+ * zero and gets the old behaviour, a job that serves until the money is gone.
+ */
+export function serveCeiling(c: {
+  remainingWei: bigint;
+  ratePerMillion: bigint;
+  reserveWei?: bigint;
+}): number {
+  const spendable = c.remainingWei - (c.reserveWei ?? 0n);
+  if (spendable <= 0n) return 0;
+  return affordableTokens(spendable, c.ratePerMillion);
+}

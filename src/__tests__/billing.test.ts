@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bill, flush, hold, newLedger, writeOff } from '../billing';
+import { affordableTokens, bill, flush, hold, newLedger, serveCeiling, writeOff } from '../billing';
 
 describe('the ledger', () => {
   it('holds produced tokens away from the settle path', () => {
@@ -180,5 +180,78 @@ describe('a plan run, accounted the way host.ts accounts it', () => {
     const r = await runAndAccount({ version: 1, goal: 'g', steps: [step('a')] }, d);
     expect(r.billed).toBe(2);
     expect(r.dropped).toBe(0);
+  });
+});
+
+describe('what an escrow can still buy', () => {
+  // Node 1's live rate on 2026-09-10: 30 MON per million tokens.
+  const RATE = 30_000_000_000_000_000_000n;
+
+  it('rounds down, because the remainder is unpaid work rather than a revert', () => {
+    // 0.05 MON at 30 MON/M is 1,666.67 tokens. The two thirds of a token are
+    // not served: the contract would cap payment at the escrow rather than
+    // refuse the token, so serving it gives it away.
+    expect(affordableTokens(50_000_000_000_000_000n, RATE)).toBe(1666);
+  });
+
+  it('is zero for a spent escrow, and never negative', () => {
+    expect(affordableTokens(0n, RATE)).toBe(0);
+    expect(affordableTokens(-1n, RATE)).toBe(0);
+  });
+
+  it('imposes no ceiling when the node is not charging', () => {
+    expect(affordableTokens(1n, 0n)).toBe(Infinity);
+  });
+
+  it('reproduces job#14: the answer outran the escrow', () => {
+    // The live run served 2,562 tokens against an escrow good for 1,666. The
+    // ceiling this function returns is the number that run needed and did not
+    // have.
+    const ceiling = affordableTokens(50_000_000_000_000_000n, RATE);
+    expect(ceiling).toBe(1666);
+    expect(2562).toBeGreaterThan(ceiling);
+  });
+});
+
+describe('the ceiling a job is actually served to', () => {
+  const RATE = 30_000_000_000_000_000_000n;
+  // 320,000 gas at 102 gwei, three times over, which is what refuseTakeover
+  // requires a job to still cover before a standby will front the handover.
+  const RESERVE = 320_000n * 102_000_000_000n * 3n;
+
+  it('holds back enough escrow that a handover is still possible', () => {
+    // 0.3 MON, which is a budget large enough to carry the reserve AND buy
+    // tokens with what is left.
+    const escrow = 300_000_000_000_000_000n;
+    const ceiling = serveCeiling({ remainingWei: escrow, ratePerMillion: RATE, reserveWei: RESERVE });
+    expect(ceiling).toBeGreaterThan(0);
+    expect(ceiling).toBeLessThan(affordableTokens(escrow, RATE));
+    // What is left after serving to the ceiling still covers the handover.
+    const spent = BigInt(ceiling) * RATE / 1_000_000n;
+    expect(escrow - spent).toBeGreaterThanOrEqual(RESERVE);
+  });
+
+  it('refuses to serve at all when the budget cannot carry a handover', () => {
+    // The finding from the live run of 2026-09-10, stated as arithmetic. At
+    // 102 gwei the reserve alone is 0.098 MON, so the 0.05 MON budget the kill
+    // e2e used could never have supported a failover no matter how short the
+    // answer was. The old code did not compute this and served anyway, which
+    // is why the run reached the handover before discovering it was impossible.
+    expect(RESERVE).toBeGreaterThan(50_000_000_000_000_000n);
+    expect(serveCeiling({
+      remainingWei: 50_000_000_000_000_000n,
+      ratePerMillion: RATE,
+      reserveWei: RESERVE,
+    })).toBe(0);
+  });
+
+  it('serves nothing when the reserve is the whole escrow', () => {
+    expect(serveCeiling({ remainingWei: RESERVE, ratePerMillion: RATE, reserveWei: RESERVE })).toBe(0);
+    expect(serveCeiling({ remainingWei: RESERVE / 2n, ratePerMillion: RATE, reserveWei: RESERVE })).toBe(0);
+  });
+
+  it('is the old behaviour with no reserve', () => {
+    expect(serveCeiling({ remainingWei: 50_000_000_000_000_000n, ratePerMillion: RATE }))
+      .toBe(affordableTokens(50_000_000_000_000_000n, RATE));
   });
 });

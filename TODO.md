@@ -183,8 +183,14 @@ Ordered. Everything here is ahead of every remaining defect in this file.
    `registerProvider` overwrites unconditionally (`DinnerNode.sol:39`) and both
    call sites re-register on start, so the on-chain rate follows the deploy.
    The per-job budget in `web/src/App.tsx` had to move with it: at 2.67e19 the
-   old 0.01 MON escrow bought 374 output tokens instead of 5,000, so it is now
+   old 0.01 MON escrow bought 374 output tokens instead of 5,000, so it went to
    0.05 for about 1,870.
+   **Stale as written, corrected 2026-09-10.** That 0.05 has not been the
+   site's budget for some time. `App.tsx:665` opens at **1.00 MON**, raised
+   from 0.30 when session jobs landed, because a measured ten-turn
+   conversation billed 19,604 tokens and 0.30 buys 8,947. This line was read
+   as current on 2026-09-10 and nearly caused a 6.7x CUT to the live budget.
+   Read the constant, not this file.
 5. **`reassign` between two live providers, from the browser.** The
    load-bearing item. **Rewritten 2026-09-02: the DNS blocker is gone and the
    remaining blocker is a contract redeploy.**
@@ -239,28 +245,47 @@ Ordered. Everything here is ahead of every remaining defect in this file.
          waits until the checkpoint is on the chain, `KILL_ON=stream` kills at
          the checkpoint FRAME. See the two findings below, both found by this
          script on its first runs.
-         **Not yet run against the live pair**, which means stopping node 1.
-   - [ ] **Run the kill e2e against the two live nodes.** The only thing between
-         here and item 6's recording. It stops node 1, and nothing on this
-         machine restarts it: the daemons are bare `tsx` processes rather than
-         systemd units, so it wants a `RESTORE_CMD` and a deliberate decision
-         to do it. Against the live pair the two measured numbers also become
-         real: the 9 ms and 36 ms from the mock run bound the protocol
-         overhead, not the model reload behind it.
+         **Run against the live pair 2026-09-10**, job#15. See the item below.
+   - [x] **Run the kill e2e against the two live nodes.** Done 2026-09-10,
+         **job#15, 14 of 14**, against the real pair through the real tunnels.
+         Node 1 was stopped 1,481 chars into an answer, the stream broke under
+         the reader with `UND_ERR_SOCKET`, node 2 was handed the 257-token
+         prefix rather than starting over, and the guest's nonce did not move:
+         121 before, 121 after. Node 2 settled only the tail, job tokens=1633
+         against checkpoint=226.
 
-         **Half of that is out of date, 2026-09-07.** The daemons are systemd
-         user units and have been for some time: `dinnernode.service` and
-         `dinnernode2.service`, both `Restart=always`, `RestartSec=10`. So
-         `RESTORE_CMD` is `systemctl --user start dinnernode.service`, and a
-         kill that goes wrong self-heals within ten seconds rather than leaving
-         node 1 down until somebody notices. The deliberate decision is the
-         only part of this item still open, and it is the operator's.
+         **The two numbers this item existed to make real:** 187 ms from death
+         to the handover request, and **5,294 ms from death to the first new
+         token**. The mock run's 9 ms and 33 ms bounded the protocol and
+         nothing else. The 5.3 s is model reload, and it is the honest figure
+         for item 6's recording.
 
-         One caveat that `Restart=always` introduces rather than removes: the
-         unit will bring node 1 back on its own about ten seconds after the
-         kill, so a run that wants to observe the outage for longer has to stop
-         the unit rather than kill the process, and `KILL_CMD` should be
-         `systemctl --user stop dinnernode.service` for that reason.
+         A third number came out of it unasked: **5,355 ms from the first
+         token to the first on-chain checkpoint.** A death inside that window
+         is unattributed work. That is the `KILL_ON=stream` hazard the script
+         already documented, now measured against the live pair.
+
+         **It failed on the first attempt, job#14, and the failure was worth
+         more than the pass.** Node 2 refused with "job cannot cover the
+         handover". Not a defect in the handover: `BUDGET=0.05`, node 1 bills
+         30 MON/M, so the escrow funded 1,666 tokens and the answer ran to
+         2,562. `paid` hit the escrow exactly and nothing was left to pay a
+         standby. Worse, `refuseTakeover` wants the escrow to cover the
+         handover's gas MIN_MARGIN times over, which at 102 gwei is 0.098 MON,
+         so that budget could never have failed over at any answer length. The
+         recipe in the script's own header had recommended it since it was
+         written. Header rewritten; the passing invocation is in it now.
+
+         Two things that run changed in the code, both committed with it:
+         `serveCeiling` and `affordableTokens` in `src/billing.ts`, and the
+         guest job path in `src/host.ts` that now serves to a ceiling instead
+         of to `Infinity`. See "Found and fixed 2026-09-10" below.
+
+         One operational caveat, learned the hard way when job#14 failed:
+         `Restart=always` does NOT rescue this run. systemd honours an explicit
+         `stop`, and the script exits on a failed check before reaching
+         `RESTORE_CMD`, so node 1 stayed down about two minutes until it was
+         started by hand.
    - [x] Point the site and both nodes at the new address. Done 2026-09-03 by
          the new `scripts/set-registry.mjs`, which owns all nine places rather
          than the three this item guessed at, and refuses an address with no
@@ -444,6 +469,41 @@ audit was written, which is why the section above them was stale for two days.
       `www` are proxied while the migration doc asks for DNS-only. Unchanged
       since 2026-08-29. If the site ever looks stale for reasons the repo does
       not explain, purge the Cloudflare cache before debugging anything.
+
+## Found and fixed 2026-09-10
+
+One defect, found by running the kill e2e against the live pair rather than by
+reading the code, and one stale document that nearly caused a second.
+
+- [x] **A job was served until its escrow was gone, which spends its own
+      failover.** `serveJob` capped output at `opts.maxTokens ?? Infinity`, and
+      the guest job path passed no `maxTokens` at all, so the only ceiling on a
+      live answer was where the model chose to stop. Job#14 served 2,562 tokens
+      against an escrow good for 1,666: the contract caps payment at the escrow
+      rather than reverting, so node 1 gave away about 900 tokens AND left
+      nothing for a standby to be paid from. The handover was then refused,
+      correctly, with "job cannot cover the handover".
+
+      Fixed in two pure functions in `src/billing.ts` rather than inline in
+      host, so the arithmetic is testable without a chain: `affordableTokens`
+      (rounds DOWN, because the remainder is unpaid work rather than a revert)
+      and `serveCeiling` (holds back the handover reserve). `HANDOVER_GAS_UNITS`
+      in `src/host.ts` mirrors the 320,000 the takeover path already falls back
+      to, so the reserve and the refusal in `refuseTakeover` agree on one
+      number instead of two. Eight tests.
+
+      One judgment call, recorded because it is a policy and not an
+      implementation detail: a job too small to carry the reserve is served
+      WITHOUT one and logged, not refused. Refusing would break any client
+      opening below 0.098 MON, and a job that was never large enough to fail
+      over loses nothing it had. The log line is the operator's signal.
+
+- [x] **`TODO.md` item 4 claimed the site opens jobs at 0.05 MON.** It opens at
+      **1.00**, and has since session jobs landed. The stale line was read as
+      current on 2026-09-10 and a 6.7x cut to the live budget was proposed off
+      it before `App.tsx:665` was checked. Item 4 now carries the correction.
+      This is the 2026-09-07 lesson again, one turn tighter: the document that
+      is wrong is never the one being read for status.
 
 ## Found and fixed 2026-09-02 (night)
 
