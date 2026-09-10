@@ -9,6 +9,16 @@ half of 2c.1 is still the old deployed bundle.
 Section 0.2 has the results. Only the deployment state was checked. Every other
 section of this file still carries its 2026-08-31 date, 2c.1 included.
 
+**Reconciled against the 2026-09-03 deploy on 2026-09-10.** Three status lines
+in this file described a contract that had been live for a week. 1.1 and 1.2
+said "NOT yet deployed" of fixes that were deployed, which is stale in the safe
+direction. 2.3 said DinnerNodeV2 was "unreviewed and undeployed", severity n/a,
+and carried the instruction "do not deploy without an independent read". That
+one is stale in the dangerous direction: the deploy happened, the read did not,
+and this file recorded the opposite throughout. 2.3 is now high and gates
+advertising. Section 5 is the scope package the review has always needed and
+never had. One new finding, 2.4, came out of the same pass.
+
 This file was right about something the rest of the repository got wrong for a
 week. Section 0 recorded on 2026-08-31 that both providers run as systemd user
 units. `SNAPSHOT.md` and `TODO.md` both went on asserting they were bare `tsx`
@@ -142,7 +152,11 @@ the commit is a security fix.
 
 ### 1.1 settle() allows a provider to drain the entire escrow
 
-Severity: critical. Status: fixed in `DinnerNodeV2.sol`, NOT yet deployed.
+Severity: critical. Status: **fixed and DEPLOYED 2026-09-03** at
+`0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c`, which every client now points
+at. The text below describes `DinnerNode.sol`, the v1 instance, which remains
+callable on chain and which nothing in this repository references. Corrected
+2026-09-10: this line read "NOT yet deployed" for a week after the deploy.
 
 `contracts/src/DinnerNode.sol:61-82`. `settle(jobId, tokensDelta)` accepts any
 `tokensDelta` from the provider. `rawDue` is computed from it directly and
@@ -158,7 +172,9 @@ Fix: `DinnerNodeV2.sol` clamps `tokensDelta` to
 
 ### 1.2 Provider can raise its rate mid-job
 
-Severity: high. Status: fixed in `DinnerNodeV2.sol`, NOT yet deployed.
+Severity: high. Status: **fixed and DEPLOYED 2026-09-03** at
+`0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c`. Same correction as 1.1: this
+line also read "NOT yet deployed" for a week after the deploy.
 
 `DinnerNode.sol:66` reads `providers[msg.sender].ratePerMillion` at settlement
 time, and `registerProvider` (line 37) can be called at any time to change it.
@@ -510,9 +526,84 @@ whatever model happens to be first in the local ollama list. A node operator
 with a restrictively licensed model installed would serve it commercially
 without deciding to. `/health` reports the model, so an allowlist is possible.
 
-### 2.3 DinnerNodeV2 is unreviewed by a third party and undeployed
+### 2.3 DinnerNodeV2 is unreviewed by a third party, and is deployed
 
-Severity: n/a. Status: OPEN. Do not deploy without an independent read.
+Severity: **high, raised 2026-09-10.** Status: OPEN, and the mitigation this
+item used to rely on is gone.
+
+This item read "unreviewed by a third party and undeployed", severity n/a, with
+the instruction "do not deploy without an independent read". **The contract was
+deployed on 2026-09-03** at `0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c`, the
+site and both nodes were pointed at it, and this line was never updated. So the
+instruction was not followed, and the file that exists to catch that recorded
+the opposite for a week.
+
+What that changes. While V2 was undeployed, "unreviewed" cost nothing, which is
+why the severity was n/a. It now holds live escrow, and it is the contract that
+every claim in `TODO.md` about correctness is made against. It also gained
+surface after the review that never happened was first requested:
+`reassignWithAuth`, `commitPlan`, the checkpoint chain and `_allowed` are all
+newer than the request.
+
+This is the gate on advertising. The value at risk today is testnet MON, which
+under `terms.html` section 6 has none, so the exposure is reputational rather
+than financial. Inviting strangers to escrow against unreviewed code is the act
+that changes that, whichever direction the token value goes.
+
+Scope for the review that has to happen is in section 5.
+
+### 2.4 The answer checkpoint is an unsalted commitment to the model's reply
+
+Severity: medium. Status: OPEN, found 2026-09-10, **confirmed against live
+chain state rather than against the code.**
+
+`src/host.ts:505` publishes `keccak256(stringToHex(p.prefix))`, an unsalted
+keccak256 of the answer text produced so far. It goes to `settle()` and
+`commitCheckpoint()` and is kept in permanent contract storage in the
+`Checkpoint` struct, alongside a token count and a running chain hash. It is
+written repeatedly as an answer grows, not once per job.
+
+Read off `0x7E98...` on 2026-09-10:
+
+```
+job#12  prefixHash 0x6c56163b...af64  tokens 843  billed 2511
+job#15  prefixHash 0x70136b15...c804b tokens 280  billed 1687
+```
+
+Those are storage reads, not events, on jobs the operator ran.
+
+**Why it is not simply fixable the way 1.5 was.** 1.5 was the same defect on the
+prompt side and was closed with a per-job random salt. That works because only
+the browser needs to reproduce the hash. Here a REPLACEMENT provider is handed
+the answer prefix and must recompute the identical hash to prove where it is
+resuming, so a salt would have to travel to a party that does not have it yet.
+Fixing this is a protocol change, not a one-line change, and it is recorded
+here rather than attempted.
+
+**What the exposure actually is.** It is a confirmation oracle rather than a
+disclosure. Nobody can recover the answer from the hash. Anyone holding a
+candidate answer can hash it and prove that a given job, and therefore a given
+wallet address, produced that text, permanently. Since the answer is a function
+of the prompt, that is a check on the prompt too, for anyone who can guess or
+obtain the pair.
+
+**The published notice was false, and that is the blocking half.** This is the
+same class as the finding the 2026-08-28 legal review called blocking, and it
+was created the same way: a mechanism landed and the privacy notice was not
+re-read against it.
+
+- `terms.html` 2.1 said "exactly two items of data about you are recorded".
+- `terms.html` 2.2 said the model's reply is not written and "only the hash
+  commitment described above is written".
+- The summary bullet said "Two things about you are written permanently".
+
+All three were false against the deployed contract from the moment
+checkpointing went live. **Corrected 2026-09-10** in `web/public/terms.html`:
+2.1 now lists the checkpoint hashes and the settlement and handover records,
+2.2 no longer claims the reply is absent from the chain, 2.6 states the
+unsalted property and what follows from it, and the summary bullet matches.
+**Not deployed at the time of writing.** The correction is only true of the
+site once `web/` is rebuilt and pushed.
 
 ---
 
@@ -708,3 +799,93 @@ Blocking, in order:
 4. Legal review. See the separate legal findings: escrow-as-custody under MiCA
    and the Serbian Law on Digital Assets, and the house wallet as a possible
    transfer service, both need Serbian counsel before any value is real.
+
+---
+
+## 5. Scope for the independent contract review
+
+Added 2026-09-10, because section 2.3 has asked for this review since it was
+written and has never said what would be handed to a reviewer. This section is
+that package. Nothing here is a substitute for the review; it is the thing that
+makes commissioning it a decision rather than a project.
+
+### 5.1 Exactly what is under review
+
+| | |
+|---|---|
+| Contract | `contracts/src/DinnerNodeV2.sol`, 668 lines |
+| Source revision | `c1b3f07`, unchanged in the working tree |
+| sha256 of source | `378f3918a053a50591bfb1f946d5db24888fafe86587fc491e4c3207cb746d34` |
+| Deployed at | `0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c` |
+| Chain | Monad testnet, chain ID 10143 |
+| Deployed on | 2026-09-03, by `scripts/deploy-v2.mjs` |
+| Compiler | `^0.8.28`, foundry default profile |
+| Dependency | OpenZeppelin `ECDSA` only |
+| Tests | 72 across 5 files in `contracts/test/`, all passing 2026-09-10 |
+
+Secondary, and lower priority: `DinnerRatings.sol` (144 lines, 11 tests).
+`DinnerNode.sol` is the v1 instance. It carries the critical defect in 1.1, it
+remains callable on chain, and nothing in this repository points at it. It is
+out of scope except as history.
+
+Off-chain code a reviewer needs in order to judge the contract, rather than as
+review targets in their own right: `src/host.ts` for the settlement and
+checkpoint cadence, `src/takeover.ts` for the handover refusals taken before
+gas is spent, `src/billing.ts` for `serveCeiling` and `affordableTokens`, and
+`web/src/lib.ts` for the browser's `openJob` and the authorisation it signs.
+
+### 5.2 The questions worth paying for
+
+Listed in the order they would change what we do. These are where our own
+review has the least confidence, not a summary of the contract.
+
+1. **`_allowed` is the whole safety property.** Every payment path clamps
+   through it. 1.1 was the defect it exists to fix. It combines an
+   elapsed-time throughput bound, a published-checkpoint bound and the escrow,
+   and the interaction of those three under an adversarial provider is the
+   single highest-value question in this file.
+2. **`_reassign` pays the outgoing provider before handing the job on**, and
+   deliberately pays nothing when no checkpoint exists. Both directions of that
+   are attack surface: a guest timing a handover to take work for free, and a
+   provider timing checkpoints to be paid for work it did not do.
+3. **`reassignWithAuth` and the EIP-712 digest.** A wildcard authorisation is
+   tried before the named form, `maxReassigns` doubles as the replay
+   protection with no separate nonce, and `msg.sender == newProvider` is the
+   only thing binding the submitter. We believe the guest risks liveness and
+   not money. That belief is worth checking by someone who did not write it.
+4. **The rate and throughput ratchets on handover.** Both are supposed to move
+   only downward, so a handover cannot raise a ceiling the guest agreed to.
+   Confirm the ratchet cannot be walked upward across several handovers.
+5. **`commitPlan` versus escrow.** Two ceilings bind the same job and
+   `require(ceiling >= j.paid)` is the only thing stopping a retroactive
+   recap. Confirm they cannot be played against each other.
+6. **`_isArmsLength` and reputation.** Self-dealt jobs are excluded from
+   `tokensServed` and `lifetimeEarned` while `earned` always accrues. Confirm
+   the exclusion cannot be evaded, since discovery ranks on `tokensServed`.
+7. **`withdraw` and `refund`** are the only paths value leaves by. Ordinary
+   reentrancy and accounting questions.
+8. **2.4, which we have already found and cannot fix alone.** The checkpoint
+   commitment is unsalted by necessity. We would value a second opinion on
+   whether a salted scheme reaches the replacement provider without a new
+   trusted channel.
+
+### 5.3 What a reviewer should be told up front
+
+Stated here so it is not discovered mid-engagement and priced as a surprise.
+
+- Testnet only. No real value has ever moved through this contract.
+- One operator runs both live nodes, on one machine, sharing one ollama. The
+  provider set is not adversarial today because it is not a set.
+- The known-defects list in sections 1 and 2 of this file is complete as far as
+  we know it, and 1.1 through 1.18 are the findings of our own reviews. A
+  reviewer should read them first and is not being asked to rediscover them.
+- The contract has never been reviewed by anyone outside this project.
+
+### 5.4 The decision this is waiting on
+
+Commissioning it. The review needs an outside firm or auditor, which is the
+operator's call and the operator's budget, and nothing in this repository can
+advance it further than this section. The relevant sequencing fact is that
+section 4 item 1 gates mainnet, and section 2.3 now also gates advertising,
+because inviting strangers to escrow against unreviewed code is the step that
+turns a reputational exposure into a financial one.

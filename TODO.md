@@ -1116,19 +1116,43 @@ All blocking. See `SECURITY_REVIEW.md` section 4.
       `TOPUP_DISABLED` was set. The client-side funding invariant in
       `web/src/App.tsx` lost its upper bound with it, since the grant size is
       no longer ours to set.
-- [ ] **Node operators have never agreed to `reassign`.** `hosting.html:280`
-      points them at `terms.html` section 5, which covers data duties and says
-      nothing about a live job being taken away and the compensation fixed
-      unilaterally by the contract. On testnet a provider forfeiting valueless
-      MON has no claim. On mainnet, one that streams 40 seconds, publishes no
-      checkpoint and is reassigned to zero has an unjust-enrichment argument
-      under Serbian law, and `DinnerNodeV2.sol:473` deliberately gives it
-      nothing. A clause was drafted by the legal review 2026-08-28 and wants
-      the operator's wording. Raised by the legal review, 2026-08-28 (night).
-- [ ] A handover writes MORE on-chain records keyed to the guest's address.
-      `terms.html` 2.1 describes the footprint as "exactly two items", which a
-      reassign makes an understatement. One sentence in 2.6.
-- [ ] Independent review of the fixed contract.
+- [~] **Node operators have never agreed to `reassign`. Clause written
+      2026-09-10, NOT deployed.** `terms.html` section 5.1 is the provider-side
+      statement: a job can be taken mid-answer by either route, payment is
+      whatever the last on-chain checkpoint evidences, no checkpoint means no
+      payment however much was streamed, the 5,355 ms unpaid window is named
+      with its measurement date, there is no appeal, and registering is the
+      acceptance. It closes with the testnet framing, which is the point of
+      writing it now: the rule is agreed while nothing forfeited has value, so
+      it is not first agreed on the day it governs something that does.
+      `hosting.html` carries a warn card pointing at it BEFORE the install
+      steps rather than after them.
+      **Two things remain.** The wording is the operator's to approve, and the
+      site has to be rebuilt and deployed before any of it is true of
+      `dinnernode.xyz`. Originally raised by the legal review, 2026-08-28.
+- [x] **A handover writes MORE on-chain records keyed to the guest's address.**
+      Done 2026-09-10, and it was worse than "one sentence in 2.6". Chasing it
+      found `SECURITY_REVIEW.md` 2.4: the checkpoint stores an UNSALTED
+      keccak256 of the answer prefix in permanent contract storage, which made
+      `terms.html` 2.1, 2.2 and the summary bullet all false rather than
+      understated. 2.1 now lists the checkpoint hashes and the settlement and
+      handover records, 2.2 no longer says the reply is absent from the chain,
+      and 2.6 states the unsalted property and what follows from it. Verified
+      by reading `checkpoints(12)` and `checkpoints(15)` off `0x7E98...`, not
+      from the code. Not deployed.
+- [ ] **Independent review of the fixed contract. Scope package written
+      2026-09-10, `SECURITY_REVIEW.md` section 5.** Source revision, sha256,
+      deployed address, compiler, dependency and test count are pinned, the
+      eight questions worth paying for are listed in priority order, and what a
+      reviewer should be told up front is stated so it is not priced as a
+      surprise mid-engagement. What is left is commissioning it, which is
+      budget and an outside firm.
+      **Severity raised the same day.** `SECURITY_REVIEW.md` 2.3 read
+      "unreviewed by a third party and undeployed", severity n/a, carrying the
+      instruction "do not deploy without an independent read". V2 was deployed
+      2026-09-03 and that line was never updated, so the instruction was not
+      followed and the file that exists to catch it recorded the opposite for a
+      week. This now gates advertising as well as mainnet.
 - [ ] Serbian counsel on escrow-as-custody and the house wallet as a possible
       transfer service.
 - [ ] Entity formation before outside money.
