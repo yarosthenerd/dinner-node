@@ -885,7 +885,11 @@ Stated here so it is not discovered mid-engagement and priced as a surprise.
 
 Commissioning it. The review needs an outside firm or auditor, which is the
 operator's call and the operator's budget, and nothing in this repository can
-advance it further than this section. The relevant sequencing fact is that
+advance it further than this section. The outreach note that carries this
+package to a firm is drafted at `.context/drafts/audit-outreach.md`: the email,
+what to attach, how to run the process, and a shortlist table to fill. Two
+fields in it want the operator, timing and budget, and auditors triage on
+exactly those. The relevant sequencing fact is that
 section 4 item 1 gates mainnet, and section 2.3 now also gates advertising,
 because inviting strangers to escrow against unreviewed code is the step that
 turns a reputational exposure into a financial one.

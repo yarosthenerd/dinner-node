@@ -1,3 +1,228 @@
+# Session snapshot, 2026-09-10 (afternoon)
+
+> The session that asked what was left before launch, and found that two of the
+> answers were documents lying in opposite directions.
+>
+> One lied safely: two critical fixes marked "NOT yet deployed" had been live
+> for a week. One lied dangerously: the item carrying the instruction "do not
+> deploy without an independent read" recorded the contract as undeployed, a
+> week after it was deployed. So the instruction was not followed, and the file
+> that exists to catch that is the file that hid it.
+>
+> The 2026-09-07 theme, one turn tighter again. That session found three
+> documents disagreeing for a week. This one found a document disagreeing with
+> the chain, and then found the published privacy notice disagreeing with the
+> chain too, which is the same defect with a legal consequence attached.
+
+## 0. Results, in one list
+
+One commit, `f3a4284`, and one deploy. Both items the session was asked for are
+as far along as this repository can take them.
+
+| # | Result | Evidence |
+|---|---|---|
+| 1 | **Node operators now agree to `reassign` before they register.** `terms.html` 5.1, live. | section 2 |
+| 2 | **The published privacy notice was false, not understated**, and had been since checkpointing went live. | section 3 |
+| 3 | **The checkpoint is an unsalted commitment to the model's answer**, in permanent contract storage. Read off the chain, not the code. | section 3.1 |
+| 4 | **`SECURITY_REVIEW.md` 2.3 recorded the opposite of what happened**, and its severity was n/a because of it. Now high. | section 4 |
+| 5 | **1.1 and 1.2 said "NOT yet deployed" of fixes deployed 2026-09-03.** Stale the safe way, and still stale. | section 4 |
+| 6 | **The contract review now has a scope package**, which it has wanted since 2.3 was written. | section 5 |
+| 7 | **The apex 308s to `www`**, which made a verification command answer 0 on content that was live. | section 6 |
+| 8 | **PR #1 is 115 commits over 192 files.** | section 6 |
+
+## 1. The question was what is left before launch
+
+The session opened with "what's missing until we can call it done and advertise
+it". The answer was eight items, and the operator picked the two that gate
+advertising rather than the ones that improve it:
+
+1. The contract is deployed and has never had an outside read.
+2. Node operators have never agreed to `reassign`.
+
+Both had sat in `TODO.md` P3 since 2026-08-28. Item 2's clause was drafted by
+the legal review that night and had been waiting on the operator's wording for
+thirteen days.
+
+## 2. The clause, written and live
+
+`terms.html` section 5.1, `A job you are serving can be taken from you while
+you are answering`. It states, in the operator-facing register rather than the
+guest-facing one:
+
+- A job can be transferred mid-answer by either route, with no consent sought
+  at that moment and no advance notice. The `reassignWithAuth` route needs no
+  live action from the guest, so it can happen at any hour with nobody watching.
+- Payment on transfer is whatever the last on-chain checkpoint evidences,
+  bounded by the throughput ceiling locked at `openJob` and the escrow left.
+- **No checkpoint means no payment**, however much was streamed. Stated as
+  deliberate, with the reason: a departing provider paid a full throughput
+  allowance on no evidence is paid for work nobody can show it did.
+- The unpaid window is named with its measurement: **5,355 ms** from first token
+  to first on-chain checkpoint, measured on the live pair 2026-09-10.
+- The operator's own configuration sizes that window, and settling less often
+  earns more per settlement while exposing more unpaid work. That trade is
+  theirs and so are its consequences.
+- No appeal, no dispute process, no manual review. The contract's arithmetic is
+  final and nobody can reverse it.
+- Registering is the acceptance.
+
+**Why it closes on the testnet framing, which is the whole point of writing it
+now.** The legal review's concern was unjust enrichment under Serbian law: a
+provider that streams forty seconds, publishes no checkpoint and is reassigned
+to zero has an argument, and `DinnerNodeV2.sol` deliberately gives it nothing.
+On testnet the forfeited MON has no value, so there is nothing to be enriched
+at anyone's expense. The clause is agreed while that is true, so the rule is not
+first agreed on the day it governs something that is not. That sequencing is
+the defence, and it expires the moment value becomes real.
+
+`hosting.html` carries a warn card pointing at it **before** the install steps.
+The old pointer sent operators to section 5 after the hardware table, and
+section 5 covered data duties and said nothing about any of the above.
+
+## 3. The guest half was supposed to be one sentence
+
+`TODO.md` P3 carried it as "a handover writes MORE on-chain records keyed to
+the guest's address... One sentence in 2.6." It was not one sentence, because
+the premise was wrong. `terms.html` was not understating the footprint. It was
+describing a different contract.
+
+Three published sentences were false:
+
+- 2.1: "exactly two items of data about you are recorded on the Monad testnet"
+- 2.2: "neither is the model's reply. Only the hash commitment described above
+  is written"
+- Summary: "Two things about you are written permanently to a public blockchain"
+
+All three were false from the moment checkpointing went live, and all three
+were live on `dinnernode.xyz` this morning.
+
+**This is the same class as the finding the 2026-08-28 legal review called
+blocking, and it was created the same way.** That one was `2e34835` falsifying
+2.7 by adding a failover path. This one is checkpointing falsifying 2.1 and 2.2.
+A mechanism lands, and the privacy notice is not re-read against it. Twice now,
+and both times the document contradicted itself before anyone noticed, which
+removes any argument the drafter did not know.
+
+### 3.1 What the chain actually stores
+
+`src/host.ts:505` publishes `keccak256(stringToHex(p.prefix))`, an unsalted
+keccak256 of the answer text produced so far. It goes to `settle()` and
+`commitCheckpoint()` and lives in the `Checkpoint` struct in permanent contract
+storage, written repeatedly as an answer grows rather than once per job.
+
+Read off `0x7E98…` on 2026-09-10, as storage rather than events:
+
+```
+job#12  prefixHash 0x6c56163b...af64  tokens 843  billed 2511
+job#15  prefixHash 0x70136b15...c804b tokens 280  billed 1687
+```
+
+**Checked against the chain rather than against the code**, which is the only
+reason the severity is right. The code says what it publishes; the chain says
+it is still there.
+
+**Not fixable the way 1.5 was.** 1.5 was this defect on the prompt side and
+closed with a per-job random salt, which works because only the browser
+reproduces that hash. Here a replacement provider is handed the answer prefix
+and must recompute an identical hash to prove where it resumes, so a salt would
+have to reach a party that does not have it yet. Recorded as `SECURITY_REVIEW.md`
+2.4 and question 8 of the audit scope, rather than attempted.
+
+**The exposure is a confirmation oracle, not a disclosure.** Nobody recovers
+the answer from the hash. Anyone holding a candidate answer can prove
+permanently that a given job, and so a given wallet, produced that text. Since
+the answer is a function of the prompt, it is a check on the prompt too. 2.6
+now says this in those terms and tells the reader to treat such an answer as
+disclosed rather than protected.
+
+## 4. The item that recorded the opposite of what happened
+
+`SECURITY_REVIEW.md` 2.3 read, until today:
+
+> ### 2.3 DinnerNodeV2 is unreviewed by a third party and undeployed
+> Severity: n/a. Status: OPEN. Do not deploy without an independent read.
+
+V2 was deployed on 2026-09-03, at `0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c`,
+and the site and both nodes were pointed at it the same day. The instruction was
+not followed, and this line was never updated.
+
+**The severity was n/a because of the staleness.** While V2 was undeployed,
+"unreviewed" cost nothing. It now holds live escrow and is the contract every
+correctness claim in `TODO.md` is made against. It also gained
+`reassignWithAuth`, `commitPlan`, the checkpoint chain and `_allowed` after the
+review was first requested. Raised to high, and it now gates **advertising**
+rather than only mainnet, because inviting strangers to escrow against
+unreviewed code is the step that turns a reputational exposure into a financial
+one.
+
+1.1 and 1.2 were stale in the opposite direction, both saying "fixed in
+`DinnerNodeV2.sol`, NOT yet deployed" of fixes deployed a week earlier. Both
+corrected. That direction is harmless and is recorded because the pair of them
+is the point: this file drifted both ways at once, and only one way was visible
+as a risk.
+
+## 5. The scope package
+
+`SECURITY_REVIEW.md` section 5. 2.3 has asked for an independent review since it
+was written and never said what a reviewer would be handed. Now it does:
+`c1b3f07` as the source revision with its sha256, the deployed address and
+chain, compiler and the single OpenZeppelin dependency, 72 passing contract
+tests, and the off-chain files a reviewer needs to judge the contract without
+reviewing them.
+
+Eight questions in priority order, led by `_allowed`, which every payment path
+clamps through and which 1.1 exists to fix. Then `_reassign` paying out before
+handing on, the EIP-712 wildcard digest where `maxReassigns` doubles as replay
+protection, the rate and throughput ratchets, `commitPlan` against escrow,
+`_isArmsLength`, the withdrawal paths, and 2.4.
+
+Section 5.3 states the four things a reviewer should be told up front, including
+that one operator runs both live nodes on one machine, so the provider set is
+not adversarial today because it is not a set.
+
+**What is left is commissioning it**, which is budget and an outside firm, and
+which nothing in this repository advances. Section 5.4 says so rather than
+leaving it implied.
+
+## 6. Counts, and one verification that lied
+
+`npm run verify` green throughout: typecheck clean, **376 root**, **72
+contract**, **155 web**.
+
+Deploy `dpl_2w2FED1LyoEsHWP6Nx3EqGrTPJWe`, READY, aliased to
+`www.dinnernode.xyz`. Verified on both hostnames: 5.1 present, the hosting card
+present, all three false sentences gone. The one surviving match for "exactly
+two items" is the self-correcting reference written into 2.1, which discloses
+the old error rather than repeating it.
+
+PR #1 is now **115 commits over 192 files**, 37,913 insertions.
+
+**One verification answered 0 on content that was live.** A check for the clause
+on the apex without `-L` returned 0, because `dinnernode.xyz` 308s to
+`www.dinnernode.xyz` and curl counted the redirect body. It predates this
+deploy: the first probe of the session, before any change, already showed the
+apex at 308. Worth keeping in mind, since a probe that silently measures a
+redirect is a probe that can report a deploy failed when it did not, and can
+report a fix present when it is not.
+
+Minor, unfixed: `README.md:11` advertises the apex while Vercel aliases `www`.
+
+## 7. Open, and what each is waiting on
+
+- **The contract review is uncommissioned.** Scoped, not started. It is the only
+  launch-blocking item whose lead time the operator does not control, and it now
+  gates advertising. Everything else on the launch list is self-executable.
+- **2.4 has no fix**, only an honest notice. It is question 8 of the review.
+- **Section 5.1 was approved for deploy unread.** It is live and it binds every
+  future node operator. Changing it is a one-line edit and a deploy, and it is
+  much cheaper before a stranger registers against it than after.
+- **A review returns findings, and a finding may mean redeploying.** That is not
+  small here: 2026-09-03 meant `scripts/set-registry.mjs` touching nine places,
+  three service restarts rather than two, and three silent failures on the way.
+- Everything in the 2026-09-07 section 7 list that this session did not touch.
+
+---
+
 # Session snapshot, 2026-09-07
 
 > The session that began with a question about working from a phone and ended
