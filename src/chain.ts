@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { createPublicClient, createWalletClient, defineChain, http, parseAbi, parseEventLogs } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+import { isRevert, WillRevert } from './revert';
 
 // RPC_URL and CHAIN_ID exist so the whole daemon can be run end to end against
 // a local anvil, with a deployed registry and real transactions, without
@@ -89,4 +90,43 @@ export async function jobIdFromReceipt(hash: `0x${string}`): Promise<bigint> {
   const rc = await pub.waitForTransactionReceipt({ hash });
   const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
   return log.args.jobId;
+}
+
+/**
+ * The gas limit for a write, estimated rather than padded.
+ *
+ * Monad charges the gas LIMIT rather than the gas used, so every unit of
+ * headroom a fixed limit carries is money actually spent. Measured against the
+ * live registry on 2026-09-10 at 102 gwei: `deposit` estimates at 34,483
+ * against the 200,000 that was hardcoded (5.8x) and `openJob` at 180,498
+ * against 300,000 (1.7x).
+ *
+ * The 20% pad absorbs the state drift between estimating and landing: a
+ * first-time depositor writes a fresh storage slot and a repeat one does not,
+ * and the estimate is taken against the state at call time.
+ *
+ * A revert is raised as `WillRevert` rather than padded over. Estimation is
+ * the cheapest place to learn a write cannot succeed, and falling back to the
+ * fixed limit would broadcast a transaction the chain has already refused,
+ * paying the limit to be told again. That is what `47b123a` fixed.
+ */
+export async function gasFor(
+  fn: string,
+  args: readonly unknown[],
+  account: `0x${string}`,
+  fallback: bigint,
+  value?: bigint,
+): Promise<bigint> {
+  try {
+    const g = await pub.estimateContractGas({
+      address: ADDR, abi: ABI, functionName: fn as never, args: args as never, account,
+      // A payable call estimated without its value reverts on the balance
+      // check, which silently returned the padded fallback for every deposit.
+      ...(value === undefined ? {} : { value }),
+    } as never);
+    return (g * 120n) / 100n;
+  } catch (e) {
+    if (isRevert(e)) throw new WillRevert(fn, String((e as { shortMessage?: string; message?: string })?.shortMessage ?? (e as { message?: string })?.message ?? e).slice(0, 200));
+    return fallback;
+  }
 }

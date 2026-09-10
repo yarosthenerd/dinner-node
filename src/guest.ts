@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { randomBytes } from 'node:crypto';
 import { formatEther, keccak256, parseEther, stringToHex, toHex } from 'viem';
-import { ABI, ADDR, EXPLORER, jobIdFromReceipt, pub, wallet } from './chain';
+import { ABI, ADDR, EXPLORER, gasFor, jobIdFromReceipt, pub, wallet } from './chain';
 import { readJob } from './registry';
 
 const args = process.argv.slice(2);
@@ -23,7 +23,9 @@ if (dep < budget) {
   // nonce, which is racy rather than correct.
   const dh = await w.writeContract({
     address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: budget,
-    gas: 200000n, maxFeePerGas: MAX_FEE,
+    // Estimated, not padded: Monad charges the limit. The old fixed 200,000
+    // was 5.8x the measured cost of this call.
+    gas: await gasFor('deposit', [], me, 200000n, budget), maxFeePerGas: MAX_FEE,
   });
   await pub.waitForTransactionReceipt({ hash: dh });
 }
@@ -50,7 +52,7 @@ const openHash = await w.writeContract({
   // has not published a checkpoint covering. A plan run passes false, because
   // it has no single growing prefix to hash.
   args: [provider, budget, tag, true],
-  gas: 250000n, maxFeePerGas: MAX_FEE,
+  gas: await gasFor('openJob', [provider, budget, tag, true], me, 250000n), maxFeePerGas: MAX_FEE,
 });
 const jobId = await jobIdFromReceipt(openHash);
 console.log(`job#${jobId} open  ${EXPLORER}/tx/${openHash}`);

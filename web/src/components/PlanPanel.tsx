@@ -12,6 +12,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { formatEther, keccak256, parseEther, parseEventLogs, toHex } from 'viem';
 import { runPlan, requestPlan, waves, planHash, planMaxTokens, type ExecEvent, type PlanResult } from '../lib/plan-client';
 import { isOursAndOpen, readJob, remaining } from '../lib/registry';
+import { estimateGas } from '../lib';
 
 type Props = {
   pub: any;
@@ -74,7 +75,7 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
       // deposit rather than the wallet, so a second plan usually needs far
       // less than the full budget.
       setNote(`depositing ${formatEther(PLAN_BUDGET - dep)} MON…`);
-      const h = await wallet.writeContract({ address: nodeAddress, abi: nodeAbi, functionName: 'deposit', args: [], value: PLAN_BUDGET - dep, gas: 200000n, maxFeePerGas: maxFee });
+      const h = await wallet.writeContract({ address: nodeAddress, abi: nodeAbi, functionName: 'deposit', args: [], value: PLAN_BUDGET - dep, gas: await estimateGas({ pub, address: nodeAddress, abi: nodeAbi, fn: 'deposit', args: [], account: guestAddress, fallback: 200000n, value: PLAN_BUDGET - dep }), maxFeePerGas: maxFee });
       await pub.waitForTransactionReceipt({ hash: h });
     }
     setNote('opening the job…');
@@ -88,7 +89,7 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
     // and settle() would have nothing to publish. The plan's cost guarantee
     // comes from commitPlan instead, which is a ceiling the chain holds rather
     // than a prefix it verifies.
-    const h = await wallet.writeContract({ address: nodeAddress, abi: nodeAbi, functionName: 'openJob', args: [provider, PLAN_BUDGET, tag, false], gas: 300000n, maxFeePerGas: maxFee });
+    const h = await wallet.writeContract({ address: nodeAddress, abi: nodeAbi, functionName: 'openJob', args: [provider, PLAN_BUDGET, tag, false], gas: await estimateGas({ pub, address: nodeAddress, abi: nodeAbi, fn: 'openJob', args: [provider, PLAN_BUDGET, tag, false], account: guestAddress, fallback: 300000n }), maxFeePerGas: maxFee });
     const rc = await pub.waitForTransactionReceipt({ hash: h });
     // `nodeAbi` arrives as `any` from the caller, so viem cannot infer the
     // event's argument shape and types the log without `args`.
@@ -154,11 +155,13 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
     setNote(`committing the plan and a ${formatEther(ceiling)} MON ceiling on chain…`);
     const h = await wallet.writeContract({
       address: nodeAddress, abi: nodeAbi, functionName: 'commitPlan',
-      args: [id, hash, version, ceiling], gas: 200000n, maxFeePerGas: maxFee,
+      args: [id, hash, version, ceiling],
+      gas: await estimateGas({ pub, address: nodeAddress, abi: nodeAbi, fn: 'commitPlan', args: [id, hash, version, ceiling], account: guestAddress, fallback: 200000n }),
+      maxFeePerGas: maxFee,
     });
     await pub.waitForTransactionReceipt({ hash: h });
     setCommitted({ hash, ceiling, version, tx: String(h) });
-  }, [pub, wallet, nodeAddress, nodeAbi, maxFee]);
+  }, [pub, wallet, nodeAddress, nodeAbi, maxFee, guestAddress]);
 
   async function run() {
     if (!result || jobId === null) return;
@@ -234,7 +237,7 @@ export default function PlanPanel({ pub, wallet, guestAddress, nodeAddress, node
         await new Promise(r => setTimeout(r, 1000));
       }
       setNote('closing the job and returning unspent escrow…');
-      const h = await wallet.writeContract({ address: nodeAddress, abi: nodeAbi, functionName: 'closeJob', args: [jobId], gas: 200000n, maxFeePerGas: maxFee });
+      const h = await wallet.writeContract({ address: nodeAddress, abi: nodeAbi, functionName: 'closeJob', args: [jobId], gas: await estimateGas({ pub, address: nodeAddress, abi: nodeAbi, fn: 'closeJob', args: [jobId], account: guestAddress, fallback: 200000n }), maxFeePerGas: maxFee });
       await pub.waitForTransactionReceipt({ hash: h });
       setNote('closed. the unspent remainder is back on your deposit.');
       setJobId(null);

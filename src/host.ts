@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { formatEther, keccak256, parseEther, parseEventLogs, stringToHex, toHex } from 'viem';
 import { isRevert, WillRevert } from './revert';
-import { ABI, ADDR, EXPLORER, monadTestnet, pub, wallet } from './chain';
+import { ABI, ADDR, EXPLORER, gasFor as chainGasFor, monadTestnet, pub, wallet } from './chain';
 import { isMine, readJob, readProvider, remaining } from './registry';
 import { authorises, parseAuth, refuseTakeover } from './takeover';
 import { mock, ollama, openai, SYSTEM_PROMPT, type Chunk } from './engines';
@@ -377,20 +377,11 @@ function serialized<T>(f: () => Promise<T>): Promise<T> {
 // unreachable RPC, a timeout, a rate limit, still falls back, because that is
 // what the fallback is for: a node that stops settling whenever a public
 // endpoint has a bad minute is worse than one that occasionally overpays.
-async function gasFor(fn: string, args: readonly unknown[], fallback: bigint, value?: bigint): Promise<bigint> {
-  try {
-    const g = await pub.estimateContractGas({
-      address: ADDR, abi: ABI, functionName: fn as any, args: args as any, account: w.account,
-      // Payable calls estimate to a revert without the value attached, which
-      // silently returned the padded fallback for every deposit this node made.
-      ...(value === undefined ? {} : { value }),
-    } as any);
-    return (g * 120n) / 100n;
-  } catch (e) {
-    if (isRevert(e)) throw new WillRevert(fn, String((e as any)?.shortMessage ?? (e as any)?.message ?? e).slice(0, 200));
-    return fallback;
-  }
-}
+// Estimation lives in chain.ts so the CLI in guest.ts uses the same one. This
+// wrapper binds it to this node's own account, which is the only thing host
+// ever estimates for.
+const gasFor = (fn: string, args: readonly unknown[], fallback: bigint, value?: bigint): Promise<bigint> =>
+  chainGasFor(fn, args, w.account.address, fallback, value);
 
 // writeContract resolves when the transaction is accepted, not when it
 // succeeds. Without the receipt check a reverted settlement was logged as a

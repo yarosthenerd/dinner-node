@@ -99,3 +99,69 @@ export const fmt = (w: bigint) => {
   if (s.includes('.')) s = s.slice(0, s.indexOf('.') + 9).replace(/0+$/, '').replace(/\.$/, '');
   return s;
 };
+
+/**
+ * The gas limit for a write, estimated rather than padded.
+ *
+ * Monad charges the gas LIMIT, not the gas used, so every unit of headroom a
+ * fixed limit carries is money the guest actually pays. Measured against the
+ * live registry on 2026-09-10 at 102 gwei: `deposit` estimates at 34,483
+ * against a fixed 200,000 (5.8x) and `openJob` at 180,498 against 300,000
+ * (1.7x), which is 0.0291 MON of headroom per order. Job#15 paid 0.049 MON for
+ * the inference itself, so the padding cost about 60% of an answer.
+ *
+ * The 20% pad over the estimate absorbs the state drift between estimating and
+ * landing: a first-time depositor writes a fresh storage slot and a repeat one
+ * does not, and the estimate is taken against the state at call time.
+ *
+ * A revert is rethrown rather than padded over. Estimation is the cheapest
+ * place to learn that a write cannot succeed, and falling back to the fixed
+ * limit here would broadcast a transaction the chain has already said will
+ * fail, paying the limit to find out. That is the mistake `47b123a` fixed on
+ * the node side; this is the same mistake on the guest side.
+ */
+export type GasContext = {
+  pub: { estimateContractGas: (c: never) => Promise<bigint> };
+  address: `0x${string}`;
+  abi: unknown;
+  fn: string;
+  args: readonly unknown[];
+  account: `0x${string}`;
+  fallback: bigint;
+  value?: bigint;
+};
+
+/**
+ * The estimating core, with the chain client injected so it can be tested
+ * without one, and so `PlanPanel` can pass the address and ABI it is handed
+ * as props rather than the module's.
+ */
+export async function estimateGas(c: GasContext): Promise<bigint> {
+  try {
+    const g = await c.pub.estimateContractGas({
+      address: c.address, abi: c.abi, functionName: c.fn, args: c.args, account: c.account,
+      // A payable call estimated without its value reverts on the balance
+      // check, which would silently return the fallback for every deposit.
+      ...(c.value === undefined ? {} : { value: c.value }),
+    } as never);
+    return (g * 12n) / 10n;
+  } catch (e) {
+    const m = String((e as { shortMessage?: string; message?: string })?.shortMessage
+      ?? (e as { message?: string })?.message ?? e);
+    if (/revert|execution reverted/i.test(m)) throw e;
+    // Anything else is the estimator being unreachable rather than the call
+    // being impossible: a dropped RPC, a rate limit, a wallet that will not
+    // estimate. The fixed limit is the right answer there.
+    return c.fallback;
+  }
+}
+
+/** `estimateGas` bound to this module's client, registry and ABI. */
+export const gasFor = (
+  fn: string,
+  args: readonly unknown[],
+  account: `0x${string}`,
+  fallback: bigint,
+  value?: bigint,
+): Promise<bigint> =>
+  estimateGas({ pub: pub as never, address: ADDR, abi: ABI, fn, args, account, fallback, value });

@@ -642,19 +642,41 @@ Applied to every `writeContract` and `sendTransaction` site.
 - [x] Gas estimated per call for `settle` and `closeJob` in `src/host.ts`. A
       fixed limit reverted after every key rotation. The two serverless
       endpoints this also covered are deleted.
-- [ ] `deposit`, `openJob` and `registerProvider` still use fixed padded limits
-      in `src/host.ts`, `src/guest.ts` and `web/src/App.tsx`. Measured with
+- [x] `deposit`, `openJob` and `registerProvider` used fixed padded limits in
+      `src/host.ts`, `src/guest.ts` and `web/src/App.tsx`. Measured with
       Foundry: `deposit` 55094 against a 200000 limit (3.6x), `openJob` 166702
       against 250000 to 300000 (1.5x to 1.8x), `registerProvider` 126392 first
       and 29665 on a repeat against 250000 (2.0x to 8.4x). Explicit, but not
       tight, and Monad charges the limit.
+      **Closed 2026-09-10.** Every one of them now estimates. `src/host.ts` had
+      already converted; the guest side had not, which is where the money
+      actually was, because the guest pays it.
+      Re-measured against the live registry at 102 gwei rather than in Foundry:
+      `deposit` estimates at **34,483** against the fixed 200,000 (5.8x) and
+      `openJob` at **180,498** against 300,000 (1.7x). With the 20% pad a guest
+      order goes from 500,000 gas to 257,976, which is **0.0247 MON saved per
+      order, a 48% cut**. Job#15 paid 0.049 MON for the inference itself, so
+      the padding had been costing about half an answer per order.
+      One implementation, in `src/chain.ts`, used by host and CLI; the browser
+      has its own in `web/src/lib.ts` because it cannot import node code. Both
+      raise a revert rather than falling back to the fixed limit, which is
+      `47b123a`'s lesson: estimation is the cheapest place to learn a write
+      cannot succeed, and padding over it broadcasts a transaction the chain
+      has already refused. Seven tests on the browser one, with the estimator
+      injected.
 - [x] Receipt checked on every write. `writeContract` resolves on acceptance.
 - [x] `deposit()` sequenced on a receipt before `openJob()` in host, web and CLI.
-- [ ] House writes are serialized per serverless instance only. Two concurrent
+- [n/a] House writes are serialized per serverless instance only. Two concurrent
       cloud-kitchen jobs on different Vercel instances share `HOUSE_PK` and
       collide on the nonce; a public `health.js` poll can collide with an
-      in-flight settle the same way. Needs a shared nonce source or a single
-      serialized worker.
+      in-flight settle the same way.
+      **Moot 2026-09-10.** There are no serverless instances. `web/api/` does
+      not exist as a path, `fd86fb8` deleted the cloud kitchen and the faucet
+      went on 2026-08-28, and no live code references `HOUSE_PK` at all: the
+      only hits in the tree are this file, `SNAPSHOT.md`, `TODO.md`, an agent
+      definition and five one-shot deploy scripts run by hand. Struck rather
+      than fixed, because the surface it describes was deleted two weeks ago
+      and this checklist went on carrying it.
 - [n/a] Sweep reserve rule. `src/faucet.ts` only POSTs to the external devnads
       faucet API and sends no transaction of its own, so there is no sweep in
       the repo for the rule to apply to. The sweep described in HANDOFF

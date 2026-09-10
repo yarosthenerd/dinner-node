@@ -1,6 +1,6 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { formatEther, keccak256, parseEther, parseEventLogs, toHex } from 'viem';
-import { ABI, ADDR, EXPLORER, pub, faucet, fmt } from './lib';
+import { ABI, ADDR, EXPLORER, pub, faucet, fmt, gasFor } from './lib';
 import { useWallet, connect, disconnect, switchChain, MONAD_CHAIN_ID } from './lib/wallet';
 import { isOursAndOpen, readJob, readProvider } from './lib/registry';
 import { proveControl } from './lib/attest';
@@ -476,7 +476,7 @@ export default function App() {
       }
       const j = await readJob(ADDR, jobId);
       if (!j.open) return;
-      const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'closeJob', args: [jobId], gas: 150000n, maxFeePerGas: MAX_FEE });
+      const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'closeJob', args: [jobId], gas: await gasFor('closeJob', [jobId], guestAddress, 150000n), maxFeePerGas: MAX_FEE });
       await pub.waitForTransactionReceipt({ hash: h });
     } catch (e) {
       console.error('closeJob failed for job', jobId.toString(), e);
@@ -579,13 +579,13 @@ export default function App() {
       setNote('the job could not be handed over on chain — opening a new one on the standby node…');
       const dep = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'deposits', args: [guestAddress] }) as bigint;
       if (dep < budget) {
-        const depHash = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: budget, gas: 200000n, maxFeePerGas: MAX_FEE });
+        const depHash = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: budget, gas: await gasFor('deposit', [], guestAddress, 200000n, budget), maxFeePerGas: MAX_FEE });
         await pub.waitForTransactionReceipt({ hash: depHash });
       }
       // requireCheckpoints stays true on the fallback job as well. It cannot
       // bound the inherited prefix, since this job has never seen one, but it
       // still bounds everything the replacement produces from here.
-      const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [to, budget, promptTag, true], gas: 300000n, maxFeePerGas: MAX_FEE });
+      const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [to, budget, promptTag, true], gas: await gasFor('openJob', [to, budget, promptTag, true], guestAddress, 300000n), maxFeePerGas: MAX_FEE });
       const rc = await pub.waitForTransactionReceipt({ hash: h });
       const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
       const fresh = log.args.jobId as bigint;
@@ -764,7 +764,7 @@ export default function App() {
               const dep = await attempt(() => pub.readContract({ address: ADDR, abi: ABI, functionName: 'deposits', args: [guestAddress] }) as Promise<bigint>, 'checking your tab');
               if (dep < budget) {
                 setNote(`depositing ${formatEther(budget)} MON…`);
-                const depHash = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: budget, gas: 200000n, maxFeePerGas: MAX_FEE });
+                const depHash = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: budget, gas: await gasFor('deposit', [], guestAddress, 200000n, budget), maxFeePerGas: MAX_FEE });
                 await pub.waitForTransactionReceipt({ hash: depHash });
               }
 
@@ -778,7 +778,7 @@ export default function App() {
               // in order to be bounded at all. PlanPanel passes false, because
               // a plan has no single prefix and takes its ceiling from
               // commitPlan instead.
-              const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [nextProvider, budget, promptTag, true], gas: 300000n, maxFeePerGas: MAX_FEE });
+              const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [nextProvider, budget, promptTag, true], gas: await gasFor('openJob', [nextProvider, budget, promptTag, true], guestAddress, 300000n), maxFeePerGas: MAX_FEE });
               const rc = await pub.waitForTransactionReceipt({ hash: h });
               const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
               jobId = log.args.jobId as bigint;
