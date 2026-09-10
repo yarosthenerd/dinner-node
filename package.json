@@ -19,6 +19,8 @@
     "setup": "tsx src/setup.ts",
     "doctor": "tsx src/setup.ts --check",
     "test": "vitest run",
-    "canary": "tsx src/canary.ts"
+    "canary": "tsx src/canary.ts",
+    "test:contracts": "forge test --root contracts",
+    "verify": "npm run typecheck && npm test && npm run test:contracts && npm --prefix web run build && npm --prefix web test"
   }
 }
