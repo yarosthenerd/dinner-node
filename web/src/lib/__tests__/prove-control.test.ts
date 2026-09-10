@@ -42,7 +42,11 @@ function host(opts: {
   body?: unknown;
   throws?: Error;
 } = {}) {
-  return vi.fn(async (input: string, init: any) => {
+  // `_input` is the URL fetch was called with. The assertions that care about
+  // it read it off `mock.calls` rather than from in here, and tsconfig's
+  // noUnusedParameters is what `npm run build` enforces even though
+  // `tsc --noEmit` does not.
+  return vi.fn(async (_input: string, init: any) => {
     if (opts.throws) throw opts.throws;
     if (opts.status && opts.status !== 200) {
       return { ok: false, status: opts.status, json: async () => ({}) } as any;
