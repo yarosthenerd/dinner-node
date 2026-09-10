@@ -11,7 +11,10 @@
 # cannot drift from the check. That is the same rule the two launchers follow.
 #
 # Nothing here needs a secret. All four surfaces are hermetic: no chain, no
-# keys, no network. The e2e scripts that DO need a chain are not run here and
+# keys, no network. Hermetic is not the same as needing no setup, which the
+# first two runs of this workflow demonstrated: two tests were reading the
+# runner's PATH, and forge needs contracts/node_modules that only exists
+# locally. The e2e scripts that DO need a chain are not run here and
 # want a harness that does not exist yet.
 name: verify
 
@@ -51,14 +54,22 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             web/package-lock.json
+            contracts/package-lock.json
 
       - name: install root dependencies
         run: npm ci
 
-      # web is its own package with its own lockfile. contracts needs no npm
-      # install: forge-std is vendored and forge reads it directly.
+      # Three packages, three lockfiles. forge-std IS vendored under
+      # contracts/lib, but that is not the whole story: remappings.txt resolves
+      # @zk-kit/, @semaphore-protocol/ and poseidon-solidity/ out of
+      # contracts/node_modules, which is gitignored, so `forge test` cannot
+      # compile lib/semaphore without this install. Locally it passes because
+      # the directory is already there.
       - name: install web dependencies
         run: npm ci --prefix web
+
+      - name: install contract dependencies
+        run: npm ci --prefix contracts
 
       - name: verify
         run: npm run verify
