@@ -45,6 +45,11 @@ describe('startOllama', () => {
   // the branch taken decides what is spawned. Pinned per test rather than
   // inherited from the runner.
   const noUnit = () => false;
+  // Same reasoning as noUnit, one level lower: a developer machine has the
+  // ollama binary on PATH and a CI runner does not, and startOllama returns
+  // early when it is missing. Left to the environment, every test below passed
+  // here and exercised nothing in CI.
+  const hasCmd = () => true;
 
   it('waits for the server to answer and returns what it holds', async () => {
     let tries = 0;
@@ -52,7 +57,7 @@ describe('startOllama', () => {
       spawnFn: (() => child()) as any,
       // Unreachable twice, then up. The real thing takes a second or two.
       probeFn: async () => (++tries < 3 ? { reachable: false, models: [] } : { reachable: true, models: ['qwen3:8b'] }),
-      hasUnit: noUnit,
+      hasUnit: noUnit, hasCmd,
       sleep: async () => {},
       timeoutMs: 5_000,
     });
@@ -67,7 +72,7 @@ describe('startOllama', () => {
     const p = await startOllama({
       spawnFn: (() => child()) as any,
       probeFn: async () => { tries++; return { reachable: false, models: [] }; },
-      hasUnit: noUnit,
+      hasUnit: noUnit, hasCmd,
       timeoutMs: 40,
       intervalMs: 10,
     });
@@ -82,7 +87,7 @@ describe('startOllama', () => {
     await startOllama({
       spawnFn: ((_c: string, _a: string[], o: any) => { opts.push(o); return child(); }) as any,
       probeFn: async () => ({ reachable: true, models: [] }),
-      hasUnit: noUnit,
+      hasUnit: noUnit, hasCmd,
       sleep: async () => {},
     });
     // Only asserted when ollama is actually on this machine; hasCommand gates
@@ -151,13 +156,16 @@ describe('startOllama on a machine whose service manager owns ollama', () => {
       probeFn: async () => ({ reachable: true, models: ['qwen3:8b'] }),
       sleep: async () => {},
       hasUnit: (u: string) => u === 'ollama.service',
+      hasCmd: () => true,
     });
-    // hasCommand('ollama') gates the spawn, so this is only asserted where the
-    // binary is really present.
-    if (calls.length) {
-      expect(calls[0].cmd).toBe('systemctl');
-      expect(calls[0].args).toEqual(['enable', '--now', 'ollama']);
-    }
+    // Asserted unconditionally. This used to be wrapped in `if (calls.length)`
+    // because hasCommand('ollama') gated the spawn and the binary is absent on
+    // a CI runner, which meant the branch this test exists for was asserted
+    // only on machines that already had ollama. A test that skips itself where
+    // it matters is not covering anything.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].cmd).toBe('systemctl');
+    expect(calls[0].args).toEqual(['enable', '--now', 'ollama']);
   });
 });
 

@@ -144,6 +144,11 @@ export type StartOptions = {
   spawnFn?: typeof spawn;
   probeFn?: (url: string, timeoutMs: number) => Promise<LmProbe>;
   sleep?: (ms: number) => Promise<void>;
+  /** Whether a command is on PATH. Injected so the spawn branch can be tested
+   *  on a machine without the `lms` CLI, which is most machines including the
+   *  CI runner. Left to the environment, the test for that branch asserted
+   *  nothing anywhere. */
+  hasCmd?: (cmd: string) => boolean;
 };
 
 const nap = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
@@ -163,9 +168,10 @@ export async function startLmStudio(opts: StartOptions = {}): Promise<LmProbe> {
   const {
     url = LMSTUDIO_URL, timeoutMs = 20_000, intervalMs = 500,
     log = () => {}, spawnFn = spawn, probeFn = probeLmStudio, sleep = nap,
+    hasCmd = hasCommand,
   } = opts;
 
-  if (!hasLmStudio()) return EMPTY;
+  if (!hasLmStudio(hasCmd)) return EMPTY;
 
   try {
     const port = new URL(url).port || '1234';

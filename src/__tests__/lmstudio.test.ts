@@ -113,17 +113,20 @@ describe('startLmStudio', () => {
       }) as any,
       probeFn: async () => ({ reachable: true, models: [], detailed: true }),
       sleep: async () => {},
+      hasCmd: () => true,
     });
-    // hasCommand('lms') gates the spawn, so this only asserts where the CLI is
-    // really installed. The runner is usually not such a machine.
-    if (calls.length) {
-      expect(calls[0].cmd).toBe('lms');
-      expect(calls[0].args).toEqual(['server', 'start', '--port', '4321']);
-      // Detached: the server has to outlive setup, because the node started
-      // immediately afterwards is what needs it.
-      expect(calls[0].opts).toMatchObject({ detached: true });
-      expect(p.reachable).toBe(true);
-    }
+    // Asserted unconditionally. This was wrapped in `if (calls.length)` because
+    // hasCommand('lms') gated the spawn and the CLI is installed on almost no
+    // machine, this one included, so the body never ran and the test passed by
+    // asserting nothing at all. Injecting the check is what makes the branch
+    // reachable.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].cmd).toBe('lms');
+    expect(calls[0].args).toEqual(['server', 'start', '--port', '4321']);
+    // Detached: the server has to outlive setup, because the node started
+    // immediately afterwards is what needs it.
+    expect(calls[0].opts).toMatchObject({ detached: true });
+    expect(p.reachable).toBe(true);
   });
 
   it('gives up rather than hanging when it never comes up', async () => {

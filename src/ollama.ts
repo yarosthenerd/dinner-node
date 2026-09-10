@@ -52,6 +52,12 @@ export type StartOptions = {
   /** Whether a systemd unit of that name exists. Injected for the tests, which
    *  have to exercise the branch this machine is not on. */
   hasUnit?: (unit: string) => boolean;
+  /** Whether a command is on PATH. Injected for the same reason as `hasUnit`,
+   *  and for a sharper one: a developer machine has ollama installed and a CI
+   *  runner does not, so leaving this to the environment meant every test
+   *  below passed locally and returned early in CI without running the branch
+   *  it was written for. Found by the first run of the verify workflow. */
+  hasCmd?: (cmd: string) => boolean;
 };
 
 const nap = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
@@ -72,10 +78,10 @@ export async function startOllama(opts: StartOptions = {}): Promise<Probe> {
   const {
     url = OLLAMA_URL, timeoutMs = 20_000, intervalMs = 500,
     log = () => {}, spawnFn = spawn, probeFn = probeOllama, sleep = nap,
-    hasUnit = hasSystemdUnit,
+    hasUnit = hasSystemdUnit, hasCmd = hasCommand,
   } = opts;
 
-  if (!hasCommand('ollama')) return { reachable: false, models: [] };
+  if (!hasCmd('ollama')) return { reachable: false, models: [] };
 
   // Where a service manager owns this daemon, ask the service manager. Arch's
   // ollama package ships ollama.service, and on those machines a spawned
