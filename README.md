@@ -257,6 +257,24 @@ the caller wrote it.
 The address is `msg.sender` and is also an indexed topic on `JobOpened`, so guests are
 identified on chain by wallet address, not by a pseudonym.
 
+**Two further kinds of record are written while the job runs.** The prompt commitment and
+the address are what `openJob` writes, and they were the whole on-chain footprint until
+checkpointing and failover landed. They are no longer the whole of it:
+
+- **A hash of the answer text produced so far, written repeatedly as the answer grows.**
+  `src/host.ts` publishes `keccak256(stringToHex(prefix))` through `settle()` and
+  `commitCheckpoint()`, and it lands in the `Checkpoint` struct in permanent contract
+  storage along with the token count it covers and a running chain hash. **This hash
+  carries no salt**, because a replacement provider has to recompute it from the answer
+  text it is handed in order to prove where it resumes. Anyone holding a candidate answer
+  can hash it and confirm that this job produced that text, for as long as the chain
+  exists. It is a confirmation test rather than a way to recover the text. `terms.html`
+  2.6 states the consequence for guests.
+- **A record of every settlement and every handover**, each carrying the job, the operator
+  paid, the token count and the amount, and for a handover the addresses of both the
+  outgoing and the incoming operator. A job served by two operators leaves more records
+  than a job served by one, all of them linked to the guest's address through the job.
+
 The salt is 32 random bytes per job, generated in the browser, never stored and never sent.
 After that the commitment cannot be checked against a candidate prompt by anyone, which is
 what makes it functionally unlinkable. The earlier construction hashed the prompt against a
@@ -290,8 +308,11 @@ sanitizer caught is not in there either. Measured recall is well short of comple
 assume bare names, non-Latin text and short number sequences are still in it. There is no
 server-side copy.
 
-The accurate one-liner: **the chain sees a salted hash and the payer's address; the provider
-sees the prompt; your browser keeps nothing unless you ask it to.**
+The accurate one-liner: **the chain sees a salted commitment to the message that opened the
+job, an unsalted hash of the answer as it grows, the payer's address, and every settlement
+and handover; the provider sees the prompt; your browser keeps nothing unless you ask it
+to.** The answer hash is the weak one. Treat an answer you would not want linked to your
+wallet address as disclosed.
 
 ### ZK: verified on chain, and anonymous only once the group is large
 `DinnerRatings.sol` is deployed at `0xeb0d…d87f`. Semaphore proofs are verified **on

@@ -30,7 +30,9 @@ What enterprise or prosumer buyers now require as table stakes: SOC 2, ISO 27001
 
 ## Working method
 
-Read the repo before advising. `.context/HANDOFF.md` and `README.md` overstate current state in places, and `src/host.ts`, the contracts, and `web/api/` show what actually exists. Positioning built on a claim the code does not support will fail diligence, so flag any gap between the pitch and the implementation as a market risk, not just a documentation problem. Note specifically that cloud-kitchen inference is mocked while its settlements are real.
+Read the repo before advising. `.context/HANDOFF.md` and `README.md` overstate current state in places, and `src/host.ts`, the contracts and `web/src/` show what actually exists. Positioning built on a claim the code does not support will fail diligence, so flag any gap between the pitch and the implementation as a market risk, not just a documentation problem.
+
+Corrected 2026-09-12: this section used to point at `web/api/` and to warn that cloud-kitchen inference was mocked while its settlements were real. `web/api/` was deleted in `fd86fb8` and there is no mocked inference left. The current gap that matters for diligence runs the other way: `.context/deltav-profile.json` and the pitch materials understate the build, describing one laptop and an undeployed rework when two nodes, checkpointed failover and per-model pricing are live. Check both directions.
 
 Be direct about weakness. If a planned feature is table stakes rather than a differentiator, say so. If a competitor already ships what is on the roadmap, say so and say how long the gap has existed.
 

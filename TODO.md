@@ -10,10 +10,24 @@ stale and marks several things done that never existed. Read alongside:
 Legend: `[x]` done and verified, `[~]` done but not verified against a live run,
 `[ ]` open.
 
-Last updated 2026-09-07. Item 5 is closed: the registry is redeployed and the
+Last updated 2026-09-12.
+
+**PR #1, measured 2026-09-12: 116 commits over 192 files, 38,142 insertions.**
+Three documents carried three different sizes for it, all of them stale. Quote
+this line or re-measure, and re-measure rather than trusting it after any push:
+`git log --oneline main..HEAD | wc -l` and `git diff --stat main...HEAD | tail -1`.
+
+**Test counts, measured 2026-09-12 by running `npm run verify`: 443 root, 278
+web, 72 contract, 793 in total, all passing.** The older figures in this file
+(192 root, 130 web) were measured on 2026-08-29 and are kept only where they
+are explicitly dated. The jump from 603 to 793 is eight new files written on
+2026-09-12 against modules that had no test at all; see "Test coverage still
+missing" below for what they cover and what they found.
+
+Earlier note, 2026-09-07. Item 5 is closed: the registry is redeployed and the
 handover is proven against the two live nodes. The whole branch is now pushed
-and open as PR #1 into `main`, 107 commits over 189 files, which until this
-week existed only on the operator's laptop.
+and open as PR #1 into `main`, 107 commits over 189 files at that date, which
+until that week existed only on the operator's laptop.
 
 **One correction worth reading before the items below.** The kill-e2e item said
 the daemons are bare `tsx` processes with nothing to restart them. They are
@@ -43,7 +57,8 @@ verified: three live serverless exposures, the engram and privacy layer, a
 plaintext prompt path in the CLI, and thirteen further defects the verification
 agents found, several of which the fixes themselves had introduced. The root of
 the repo now typechecks, and `web/` has 130 regression tests. The root has 192,
-measured 2026-08-29.
+measured 2026-08-29. Both figures have moved: see the counts at the top of this
+file, measured 2026-09-12.
 
 **Status of the deployment, corrected 2026-08-31.** The 2026-08-28 late
 session's work is committed and live on both halves. The daemons picked it up
@@ -460,11 +475,11 @@ audit was written, which is why the section above them was stale for two days.
       malformed resume to the node that does NOT own the job and asserts
       `reassignCount` stays 0.
 
-- [ ] **Retire `dinnernode-tunnel.service`.** The ngrok unit is still running
-      and still holds `litter-unfunded-improvise.ngrok-free.dev` against port
-      4173. Nothing announces it any more, so it is dead weight rather than a
-      hazard, but it is a second public door onto node 1 that no document
-      accounts for. `systemctl --user disable --now dinnernode-tunnel.service`.
+- [x] **Retire `dinnernode-tunnel.service`. Closed, confirmed 2026-09-12.**
+      `systemctl --user list-units --all 'dinnernode*'` lists six units and this
+      is not one of them, so the ngrok door onto node 1 is shut. The six are the
+      two nodes, the discovery listener and the three named Cloudflare tunnels,
+      all active. The item read "still running" until this check.
 - [ ] **Decide the proxy question, on caching grounds only.** The apex and
       `www` are proxied while the migration doc asks for DNS-only. Unchanged
       since 2026-08-29. If the site ever looks stale for reasons the repo does
@@ -1078,9 +1093,50 @@ contract holds **3.678 MON**. Identified so far:
 
 ## Test coverage still missing
 
-`web/` has 135 tests across 7 files and a measured mutation score of 8 of 9 as
-of the pass that recorded it. The root has 223 across 14 files, both counts
-measured 2026-09-02. Gaps, in the order worth adding:
+**Measured 2026-09-12: 443 root tests across 25 files, 278 web tests across 14
+files, 72 contract tests across 5 suites, 793 in total.** The figures below (135
+web across 7 files with a mutation score of 8 of 9, 223 root across 14 files)
+were measured 2026-09-02 and are left in place as the dated record they were.
+
+**Eight test files were added 2026-09-12**, against modules that had none:
+`src/registry.ts`, `src/chain.ts`, `src/planner.ts`, and in `web/src/lib`,
+`registry.ts`, `plan-client.ts`, `ratings.ts`, `engram-library.ts` and
+`gazetteer.ts`. That moved the share of application code sitting in files with
+no direct test from 52% to 43%, 6,758 lines down to 5,552. Each new file was
+mutation-checked rather than only run: six deliberate breakages, one per file
+that has behaviour worth breaking, and all six were caught.
+
+**They found one real defect, in `loadIdentity`.** `web/src/lib/ratings.ts`
+stored `id.privateKey.toString()`, which is a comma separated byte list rather
+than the key, and reading it back derived a DIFFERENT identity. A guest who
+joined the Semaphore group on their first page load came back as somebody else
+on their next one, so the closed, paid job they spent to join bought a
+membership they could never use. Fixed by storing `id.export()`, with the legacy
+format still read as a seed so nobody who already joined loses their place.
+`SECURITY_REVIEW.md` 2.5 is the full account. It went unnoticed because the
+group has no members, so there was nobody to be turned away; it would have
+surfaced on the first real rating.
+
+What is still untested, and why each one resists it:
+
+- `host.ts` (2,112 lines) and `discovery.ts` (264) open a server and take a
+  wallet at import, so neither can be imported by a test as written. This is
+  the largest gap in the repo and the worst placed: `host.ts` signs the
+  transactions, decides the billing and publishes the checkpoint hashes. The
+  pure parts were already extracted into `billing.ts`, `pricing.ts`, `plan.ts`
+  and `takeover.ts`, which are the best-tested files here. What is left needs
+  either a further extraction or the chain harness the e2e scripts want.
+- `setup.ts` (657) and `canary.ts` (283) are CLI entry points that run on
+  import and export nothing.
+- `guest.ts` (115) and `faucet.ts` (32) are the same shape, and small.
+- `App.tsx` (1,356) and the three components have no test runner for React
+  wired up at all; `web/vitest.config.ts` runs jsdom but nothing renders a
+  component. The order flow, the SSE consumption and the failover trigger live
+  here, and the transport underneath them is now covered by `plan-client`.
+- The four e2e scripts under `scripts/` are run by no suite and by no CI job.
+  They need a chain. `verify.yml` says so in a comment.
+
+Gaps, in the order worth adding:
 
 - [x] The `>128` target cap, the 64 character replacement cap and the 16-rule
       cap in `extractSanitizationRules`. Done 2026-08-28.
@@ -1116,8 +1172,8 @@ All blocking. See `SECURITY_REVIEW.md` section 4.
       `TOPUP_DISABLED` was set. The client-side funding invariant in
       `web/src/App.tsx` lost its upper bound with it, since the grant size is
       no longer ours to set.
-- [~] **Node operators have never agreed to `reassign`. Clause written
-      2026-09-10, NOT deployed.** `terms.html` section 5.1 is the provider-side
+- [x] **Node operators now agree to `reassign` before they register. Clause
+      written and deployed 2026-09-10.** `terms.html` section 5.1 is the provider-side
       statement: a job can be taken mid-answer by either route, payment is
       whatever the last on-chain checkpoint evidences, no checkpoint means no
       payment however much was streamed, the 5,355 ms unpaid window is named
@@ -1127,9 +1183,12 @@ All blocking. See `SECURITY_REVIEW.md` section 4.
       it is not first agreed on the day it governs something that does.
       `hosting.html` carries a warn card pointing at it BEFORE the install
       steps rather than after them.
-      **Two things remain.** The wording is the operator's to approve, and the
-      site has to be rebuilt and deployed before any of it is true of
-      `dinnernode.xyz`. Originally raised by the legal review, 2026-08-28.
+      **Closed 2026-09-10, recorded here 2026-09-12.** This item read "NOT
+      deployed" and listed two remaining things for two days after both were
+      done. The deploy went out the same afternoon the clause was written,
+      `SNAPSHOT.md` section 6 records it, and a fetch of both hostnames on
+      2026-09-12 confirms 5.1 present and the three false sentences gone.
+      Originally raised by the legal review, 2026-08-28.
 - [x] **A handover writes MORE on-chain records keyed to the guest's address.**
       Done 2026-09-10, and it was worse than "one sentence in 2.6". Chasing it
       found `SECURITY_REVIEW.md` 2.4: the checkpoint stores an UNSALTED
@@ -1139,7 +1198,17 @@ All blocking. See `SECURITY_REVIEW.md` section 4.
       handover records, 2.2 no longer says the reply is absent from the chain,
       and 2.6 states the unsalted property and what follows from it. Verified
       by reading `checkpoints(12)` and `checkpoints(15)` off `0x7E98...`, not
-      from the code. Not deployed.
+      from the code. **Deployed 2026-09-10** and confirmed live on both
+      hostnames 2026-09-12; the "Not deployed" note here was written before the
+      deploy and never updated.
+      **Two places repeated the corrected sentences and were missed until
+      2026-09-12.** `README.md`'s privacy section and the footer in
+      `web/src/App.tsx` both still gave the old two-item summary, and the footer
+      is the text most guests actually read. Both now describe the checkpoint
+      hash and the settlement and handover records, and the footer links to
+      `terms.html` 2.6. **The site has not been redeployed since those two
+      fixes,** so the footer correction is true of the repository and not yet of
+      `dinnernode.xyz`.
 - [ ] **Independent review of the fixed contract. Scope package written
       2026-09-10, `SECURITY_REVIEW.md` section 5.** Source revision, sha256,
       deployed address, compiler, dependency and test count are pinned, the

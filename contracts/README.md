@@ -7,7 +7,16 @@ across 5 suites.
 |---|---|---|
 | `src/DinnerNodeV2.sol` | [`0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c`](https://testnet.monadvision.com/address/0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c) | **Live.** Everything in the repo points here |
 | `src/DinnerNode.sol` | [`0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd`](https://testnet.monadvision.com/address/0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd) | Superseded, still callable. Reach for it only to `withdraw` or `refund` |
-| `src/DinnerRatings.sol` | `0xeb0d…d87f` | Live. Pins the registry address in its constructor, so it still checks jobs against the superseded one |
+| `src/DinnerRatings.sol` | `0xb418490c7679765ae5e05069c6ebedc132cba731` | **Live.** Redeployed 2026-08-28 against V2. This is what `web/.env` sets as `VITE_RATINGS_ADDRESS`, and what the app reads |
+| `src/DinnerRatings.sol` | `0xeb0de71314322e6b0b5d754997dc3ddc1358d87f` | Superseded. Bound to V1 and not repointable: `node` is immutable and the old IDinnerNode decoded V1's six-field `jobs()`. Its group had no members, so nothing was lost. This row said "Live" until 2026-09-12 |
+
+**Two rows above name a V1 that the code spells differently, and this is not
+resolved.** `src/chain.ts` exports `V1_ADDR` as
+`0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92`, which is also what
+`web/src/config.ts` and `.context/HANDOFF.md` call the superseded registry. The
+`0x2881…FebCd` in the table has no other mention anywhere in the repo. One of
+the two is wrong and neither is load-bearing, since nothing points at either.
+Read it off the chain before quoting it.
 
 ## What V2 changes
 

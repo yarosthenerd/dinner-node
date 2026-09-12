@@ -1349,7 +1349,7 @@ export default function App() {
         </section>
       </main>
       <footer>
-        every token is a tip. · prompts are committed on-chain as salted hashes, never as text. ordering has no ZK layer: the guest wallet address is public on chain and is not anonymised. ratings do, through a semaphore group, and the group is still too small to hide anyone.
+        every token is a tip. · the prompt that opens a job is committed on-chain as a salted hash, never as text. the answer is hashed on-chain as well, repeatedly as it grows, and that hash carries no salt: anyone holding a candidate answer can confirm this job produced it. see <a href="/terms.html#s26">terms 2.6</a>. ordering has no ZK layer: the guest wallet address is public on chain and is not anonymised. ratings do, through a semaphore group, and the group is still too small to hide anyone.
       </footer>
     </div>
   );

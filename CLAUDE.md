@@ -39,6 +39,11 @@ patching, and print MISS markers when patching.
 - `.context/REFRAME.md` is the strategic positioning, superseding HANDOFF
   sections 7, 11 and 12.
 - `SECURITY_REVIEW.md` is the security checklist and open items.
-- `.context/HANDOFF.md` is accurate for operational content (runbook, gas
-  lessons, addresses) and unreliable for status: it marks several things
-  complete that have never existed.
+- `TODO.md` is the roadmap and the single source of truth for what is open.
+- `.context/HANDOFF.md` is unreliable for status: it marks several things
+  complete that have never existed. Its operational content (runbook, addresses,
+  ports, web app behaviour) was also stale until 2026-09-12 and is corrected
+  now, with dated correction notes on each section that moved. Its gas lessons
+  are the part that has held up. When HANDOFF and one of these disagrees,
+  believe the other: `ops/README.md` for units and ports, `web/src/config.ts`
+  for addresses, `web/public/terms.html` for what the chain stores.

@@ -40,8 +40,13 @@
 
 <header>
   <h1>DinnerNode — Terms of Use</h1>
-  <p class="sub">Monad testnet (chain 10143). Version 0.2, draft. Last updated 28 August 2026.</p>
+  <p class="sub">Monad testnet (chain 10143). Version 0.3, draft. Last updated 10 September 2026.</p>
 </header>
+
+<div class="card warn">
+  <p><strong>WHAT CHANGED IN VERSION 0.3, 10 September 2026.</strong></p>
+  <p>Section 5.1 is new, and it binds node operators: a job you are serving can be taken from you mid-answer, and a departing operator that published no checkpoint is paid nothing. Registering is the acceptance, so an operator registered under version 0.2 agreed to a document that did not contain it. Sections 2.1, 2.2 and the summary were corrected in the same revision: they described the on-chain footprint as exactly two items, which stopped being true when checkpointing landed and was therefore false as published. Version 0.2 was dated 28 August 2026.</p>
+</div>
 
 <div class="card warn">
   <p><strong>DRAFT PENDING LEGAL REVIEW.</strong></p>
@@ -96,7 +101,7 @@
 <h3>2.5 Do not enter personal data</h3>
 <p>Do not enter personal data of any kind into DinnerNode. This includes your own personal data and, in particular, personal data about anyone else. Do not enter names, contact details, identifiers, location details, health information, financial information, credentials, confidential business information, or anything you would not be willing to publish. If you enter personal data anyway, you do so on your own responsibility, and the consequences described in section 2.6 apply to it.</p>
 
-<h3>2.6 Erasure, stated honestly</h3>
+<h3 id="s26">2.6 Erasure, stated honestly</h3>
 <p>We cannot delete anything that has been written to the blockchain. No party can. If you make a request for erasure of on-chain data, we will not be able to satisfy it in the ordinary sense of deleting a record, and we will tell you so rather than pretend otherwise.</p>
 <p>What we can describe is the design that limits what the on-chain record discloses. The per-job salt is 32 random bytes generated in your browser, used once to build the hash, and never stored anywhere: not on our servers, not in your browser, and not in the transaction. It ceases to exist when the page function that made it returns. Once the salt is gone, the on-chain hash cannot be checked against a candidate prompt by anyone, including us, because the value required to reproduce it no longer exists. That is what renders the hash functionally unlinkable to your prompt. This is a property of the construction rather than a legal guarantee of erasure, and it does not apply to your wallet address, which remains plainly readable on chain.</p>
 <p><strong>The answer hashes described in section 2.1 do not have this property, and you should not assume they do.</strong> They carry no salt, because a replacement operator has to recompute the same hash from the answer text it is handed in order to prove where it is resuming. Anyone holding a candidate answer can therefore hash it and check it against the chain, and confirm that this job produced that text. That check stays possible for as long as the chain exists. It is a confirmation test rather than a way to recover the text: it tells someone who already has a candidate that they are right, and it does not hand the answer to someone who does not. Treat an answer to a prompt you would not want linked to your wallet address as disclosed rather than protected.</p>

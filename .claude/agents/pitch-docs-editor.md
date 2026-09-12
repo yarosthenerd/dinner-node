@@ -20,15 +20,17 @@ The project's own taglines are exempt from the register rule because they are es
 
 ## Claim discipline, the part that actually matters
 
-Documentation in this repo has drifted from the code, and some of the drift is material. Before you write any factual claim, verify it against the source. Do not trust `.context/HANDOFF.md`; it describes files that have never existed, including `src/discovery.ts`, `SECURITY_REVIEW.md`, `TODO.md`, and `web/public/terms.html`, and it marks some of them complete.
+Documentation in this repo has drifted from the code, and some of the drift is material. Before you write any factual claim, verify it against the source. Do not trust `.context/HANDOFF.md` for status; it marks things complete that never existed. `TODO.md` is the roadmap, `SNAPSHOT.md` the build state, `ops/README.md` the units and ports, `web/src/config.ts` the addresses.
 
-**Real**: the registry, escrow, and settlements; laptop inference via ollama; browser-side ZK proof generation and verification; prompt commitments; cloud failover; engram sanitization.
+Corrected 2026-09-12. Two entries below were stale for a fortnight, and both cut toward overclaiming.
 
-**Mocked**: cloud kitchen inference, which returns a canned paragraph, though its settlements are genuinely on-chain. The simulated hosting card is labeled as such. Discovery is off-chain.
+**Real**: the registry, escrow and settlements; inference via ollama on two nodes running two models at two rates; checkpointed answers and mid-answer failover to a standby node, proven against a node that was actually killed; prompt commitments; on-chain verification of ratings proofs; engram sanitization; per-model pricing derived from each model's own market band and published in `/health`.
 
-Describing the mocked cloud kitchen as real inference in investor or user materials is a misrepresentation, not a rounding error. Flag it every time. When a claim is aspirational, mark it as roadmap.
+**Gone**: the cloud kitchen that returned a canned paragraph was deleted in `fd86fb8`, and `web/api/` with it. There is no mocked inference left to disclose and no serverless surface. Every answer comes from a node an operator runs. The house faucet is gone too; a throwaway wallet asks a third-party public faucet.
 
-Similarly, do not overstate the privacy guarantee. The chain sees a hash and the payer; the provider sees the sanitized prompt in plaintext. The accurate one-liner is: the chain sees hash plus payer, the provider sees the prompt only, and the ZK proof links neither to an identity.
+**Still qualified**: the ratings group is too small to hide anyone, and the site says so. Discovery is off-chain, verified against on-chain state. Ordering has no ZK layer, so the guest wallet address is public.
+
+Do not overstate the privacy guarantee, and note that the accurate statement changed when checkpointing landed. The chain holds a **salted** commitment to the message that opened the job, the guest's address, an **unsalted** hash of the answer text as it grows, and a record of every settlement and handover. The answer hash is the weak one: anyone holding a candidate answer can confirm this job produced it. `web/public/terms.html` 2.1 and 2.6 are the authority. The older one-liner, "the chain sees hash plus payer", is the sentence this project has now published falsely twice; do not reach for it.
 
 ## Vetted numbers, use these exactly
 

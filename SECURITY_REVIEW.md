@@ -370,7 +370,17 @@ it, and a failure is reported to the client on the stream rather than dropped.
 
 ### 1.13 ABI index drift would have broken every client silently
 
-Severity: medium. Status: fixed for the serverless clients, OPEN elsewhere.
+Severity: medium. Status: **FIXED everywhere, closed 2026-08-28, recorded here
+2026-09-12.**
+
+The "OPEN elsewhere" half below was already false when it was written, and it
+named the V2 deploy as its gate. V2 shipped on 2026-09-03 with the fix in place.
+`src/registry.ts` and `web/src/lib/registry.ts` both read through `getJob` and
+`getProvider`, which decode named structs on chain and do no positional indexing
+at all, and `src/host.ts` and `web/src/App.tsx` reach the chain only through
+`readJob` and `readProvider` from those two files. `TODO.md` marks the same work
+done 2026-08-28 with the note that no call site had to change. The original text
+follows.
 
 DinnerNodeV2 grows `jobs()` from six fields to ten and `providers()` from seven
 to eight, moving `open` from index 5 to 9 and `active` from 6 to 7. Every
@@ -382,6 +392,9 @@ when the ABI names its outputs, so named outputs alone do not fix this.
 Fix: `readJob` and `readProvider` in `web/api/p/_lib.js` decode in one place.
 `src/host.ts` and `web/src/App.tsx` still index by hand and must be given the
 same treatment before V2 is deployed. Tracked as TODO.md P1 item 16.
+
+(End of the original text. `web/api/p/_lib.js` was later deleted with the rest
+of `web/api/`; the one-place decode now lives in the two `registry.ts` files.)
 
 ### 1.14 Host LAN commitment was unsalted
 
@@ -500,6 +513,20 @@ or newline.
 
 ## 2. Open items
 
+### 2.1 House wallet is also the cloud-kitchen provider — CLOSED 2026-09-12
+
+Closed by deletion rather than by fix, and the date is when it was recorded
+rather than when it happened. `fd86fb8` deleted the cloud kitchen and the whole
+`web/api/` path went with it, so `web/api/p/_lib.js` does not exist and no live
+code references `HOUSE_PK`. Section 3 of this file has said so for a fortnight
+while this item still read OPEN, which is the same defect the review exists to
+catch, in the review itself.
+
+**The metrics warning outlives the code and still applies.** Any "jobs",
+"settled total" or "earned" figure drawn from the chain includes the closed loop
+this item describes for as long as those historic jobs are on it. Filter them
+out before presenting any number as usage or revenue. The original text follows.
+
 ### 2.1 House wallet is also the cloud-kitchen provider
 
 Severity: medium, and a metrics-integrity problem more than a security one.
@@ -602,10 +629,57 @@ checkpointing went live. **Corrected 2026-09-10** in `web/public/terms.html`:
 2.1 now lists the checkpoint hashes and the settlement and handover records,
 2.2 no longer claims the reply is absent from the chain, 2.6 states the
 unsalted property and what follows from it, and the summary bullet matches.
-**Not deployed at the time of writing.** The correction is only true of the
-site once `web/` is rebuilt and pushed.
+**Deployed 2026-09-10**, the same afternoon, and confirmed live on both
+`dinnernode.xyz` and `www.dinnernode.xyz` on 2026-09-12: 5.1 present, the three
+false sentences gone. This paragraph read "Not deployed at the time of writing"
+until 2026-09-12, having been written minutes before the deploy it was waiting
+on.
+
+**Two copies of the false text survived the correction and were fixed
+2026-09-12**: the privacy section and one-liner in `README.md`, and the footer
+in `web/src/App.tsx`, which said "prompts are committed on-chain as salted
+hashes, never as text" and is the disclosure most guests actually read. The
+lesson is the one this section already carries, one layer out: correcting the
+notice is not the same as correcting everywhere the notice is repeated. **The
+site has not been rebuilt since those two fixes**, so the footer correction is
+true of the repository and not yet of `dinnernode.xyz`.
 
 ---
+
+### 2.5 The Semaphore identity was not the one that was stored — CLOSED 2026-09-12
+
+Severity: medium. A guest lost a paid job, and the anonymity set lost a member.
+Found by a test written on 2026-09-12 against `web/src/lib/ratings.ts`, which
+had never had one.
+
+`loadIdentity` created an `Identity`, handed it to the caller, and stored
+`id.privateKey.toString()`. `privateKey` is a `Uint8Array`, so that string is a
+comma separated list of bytes rather than the key. Read back, `new Identity(s)`
+treats a string as a SEED and derives a key from it, so the value written on the
+first page load never reproduced the identity used on that load.
+
+**What it cost the guest.** Joining the group spends a closed, paid, unused job,
+and the contract records the commitment of the identity that joined. A guest who
+joined on their first page load came back on their next one as a different
+identity, `readGroup` reported `joined: false`, and `rateProvider` refused with
+"this browser has not joined the group with a paid job yet". The job was spent
+and the membership was unreachable. Joining a second time worked and stayed
+working, because every load after the first derives the same identity from the
+same stored string, which is why this looked like "the first join is wasted"
+rather than like an identity that changed constantly.
+
+**Why nobody noticed.** The group has no members, so there was nobody to be
+turned away. The defect would have surfaced on the first real rating.
+
+Fixed by storing `id.export()`, which round-trips through `Identity.import`.
+**A legacy comma-separated value is still read as a seed rather than imported**,
+because anyone who already joined did so as the derived identity, and importing
+their stored value instead would take their membership away. The two formats are
+told apart by shape: an export is base64 and a byte list has commas.
+
+Regression cover: `web/src/lib/__tests__/ratings.test.ts` asserts the round
+trip, the reload, the legacy path and that a legacy value is not rewritten.
+Mutation-checked by restoring the old write, which the suite catches.
 
 ## 2b. Unpriced prefill, found 2026-08-28 (night)
 

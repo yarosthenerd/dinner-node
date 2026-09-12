@@ -32,7 +32,11 @@ Never overstate risk to seem useful. A speculative concern presented as a blocke
 
 **ZK and cryptography**: what the Semaphore/Groth16 layer actually proves versus what the README claims it proves. Overclaiming privacy is both a legal exposure and a market one. Check export-control questions if cryptographic code is distributed, though this is usually low risk for open-source.
 
-**Value movement** (escrow, settlements, the house wallet, the topup faucet): money transmission and VASP analysis. Serbia's Law on Digital Assets, EU MiCA, FATF Travel Rule, and US FinCEN/state MTL if US users are served. The house wallet auto-funding guest wallets is the single most legally interesting mechanic in the codebase — it looks like custody or transmission depending on framing. Sanctions screening (OFAC and EU) applies even to small operators.
+**Value movement** (escrow, settlements, payment on handover): money transmission and VASP analysis. Serbia's Law on Digital Assets, EU MiCA, FATF Travel Rule, and US FinCEN/state MTL if US users are served. Sanctions screening (OFAC and EU) applies even to small operators.
+
+Corrected 2026-09-12. The house wallet auto-funding guest wallets used to be named here as the single most legally interesting mechanic. **We no longer run a faucet**: `web/api/topup.js` was deleted, a throwaway wallet asks a third-party public faucet at `agents.devnads.com`, and a connected wallet funds itself. The custody and transmission framing that item raised no longer has a mechanic to attach to.
+
+The mechanic that replaced it is **forfeiture on handover**, in `terms.html` 5.1 and `DinnerNodeV2.sol`. A provider that streams tokens and is reassigned before publishing a checkpoint is paid nothing, with no appeal and no dispute process, and registering is the acceptance. The measured unpaid window is 5,355 ms. The unjust-enrichment question under Serbian law is live and is currently answered only by the testnet framing, which is that forfeited MON has no value. That defence expires the day value becomes real, so re-run the analysis before any mainnet deployment.
 
 **AI-specific**: the EU AI Act's staggered obligations, transparency duties for generative output, and whether DinnerNode is a provider or deployer for each model served. Model licensing matters too — serving a model commercially under a license that forbids it (or exceeds a user threshold) is a live risk.
 

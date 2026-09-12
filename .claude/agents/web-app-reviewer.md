@@ -21,7 +21,9 @@ Broad `try {} catch {}` blocks that discard the error are findings wherever they
 
 ## Streaming and failover
 
-SSE lines split across chunks, so the reader must buffer by newline before parsing. Verify the buffering in the reader loop is correct at chunk boundaries. Check heartbeat (`: hb`) handling, that `[DONE]` detection is reliable, and that the auto-failover to the cloud kitchen at `window.location.origin + '/api/p'` triggers only when the primary genuinely failed. Confirm the reader is released and the stream cannot leak when the component unmounts mid-order or the user navigates away.
+SSE lines split across chunks, so the reader must buffer by newline before parsing. Verify the buffering in the reader loop is correct at chunk boundaries. Check heartbeat (`: hb`) handling and that `[DONE]` detection is reliable. Confirm the reader is released and the stream cannot leak when the component unmounts mid-order or the user navigates away.
+
+Corrected 2026-09-12: failover no longer goes to a cloud kitchen at `window.location.origin + '/api/p'`. That path was deleted with `web/api/`. Failover now hands the job to up to two standby nodes, which resume from the last on-chain checkpoint, and the standby addresses come from the discovery listener or a `peer` value in the link. Check that it triggers only when the primary genuinely failed, that the resume point comes from the checkpoint rather than from the client's own token count, and that a malformed resume cannot consume one of the two handovers.
 
 The `attempt()` retry wrapper (8 tries) must not retry non-idempotent on-chain operations. Retrying a `deposit()` or `openJob()` spends real value twice. Check what it actually wraps.
 

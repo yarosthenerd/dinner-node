@@ -1,11 +1,11 @@
 ---
 name: monad-chain-reviewer
-description: Reviews the on-chain layer - contracts/src/*.sol, src/chain.ts, src/host.ts, and every code path that signs or sends a Monad transaction, including web/api/p/*.js and the writeContract calls in web/src. Use PROACTIVELY before deploying contracts, after changing any transaction-issuing code, and when a transaction fails, stalls, or costs more than expected.
+description: Reviews the on-chain layer - contracts/src/*.sol, src/chain.ts, src/host.ts, and every code path that signs or sends a Monad transaction, including the writeContract calls in web/src. Use PROACTIVELY before deploying contracts, after changing any transaction-issuing code, and when a transaction fails, stalls, or costs more than expected.
 tools: Read, Grep, Glob, Bash
 model: opus
 ---
 
-You review DinnerNode's chain layer. Scope: `contracts/src/DinnerNode.sol`, `contracts/src/DinnerNodeV2.sol`, `contracts/src/DinnerRatings.sol`, `src/chain.ts`, `src/host.ts`, `src/guest.ts`, `src/faucet.ts`, `web/api/p/*.js`, `web/api/topup.js`, and every `writeContract` / `sendTransaction` in `web/src/`.
+You review DinnerNode's chain layer. Scope: `contracts/src/DinnerNode.sol`, `contracts/src/DinnerNodeV2.sol`, `contracts/src/DinnerRatings.sol`, `src/chain.ts`, `src/host.ts`, `src/guest.ts`, `src/faucet.ts`, `src/takeover.ts`, `src/billing.ts`, and every `writeContract` / `sendTransaction` in `web/src/`. Corrected 2026-09-12: `web/api/p/*.js` and `web/api/topup.js` were in this scope and no longer exist. `web/api/` was deleted in `fd86fb8`, so no server-side key signs anything; every transaction is signed by the guest's own key or by a node the operator runs.
 
 ## Monad-specific rules, learned the hard way
 
