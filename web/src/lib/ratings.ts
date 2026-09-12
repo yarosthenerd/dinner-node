@@ -50,16 +50,40 @@ const IDENTITY_KEY = 'dn_zk_identity';
 /// whole point is that the rating is not linked to the wallet, so reusing the
 /// wallet key as the identity seed would hand that linkage to anyone who ever
 /// sees both.
+/**
+ * Read a stored identity back, in either of the two formats this key has held.
+ *
+ * The legacy format is what `privateKey.toString()` produced: `privateKey` is a
+ * Uint8Array, so that is a comma separated list of bytes rather than the key.
+ * `new Identity(s)` treats a string as a SEED and derives a key from it, so the
+ * value written on the first page load never reproduced the identity that was
+ * used on that load. It did reproduce the same derived identity on every load
+ * after it, which is why the defect looked like "the first join is wasted"
+ * rather than like an identity that changed constantly.
+ *
+ * So the legacy branch must keep deriving, not switch to importing. Anyone who
+ * already joined the group did so as the derived identity, and reading their
+ * stored value any other way would take their membership away. The two formats
+ * are told apart by shape: `export()` is base64 and a byte list has commas.
+ */
+function fromStored(stored: string): Identity {
+  return stored.includes(',') ? new Identity(stored) : Identity.import(stored);
+}
+
 export function loadIdentity(): Identity {
   try {
     const stored = localStorage.getItem(IDENTITY_KEY);
-    if (stored) return new Identity(stored);
+    if (stored) return fromStored(stored);
   } catch {
     // Private mode, or storage disabled. A fresh identity still works for this
     // page load; it just cannot rate twice from the same browser.
   }
   const id = new Identity();
-  try { localStorage.setItem(IDENTITY_KEY, id.privateKey.toString()); } catch {}
+  // `export()` round-trips through `Identity.import`. `privateKey.toString()`
+  // did not, and a guest who joined the group on their first page load lost
+  // that membership on their next one, along with the paid job they spent to
+  // get it.
+  try { localStorage.setItem(IDENTITY_KEY, id.export()); } catch {}
   return id;
 }
 
