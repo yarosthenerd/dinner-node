@@ -638,10 +638,12 @@ worth reading against `SNAPSHOT.md` section 0.
 - [ ] `openFronted` holds the transaction queue across two receipt waits, with
       viem's default 180s timeout each, so a stalled opening delays every
       settle. Bounded, not a deadlock. Wants an explicit timeout.
-- [ ] Duplicate announce timer in `host.ts`, both at 240s, which now costs two
-      nonces per interval.
-- [ ] `FRONT_TOPUP_MON` below `FRONT_BUDGET_MON` makes every `openJob` revert,
-      with no startup validation.
+- [x] Duplicate announce timer in `host.ts`, both at 240s, which now costs two
+      nonces per interval. Closed in `ad4cb49`; this line was not updated then.
+      The nonces are the discovery listener's, off-chain, so it never cost gas.
+- [x] `FRONT_TOPUP_MON` below `FRONT_BUDGET_MON` makes every `openJob` revert,
+      with no startup validation. The node now refuses to start and names both
+      variables. 2026-09-18.
 - [ ] The LAN guest page performs no sanitization, and now says so nowhere. It
       is a page this project serves to a guest who did not choose an API.
 

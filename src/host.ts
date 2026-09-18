@@ -99,6 +99,15 @@ const FRONT_BUDGET = parseEther(process.env.FRONT_BUDGET_MON ?? '0.01');
 // What it deposits when the escrow float runs dry. Several jobs' worth, so a
 // busy endpoint is not paying a deposit transaction per request.
 const FRONT_TOPUP = parseEther(process.env.FRONT_TOPUP_MON ?? '0.1');
+// A top-up smaller than one job's budget can never cover the job it was made
+// for, so every fronted openJob fails, and it fails with "provider balance too
+// low", which sends the operator to the wallet instead of to .env. Refuse to
+// start rather than run a node whose LAN and API paths cannot open a job.
+if (FRONT_TOPUP < FRONT_BUDGET) {
+  console.error(`FRONT_TOPUP_MON (${formatEther(FRONT_TOPUP)}) is below FRONT_BUDGET_MON (${formatEther(FRONT_BUDGET)}).`);
+  console.error('every fronted job would fail. raise FRONT_TOPUP_MON to at least FRONT_BUDGET_MON in .env.');
+  process.exit(1);
+}
 // The OpenAI-compatible endpoint is OFF unless the operator sets keys. It is
 // the one path where a caller spends the node's own deposit rather than their
 // own, so an unset variable has to mean closed rather than open. Compare with
