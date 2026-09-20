@@ -10,7 +10,8 @@ stale and marks several things done that never existed. Read alongside:
 Legend: `[x]` done and verified, `[~]` done but not verified against a live run,
 `[ ]` open.
 
-Last updated 2026-09-12.
+Last updated 2026-09-20. The week of 2026-09-21 is planned in its own
+section below and outranks "Now" for that week.
 
 **PR #1, measured 2026-09-12: 116 commits over 192 files, 38,142 insertions.**
 Three documents carried three different sizes for it, all of them stale. Quote
@@ -157,6 +158,79 @@ GPU seconds. It closes three things at once:
 `billed` count the way reasoning already does, which needs no contract change,
 but `maxTokensPerSecond` is 400 on node 1 and a 31k prefill in 63s is 490
 tok/s. The throughput bound would clamp it. Settle that before writing code.
+
+## Week of 2026-09-21: A4 gets a date or it gets cut
+
+Written 2026-09-20. **This section outranks "Now" below for one week.** It
+exists because the roadmap gap list at the end of this file has said since
+2026-09-02 that there is not one demand item here, and that the entire "Now"
+list can be completed without a single external user existing. That was still
+true on 2026-09-20.
+
+**The test, written before the week starts.** By Friday 2026-09-25, five
+conversations with people who buy inference have happened. If at least two name
+a workload where a lost generation costs more than the tokens it consumed, A4
+survives and items 5, 6 and 9 keep their priority. If fewer than two do, A4 is
+recorded resolved negative on Friday and the following week chooses between the
+auditable-metered-inference thesis and a narrower one. No extension, and no more
+desk research: the A4 section already says five conversations settle this and
+more searching does not.
+
+- [x] **Mon 21 Sep. Ship what was already written.** The 2026-09-18 tree,
+      uncommitted for two days: `countryCode()` validation, the `hosting.html`
+      settings table, and the tests. Committed 2026-09-20 as `9bfe649` after a
+      clean `npm run verify`. **798 tests passing: 448 root, 278 web, 72
+      contract**, up from the 793 measured 2026-09-12, the five new ones being
+      `countryCode()`.
+- [ ] **Mon 21 Sep. Deploy `web/`.** The site has not been redeployed since
+      2026-09-12. The corrected privacy footer in `web/src/App.tsx`, the one
+      that used to say the reply is absent from the chain when an unsalted
+      keccak of the answer prefix sits in permanent contract storage, is true
+      of this repository and false of `dinnernode.xyz`. `hosting.html` above
+      rides along. This is a published privacy claim that is wrong, so it goes
+      out before anything else in the week.
+- [ ] **Mon PM to Tue 22 Sep. Twenty names, one set of questions.** Target the
+      workload A4 describes rather than the crypto audience: long-running agent
+      operators, batch document pipelines, people serving their own fine-tunes.
+      The ask is not a pitch. Three questions, the same three every time so the
+      five answers are comparable: what breaks when a stream dies mid-answer,
+      what do you do about it today, what did it cost you the last time it
+      happened.
+- [ ] **Wed 23 Sep. Node 3, on the operator's older PC.** `qwen3:8b`, which
+      `src/models.ts recommend()` already returns for a budget of this size.
+      This is the cheapest thing on the list with three separate payoffs:
+      - It closes the `OLLAMA_MAX_LOADED_MODELS=1` item under "What the
+        decision commits us to", which is currently worked around by a restart
+        ORDER rather than fixed. A second machine has its own ollama, so node 1
+        and node 2 stop evicting each other's models.
+      - It makes the migration demo cross-MACHINE rather than cross-process.
+      - It gives the canary a second vantage point, which gap 4 asks for.
+
+      **What it does not do is close gap 3.** One operator with three boxes is
+      still one seller. Every demo across them is house-to-house, and the
+      honest note under item 5 still applies word for word. "One stranger
+      running a node" stays open.
+- [ ] **Thu 24 Sep. Record the migration demo, across two machines.** Item 6,
+      outstanding since the mechanism was proven on 2026-09-03. With node 3
+      live it is worth more than it was: a real second box, a real kill, and
+      the on-chain receipt showing two providers paid for disjoint token
+      ranges. **Use the live figures, 187 ms to the handover request and
+      5,294 ms to the first new token, not the mock run's 9 ms and 33 ms.** The
+      5.3 s is model reload and it is the honest number. Doubles as the artifact
+      to send anyone from the five conversations who asks what exists.
+- [ ] **Fri 25 Sep. Settle A4 and write the verdict down, dated, with the
+      evidence.** Either outcome closes the most expensive open line in this
+      file. Gap 6 asks for a test and a date; this section is that test and
+      that date.
+- [ ] **Sat and Sun, if the week ran clean.** Run the red team.
+      `ops/redteam/tapcached.yaml` is staged against `qwen3:8b` through the same
+      ollama endpoint `host.ts` talks to, and has never been run. Node 3 makes
+      it affordable, because the load no longer evicts node 1's model.
+
+**Explicitly not this week**, and each one is real: commissioning the contract
+review, entity formation, EU AI Act Article 50(2) marking, the OpenRouter
+application. None of the four changes what the five conversations teach, and
+three of them cost money that the A4 verdict should be allowed to direct.
 
 ## Now: the next two weeks
 
