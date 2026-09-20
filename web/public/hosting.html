@@ -239,9 +239,17 @@ the point is that the mechanism works, not that it pays.</p>
   <tr><td><code>CONTEXT_TOKENS</code></td><td>32768</td><td>Context window. Sent to Ollama explicitly, so it applies whatever the model tag says.</td></tr>
   <tr><td><code>MAX_CONCURRENT_JOBS</code></td><td>2</td><td>How many guests you serve at once.</td></tr>
   <tr><td><code>HOST_PRIORITY</code></td><td><code>owner</code></td><td><code>owner</code> throttles guests when you need the machine; <code>guest</code> does the opposite.</td></tr>
-  <tr><td><code>OLLAMA_KEEP_ALIVE</code></td><td><code>30m</code></td><td>How long the model stays in VRAM between jobs. Loading a large model takes tens of seconds, so unloading it between jobs is expensive.</td></tr>
+  <tr><td><code>OLLAMA_KEEP_ALIVE</code></td><td><code>30m</code></td><td>How long the model stays in VRAM between jobs. Loading a large model takes tens of seconds, so unloading it between jobs is expensive. A machine dedicated to serving can set <code>24h</code>.</td></tr>
   <tr><td><code>PUBLIC_URL</code></td><td>unset</td><td>Set this if you run your own tunnel instead of letting the script open one.</td></tr>
+  <tr><td><code>LANJOB</code></td><td><code>lan</code></td><td><strong>Spends your MON.</strong> The free guest page on your network opens jobs your node pays for. <code>lan</code> allows only machines on your network, <code>off</code> allows nobody, and <code>open</code> allows anyone who can reach the port, which behind a tunnel is everyone.</td></tr>
+  <tr><td><code>API_KEYS</code></td><td>unset (endpoint off)</td><td><strong>Spends your MON.</strong> Turns on the OpenAI-compatible endpoint at <code>/v1/chat/completions</code>. A caller there holds a key, not a wallet, so every request is paid from your node's own deposit. Anyone holding one of these keys can spend it. Comma separated.</td></tr>
+  <tr><td><code>V1_DAILY_TOKENS</code></td><td>2000000</td><td>The most that endpoint will bill in a rolling day. Kept in memory, so it resets when the node restarts: a brake on a runaway client, not an accounting system.</td></tr>
+  <tr><td><code>FRONT_BUDGET_MON</code></td><td>0.01</td><td>What your node escrows for each job it pays for through <code>LANJOB</code> or <code>API_KEYS</code>. Closing a job returns the unspent part.</td></tr>
+  <tr><td><code>FRONT_TOPUP_MON</code></td><td>0.1</td><td>What your node deposits when that escrow runs dry. Must be at least <code>FRONT_BUDGET_MON</code>, or the node will not start.</td></tr>
+  <tr><td><code>PROVIDER_IS_READY</code></td><td>unset (not ready)</td><td>Set to <code>1</code> to tell aggregators your node wants routed traffic.</td></tr>
+  <tr><td><code>DATACENTER_COUNTRY</code></td><td>unset</td><td>Where your machine is, as a two-letter ISO code such as <code>RS</code>. Published to aggregators exactly as you set it. Nothing verifies it, so declare only where the machine actually is. The node will not start on a value that is not a country code.</td></tr>
 </table>
+<p class="dim">The full list, with comments, is in <code>.env.example</code> in the repository.</p>
 
 <div class="card">
   <h3>A note on VRAM, which is the whole game</h3>

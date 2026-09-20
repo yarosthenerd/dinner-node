@@ -585,14 +585,21 @@ worth reading against `SNAPSHOT.md` section 0.
       `PUBLIC_URL` opens a quick tunnel at boot. `hosting.html` calls
       cloudflared optional and terms 2.7 lists who sees the prompt without
       naming a transit provider. One sentence in each.
-- [ ] **`hosting.html` settings table is stale in a way that touches money.**
+- [x] **`hosting.html` settings table is stale in a way that touches money.**
+      Fixed 2026-09-18: all seven rows added, the two that spend MON marked so,
+      and the keep-alive row notes 24h. The `30m` default was right; it is
+      the code's default, and the live nodes override it. Not live until the
+      next web deploy.
       It omits `API_KEYS`, `FRONT_BUDGET_MON`, `FRONT_TOPUP_MON`,
       `V1_DAILY_TOKENS`, `LANJOB`, `DATACENTER_COUNTRY` and
       `PROVIDER_IS_READY`, and states `OLLAMA_KEEP_ALIVE` default `30m` where
       both live nodes run `24h`. An operator reading only that page would never
       learn that setting `API_KEYS` lets a stranger spend their deposit.
       `.env.example` now documents all of them and is the source to copy from.
-- [ ] **`DATACENTER_COUNTRY` is published unvalidated.** A node can declare
+- [x] **`DATACENTER_COUNTRY` is published unvalidated.** Fixed 2026-09-18:
+      `countryCode()` in `src/provider-catalog.ts`, 5 tests, and `host.ts`
+      refuses to start on a value that is not a country. `hosting.html` says
+      the value is declared, not verified. A node can declare
       `DE` while running in Belgrade and nothing checks it. Validate against
       ISO 3166-1 alpha-2 at startup, the way `MODEL` now refuses, and say in
       `hosting.html` that the value is operator-declared and republished

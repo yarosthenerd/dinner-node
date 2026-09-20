@@ -18,7 +18,7 @@ import { authorize, chunk, completion, DONE, errorBody, errorChunk, modelsBody, 
 import { announceMessage, controlMessage, originOf, validNonce } from './attest';
 import { reach } from './reach';
 import { startQuickTunnel } from './tunnel';
-import { catalogDocument } from './provider-catalog';
+import { catalogDocument, countryCode } from './provider-catalog';
 import { DEFAULT_MON_USD, breakEvenTokens, cheaperThanCount, crossoverRatio, describeFreeInput, describeRate, resolveRate, usdPerMillion, type Policy, type Resolved } from './pricing';
 
 const w = wallet(process.env.PROVIDER_PK!);
@@ -123,7 +123,16 @@ const LANJOB = (process.env.LANJOB ?? 'lan').toLowerCase();
 // What the provider catalog says about where this machine is and whether it
 // wants routed traffic. Both default to the cautious answer: no location
 // declared, and not ready. An operator opts in to each.
-const DATACENTER_COUNTRY = process.env.DATACENTER_COUNTRY ?? null;
+// The country is republished verbatim to an aggregator, so a value that is not
+// a country stops the node here rather than going out in a listing.
+let DATACENTER_COUNTRY: string | null = null;
+try {
+  DATACENTER_COUNTRY = countryCode(process.env.DATACENTER_COUNTRY);
+} catch (e: any) {
+  console.error(e.message);
+  console.error('set DATACENTER_COUNTRY in .env to a two-letter code such as RS, or unset it.');
+  process.exit(1);
+}
 const DATACENTER_REGION = process.env.DATACENTER_REGION ?? null;
 const PROVIDER_IS_READY = process.env.PROVIDER_IS_READY === '1';
 // A ceiling on what the endpoint can bill in a rolling day. In memory, so it

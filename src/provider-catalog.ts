@@ -127,3 +127,25 @@ export function modelDocument(i: CatalogInput): Record<string, unknown> {
 export function catalogDocument(models: CatalogInput[]): string {
   return JSON.stringify({ data: models.map(modelDocument) });
 }
+
+// Codes ICU names as regions that are not ISO 3166-1 alpha-2 countries: the
+// user-assigned ranges (AA, QM-QZ, XA-XZ, ZZ) and the exceptional
+// reservations. `UK` is the one an operator will actually type; GB is the code.
+const NOT_A_COUNTRY = /^(AA|Q[M-Z]|X[A-Z]|ZZ|EU|EZ|UK|UN)$/;
+const REGIONS = new Intl.DisplayNames(['en'], { type: 'region', fallback: 'none' });
+
+/**
+ * DATACENTER_COUNTRY, checked before it is republished to an aggregator. The
+ * value is operator-declared and nothing can verify where the machine is, but
+ * it can at least be a country. Lowercase is accepted and normalized. Throws
+ * on anything else, so the caller can refuse to start the way an unknown MODEL
+ * does.
+ */
+export function countryCode(raw: string | undefined): string | null {
+  if (raw === undefined || raw.trim() === '') return null;
+  const c = raw.trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(c) || NOT_A_COUNTRY.test(c) || !REGIONS.of(c)) {
+    throw new Error(`DATACENTER_COUNTRY=${raw} is not an ISO 3166-1 alpha-2 country code${c === 'UK' ? ' (the United Kingdom is GB)' : ''}`);
+  }
+  return c;
+}

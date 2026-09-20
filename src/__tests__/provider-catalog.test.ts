@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { catalogDocument, modelDocument, perToken } from '../provider-catalog';
+import { catalogDocument, countryCode, modelDocument, perToken } from '../provider-catalog';
 
 const base = {
   id: 'qwen3.8:27b',
@@ -98,5 +98,25 @@ describe('the catalog', () => {
     expect(Object.keys(j)).toEqual(['data']);
     expect(j.data).toHaveLength(1);
     expect(j.data[0].id).toBe('qwen3.8:27b');
+  });
+});
+
+describe('DATACENTER_COUNTRY', () => {
+  it('is null when unset or blank, the cautious default', () => {
+    expect(countryCode(undefined)).toBeNull();
+    expect(countryCode('  ')).toBeNull();
+  });
+  it('accepts a real code and normalizes case', () => {
+    expect(countryCode('RS')).toBe('RS');
+    expect(countryCode(' de ')).toBe('DE');
+  });
+  it('refuses codes ICU names that are not countries', () => {
+    for (const c of ['EU', 'ZZ', 'QO', 'XK', 'AA']) expect(() => countryCode(c)).toThrow(/ISO 3166-1/);
+  });
+  it('points the operator who typed UK at GB', () => {
+    expect(() => countryCode('UK')).toThrow(/is GB/);
+  });
+  it('refuses unassigned and malformed values', () => {
+    for (const c of ['JJ', 'BX', 'XY', 'SRB', 'Serbia', 'R5', 'D']) expect(() => countryCode(c)).toThrow();
   });
 });
