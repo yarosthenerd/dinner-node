@@ -10,8 +10,9 @@ stale and marks several things done that never existed. Read alongside:
 Legend: `[x]` done and verified, `[~]` done but not verified against a live run,
 `[ ]` open.
 
-Last updated 2026-09-20. The week of 2026-09-21 is planned in its own
-section below and outranks "Now" for that week.
+Last updated 2026-09-21. The week of 2026-09-21 is planned in its own
+section below and outranks "Now" for that week. It was rewritten on
+2026-09-21 to test Option 1, spend-capped auditable inference, in place of A4.
 
 **PR #1, measured 2026-09-12: 116 commits over 192 files, 38,142 insertions.**
 Three documents carried three different sizes for it, all of them stale. Quote
@@ -159,22 +160,59 @@ GPU seconds. It closes three things at once:
 but `maxTokensPerSecond` is 400 on node 1 and a 31k prefill in 63s is 490
 tok/s. The throughput bound would clamp it. Settle that before writing code.
 
-## Week of 2026-09-21: A4 gets a date or it gets cut
+## Week of 2026-09-21: test Option 1, spend-capped auditable inference
 
-Written 2026-09-20. **This section outranks "Now" below for one week.** It
-exists because the roadmap gap list at the end of this file has said since
-2026-09-02 that there is not one demand item here, and that the entire "Now"
-list can be completed without a single external user existing. That was still
-true on 2026-09-20.
+Written 2026-09-20 as the A4 test week, **rewritten 2026-09-21 after the
+operator chose a new direction.** This section outranks "Now" below for one
+week. The reordering of "Now" waits for Friday's verdict, because items 5, 6
+and 9 only keep their priority if Option 1 passes.
 
-**The test, written before the week starts.** By Friday 2026-09-25, five
-conversations with people who buy inference have happened. If at least two name
-a workload where a lost generation costs more than the tokens it consumed, A4
-survives and items 5, 6 and 9 keep their priority. If fewer than two do, A4 is
-recorded resolved negative on Friday and the following week chooses between the
-auditable-metered-inference thesis and a narrower one. No extension, and no more
-desk research: the A4 section already says five conversations settle this and
-more searching does not.
+**Why the week changed.**
+
+- **A4 went negative before the week started.** The operator had six informal
+  conversations, with people they know, and none had a real problem with a
+  stream dying mid-answer: either it never happened or resending the prompt was
+  enough. Caveat: those six were not checked against the target segment. This
+  matches the desk evidence in the A4 section. The formal record goes in that
+  section on Friday together with this week's verdict.
+- **Free cached input is not an edge either.** Qwen, DeepSeek and Anthropic
+  bill cached reads at 0.1x input, about $0.015/M for a Qwen 35B, so zero
+  saves a buyer almost nothing. One July 2026 test found Qwen caching did not
+  pass through OpenRouter, but a buyer can go direct.
+- **Option 1, chosen 2026-09-21: spend-capped, auditable inference for
+  agents.** Each job gets a budget it cannot exceed and a receipt for every
+  token. TechCrunch reported on 2026-06-05 that Uber spent its 2026 AI coding
+  budget by April and that enterprise buyers now ask for "visibility,
+  auditability and token controls". Paid vendors exist (Pay-i, Paid, Portal26,
+  Waxell, Ramp, Datadog), so buyers are already paying for this category.
+  Migration moves to a supporting role: a job that loses its node is not
+  billed twice.
+
+**What already exists, so the claim stays honest.** In `DinnerNodeV2.sol`:
+per-job escrow (`openJob` budget, `topUp`), a plan ceiling the contract
+enforces whatever the escrow holds (`commitPlan`, `remainingBudget`), a
+`JobExhausted` event when the cap is hit, checkpoints, and `reassign` with each
+provider paid for its own token range. **What does not exist:** a budget per
+agent or per team across many jobs, any funding path without a wallet (fronted
+jobs in `src/host.ts openFronted()` are the nearest thing), and any backend
+beyond our own Qwen nodes.
+
+**The known risks, written down before the conversations.** Teams with the
+worst spend problem mostly run frontier models, so passing this test probably
+means DinnerNode becomes a metering and escrow layer in front of other
+providers. Soft caps already exist in OpenRouter per-key limits and LiteLLM
+budgets, so the edge is only that the cap is enforced by contract and the
+receipt can be checked by a third party. Agent micropayments are thin: TRM
+found 0.6% to 7.5% of x402 value is genuinely agentic, so do not pitch this as
+agent payments.
+
+**The test.** By Friday 2026-09-25, five conversations with teams running
+agents in production. **Option 1 passes if at least two describe a cap that was
+missing or failed and cost real money, or a finance or audit need that the
+provider's invoice does not meet.** If it passes, the following week scopes the
+gateway question: whether to front other providers, and how to fund escrow
+without a wallet. If it fails, the following week moves to Option 2, private
+fleet software for small teams. No extension.
 
 - [x] **Mon 21 Sep. Ship what was already written.** The 2026-09-18 tree,
       uncommitted for two days: `countryCode()` validation, the `hosting.html`
@@ -182,55 +220,116 @@ more searching does not.
       clean `npm run verify`. **798 tests passing: 448 root, 278 web, 72
       contract**, up from the 793 measured 2026-09-12, the five new ones being
       `countryCode()`.
-- [ ] **Mon 21 Sep. Deploy `web/`.** The site has not been redeployed since
-      2026-09-12. The corrected privacy footer in `web/src/App.tsx`, the one
-      that used to say the reply is absent from the chain when an unsalted
-      keccak of the answer prefix sits in permanent contract storage, is true
-      of this repository and false of `dinnernode.xyz`. `hosting.html` above
-      rides along. This is a published privacy claim that is wrong, so it goes
-      out before anything else in the week.
-- [ ] **Mon PM to Tue 22 Sep. Twenty names, one set of questions.** Target the
-      workload A4 describes rather than the crypto audience: long-running agent
-      operators, batch document pipelines, people serving their own fine-tunes.
-      The ask is not a pitch. Three questions, the same three every time so the
-      five answers are comparable: what breaks when a stream dies mid-answer,
-      what do you do about it today, what did it cost you the last time it
-      happened.
-- [ ] **Wed 23 Sep. Node 3, on the operator's older PC.** `qwen3:8b`, which
-      `src/models.ts recommend()` already returns for a budget of this size.
-      This is the cheapest thing on the list with three separate payoffs:
-      - It closes the `OLLAMA_MAX_LOADED_MODELS=1` item under "What the
-        decision commits us to", which is currently worked around by a restart
-        ORDER rather than fixed. A second machine has its own ollama, so node 1
-        and node 2 stop evicting each other's models.
-      - It makes the migration demo cross-MACHINE rather than cross-process.
-      - It gives the canary a second vantage point, which gap 4 asks for.
-
-      **What it does not do is close gap 3.** One operator with three boxes is
-      still one seller. Every demo across them is house-to-house, and the
-      honest note under item 5 still applies word for word. "One stranger
-      running a node" stays open.
-- [ ] **Thu 24 Sep. Record the migration demo, across two machines.** Item 6,
-      outstanding since the mechanism was proven on 2026-09-03. With node 3
-      live it is worth more than it was: a real second box, a real kill, and
-      the on-chain receipt showing two providers paid for disjoint token
-      ranges. **Use the live figures, 187 ms to the handover request and
-      5,294 ms to the first new token, not the mock run's 9 ms and 33 ms.** The
-      5.3 s is model reload and it is the honest number. Doubles as the artifact
-      to send anyone from the five conversations who asks what exists.
-- [ ] **Fri 25 Sep. Settle A4 and write the verdict down, dated, with the
-      evidence.** Either outcome closes the most expensive open line in this
-      file. Gap 6 asks for a test and a date; this section is that test and
-      that date.
+- [ ] **Mon 21 Sep. Deploy `web/`.** Unchanged and still first. The site has
+      not been redeployed since 2026-09-12. The corrected privacy footer in
+      `web/src/App.tsx`, the one that used to say the reply is absent from the
+      chain when an unsalted keccak of the answer prefix sits in permanent
+      contract storage, is true of this repository and false of
+      `dinnernode.xyz`. `hosting.html` rides along.
+      `cd ~/monad-synapse/web && npm run build && npx vercel --prod --yes`
+- [ ] **Mon PM to Tue 22 Sep. Twenty names in the new segment.** Engineering
+      leads, platform and FinOps people at teams running agents in production,
+      where token spend is a line item somebody answers for. Individual chat
+      users and the crypto audience are out of scope. The same three questions
+      every time, so the five answers are comparable:
+      1. Has an AI bill surprised you in the last three months, and by how
+         much?
+      2. How do you cap spend per agent or per job today, and has a cap ever
+         failed?
+      3. Would a receipt your finance team can check themselves change
+         anything, or is the provider's invoice enough?
+- [x] **Tue 22 Sep. Write the Option 1 claim sheet.** Done early, 2026-09-21:
+      `.context/option1-claims.md`. Eight claims that may be said, each citing
+      a function or event, and what may not be said. **Read its "Cannot say"
+      section before the first conversation.** The biggest gap: the
+      OpenAI-compatible `/v1` endpoint, the path a developer would use, runs
+      on jobs the node opens against itself, so the on-chain cap does not
+      reach an API-key buyer at all.
+- [~] **Thu 24 Sep. Record the capped-job demo.** Run early, 2026-09-21, as a
+      transcript rather than a screen recording: `scripts/capped-job-demo.mjs`,
+      job#16, output in `.context/demos/2026-09-21-capped-job.md` with every
+      transaction linked. An agent loop against 0.06 MON of escrow stopped
+      after two steps with exactly 0.06 MON paid, `JobExhausted` emitted, and
+      the settlements summing to `paid` to the wei. Marked `[~]` because a
+      screen recording for sending to prospects is still the operator's to
+      make, and because the run found the defects below. It used the escrow
+      as the cap. The plan version in the original wording would not have
+      worked, because `JobExhausted` fires only on escrow (claim sheet,
+      "Cannot say").
+- [~] **Defects the demo found, 2026-09-21, and what was fixed the same
+      evening.** Detail in `.context/option1-claims.md`. **Nothing here is
+      committed yet.** `npm run verify`: **809 passing, 454 root, 278 web, 77
+      contract**, up from 798. Both nodes restarted on the new code, node 2
+      then node 1, and node 1's model is still resident.
+      - [x] **D1. The node's cap did not bind during reasoning.** Fixed in
+            `serveJob` (`src/host.ts`) through `reachedCeiling` in
+            `src/billing.ts`, with tests. **Verified live, job#17:** the node
+            stopped at its ceiling every time (1,063, then 183), and `tokens`
+            on chain matched `paid` exactly. **Policy consequence, now
+            measured:** a step that hits the cap before any visible token is
+            written off by the node, per the existing plan-step policy. On
+            job#17 that was five steps and about 3,550 tokens of unpaid work
+            with reasoning on. The guest paid nothing for them and also got
+            nothing. D4 is how an agent avoids it.
+      - [~] **D2. `j.tokens` overstated what was paid.** Fixed in
+            `DinnerNodeV2.sol` through `_tokensPaidFor`, in `settle` and
+            `_reassign`, rounded up so a final partial token counts as one.
+            Five Foundry tests (`test_6_e` to `test_6_i`), each confirmed to fail
+            on the old contract, `test_6_e` reproducing job#16's 3,680 exactly.
+            **Not deployed:** it needs a redeploy, a new address in
+            `web/src/config.ts` and `.env`, and both nodes re-registered. On the
+            live contract it only bites when a node over-serves, which the D1
+            fix stops, so the redeploy can wait for the next contract change.
+            Quote `paid`, not `tokens`, until then.
+      - [x] **D3. The node ignored a plan ceiling below the escrow.** `/job`,
+            `/plan` and `/plan/run` now read the contract's `remainingBudget()`
+            through `readRemaining` in `src/registry.ts`. **Verified live,
+            job#19:** escrow 2,000 tokens, plan ceiling 500, node served exactly
+            500 and was paid 0.015 MON. **Same bug found and fixed in
+            `refuseTakeover`** (`src/takeover.ts`): a standby would have paid
+            handover gas for a job whose ceiling was spent. Test mutation-checked.
+      - [x] **D4. Reasoning could spend a whole budget with no answer.** `/job`
+            now accepts `think: false`, and the default is unchanged, so the
+            site behaves as before. **Measured on the same 0.06 MON budget:**
+            reasoning on (job#17), 2 of 8 steps answered for 0.0545 MON;
+            reasoning off (job#18), all 8 answered for 0.0444 MON with 26% of
+            the budget left. `scripts/capped-job-demo.mjs --think off`. Open
+            product call: whether agent-facing jobs should default to off.
+      - [ ] **D5. Jobs below the handover reserve have no failover.** Not a
+            code defect, so not changed. The reserve is 320,000 gas x 102 gwei x
+            `TAKEOVER_MIN_MARGIN` 3 = 0.098 MON. One handover costs about 0.033
+            MON of gas, which is roughly 1,100 tokens at node 1's rate, so a
+            2,000-token job cannot pay for its own failover at any margin worth
+            having. Options are an operator decision: lower the margin, measure
+            real `reassignWithAuth` gas in place of the 320,000 fallback, or
+            stop claiming failover for small jobs. The claim sheet already does
+            the third.
+- [ ] **Fri 25 Sep. Write down both verdicts, dated, with the evidence.**
+      A4 resolved negative in the A4 section, with the six informal
+      conversations and their caveat. Option 1 passed or failed against the
+      test above, with the five conversations.
+- [ ] **If time, Wed 23 Sep or the weekend. Node 3 on the operator's older
+      PC.** `qwen3:8b`, which `src/models.ts recommend()` already returns for
+      this budget. Moved down because it does not test Option 1. It still
+      fixes node 1 and node 2 evicting each other's models
+      (`OLLAMA_MAX_LOADED_MODELS=1`), gives the canary a second vantage point
+      (gap 4), and makes Thursday's kill cross-machine. It does not close gap
+      3: one operator with three boxes is still one seller.
 - [ ] **Sat and Sun, if the week ran clean.** Run the red team.
-      `ops/redteam/tapcached.yaml` is staged against `qwen3:8b` through the same
-      ollama endpoint `host.ts` talks to, and has never been run. Node 3 makes
-      it affordable, because the load no longer evicts node 1's model.
+      `ops/redteam/tapcached.yaml` is staged against `qwen3:8b` through the
+      same ollama endpoint `host.ts` talks to, and has never been run. It needs
+      node 3 so the load does not evict node 1's model.
 
 **Explicitly not this week**, and each one is real: commissioning the contract
 review, entity formation, EU AI Act Article 50(2) marking, the OpenRouter
-application. None of the four changes what the five conversations teach, and
-three of them cost money that the A4 verdict should be allowed to direct.
+application. **New to this list:** building a gateway in front of other
+providers, per-agent or per-team budgets across jobs, and card-funded escrow.
+All three are what passing the test would lead to, and none should be built
+before Friday says it passed.
+
+Sources for the research above: TechCrunch 2026-06-05, "The token bill comes
+due"; china-llm.com on OpenRouter prompt caching and on caching prices across
+eight APIs; PYMNTS and TRM on x402; UsageBox on the agent metering gap.
 
 ## Now: the next two weeks
 
@@ -832,6 +931,10 @@ not true of the model we actually serve.
       Resolving it is worth more than anything else in this file.
 
 ### A4 is CONTESTED, 2026-08-28 (night)
+
+**2026-09-21: treated as negative for planning.** Six informal conversations
+found no one with a real problem. The formal verdict is recorded here on
+Friday 2026-09-25. See "Week of 2026-09-21" for what replaced it.
 
 A market review recommended cutting A4 outright and recording it as resolved
 negative. **It is recorded as contested rather than cut, because that is a
