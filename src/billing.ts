@@ -115,3 +115,16 @@ export function serveCeiling(c: {
   if (spendable <= 0n) return 0;
   return affordableTokens(spendable, c.ratePerMillion);
 }
+
+/**
+ * Whether a stream has produced as many billed tokens as it may, counting
+ * reasoning. One rule for both paths through the generation loop, because the
+ * loop used to test it on the visible path only: a model still reasoning ran
+ * straight past the ceiling, and the first visible token then found the stream
+ * far over it. Job#16, 2026-09-21: ceiling 1,156, served 2,835 reasoning
+ * tokens and 1 visible, and the contract clamped the payment, so the node did
+ * the excess for nothing.
+ */
+export function reachedCeiling(visible: number, reasoning: number, cap: number): boolean {
+  return visible + reasoning >= cap;
+}

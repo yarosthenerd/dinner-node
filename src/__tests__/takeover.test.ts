@@ -144,6 +144,15 @@ describe('refuseTakeover', () => {
       .toBe('job cannot cover the handover');
   });
 
+  it('refuses a job whose plan ceiling is spent though its escrow is not', async () => {
+    // Escrow alone says there is plenty left. The contract says a committed
+    // plan ceiling leaves nothing payable, and that is the figure that decides.
+    const auth = await sign();
+    const job = { escrow: 10n ** 18n, paid: 0n };
+    expect(refuseTakeover(check({ auth, job }))).toBeNull();
+    expect(refuseTakeover(check({ auth, job, remainingWei: 0n }))).toBe('job cannot cover the handover');
+  });
+
   it('takes one that covers it with margin to spare', async () => {
     const auth = await sign();
     expect(refuseTakeover(check({ auth, job: { escrow: 3n * 10n ** 15n, paid: 0n } }))).toBeNull();

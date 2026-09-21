@@ -73,3 +73,11 @@ export const isMine = (j: Job, me: string) =>
 /** What is left to spend on a job. Not `escrow` alone, which is what a caller
  *  reaching for a single field tends to grab. */
 export const remaining = (j: Job) => j.escrow - j.paid;
+
+/** What the contract will still pay out on a job: the escrow left, further
+ *  capped by a committed plan ceiling. Prefer this to `remaining` whenever the
+ *  answer decides how much to serve, because `remaining` cannot see a plan
+ *  ceiling and serving past one is unpaid work. */
+export async function readRemaining(jobId: bigint): Promise<bigint> {
+  return await pub.readContract({ address: ADDR, abi: ABI, functionName: 'remainingBudget', args: [jobId] }) as bigint;
+}

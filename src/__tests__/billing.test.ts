@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { affordableTokens, bill, flush, hold, newLedger, serveCeiling, writeOff } from '../billing';
+import { affordableTokens, bill, flush, hold, newLedger, reachedCeiling, serveCeiling, writeOff } from '../billing';
 
 describe('the ledger', () => {
   it('holds produced tokens away from the settle path', () => {
@@ -253,5 +253,23 @@ describe('the ceiling a job is actually served to', () => {
   it('is the old behaviour with no reserve', () => {
     expect(serveCeiling({ remainingWei: 50_000_000_000_000_000n, ratePerMillion: RATE }))
       .toBe(affordableTokens(50_000_000_000_000_000n, RATE));
+  });
+});
+
+describe('reachedCeiling', () => {
+  // Job#16, 2026-09-21: ceiling 1,156, and the model reasoned 2,835 tokens
+  // before its first visible one. Reasoning alone must be able to stop it.
+  it('stops on reasoning alone, with no visible token yet', () => {
+    expect(reachedCeiling(0, 1155, 1156)).toBe(false);
+    expect(reachedCeiling(0, 1156, 1156)).toBe(true);
+  });
+
+  it('counts visible and reasoning together', () => {
+    expect(reachedCeiling(100, 1055, 1156)).toBe(false);
+    expect(reachedCeiling(100, 1056, 1156)).toBe(true);
+  });
+
+  it('never binds without a ceiling', () => {
+    expect(reachedCeiling(1e9, 1e9, Infinity)).toBe(false);
   });
 });

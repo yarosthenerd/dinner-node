@@ -18,7 +18,7 @@ vi.mock('../chain', () => ({
   pub: { readContract: (...a: unknown[]) => readContract(...a) },
 }));
 
-const { readJob, readProvider, isMine, remaining } = await import('../registry');
+const { readJob, readProvider, isMine, remaining, readRemaining } = await import('../registry');
 
 const ME = '0x055a2e24f4588915aB133Cb85753b0E4BBBC326A' as const;
 const OTHER = '0x1978602dF1865eD61EA0754030817fD8F6A694d3' as const;
@@ -110,5 +110,30 @@ describe('remaining', () => {
 
   it('is zero on a fully spent job', () => {
     expect(remaining(job({ escrow: 1000n, paid: 1000n }))).toBe(0n);
+  });
+});
+
+describe('readRemaining', () => {
+  beforeEach(() => readContract.mockReset());
+
+  // The node used to size a stream from escrow minus paid, which cannot see a
+  // committed plan ceiling. The contract's remainingBudget can, so the figure
+  // has to come from the contract and not be recomputed here.
+  it('asks the contract for remainingBudget on the right job', async () => {
+    readContract.mockResolvedValueOnce(400n);
+    expect(await readRemaining(16n)).toBe(400n);
+    expect(readContract).toHaveBeenCalledTimes(1);
+    const call = readContract.mock.calls[0][0] as { functionName: string; args: unknown[] };
+    expect(call.functionName).toBe('remainingBudget');
+    expect(call.args).toEqual([16n]);
+  });
+
+  it('returns a plan-capped figure below escrow minus paid unchanged', async () => {
+    // escrow 1000, paid 250, plan ceiling 500: the contract says 250, and
+    // `remaining` on the same job says 750. The lower number is the one that
+    // is actually payable.
+    readContract.mockResolvedValueOnce(250n);
+    expect(await readRemaining(1n)).toBe(250n);
+    expect(remaining(job() as never)).toBe(750n);
   });
 });

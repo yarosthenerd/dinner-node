@@ -6,14 +6,14 @@ import { randomBytes } from 'node:crypto';
 import { formatEther, keccak256, parseEther, parseEventLogs, stringToHex, toHex } from 'viem';
 import { isRevert, WillRevert } from './revert';
 import { ABI, ADDR, EXPLORER, gasFor as chainGasFor, monadTestnet, pub, wallet } from './chain';
-import { isMine, readJob, readProvider, remaining } from './registry';
+import { isMine, readJob, readProvider, readRemaining } from './registry';
 import { authorises, parseAuth, refuseTakeover } from './takeover';
 import { mock, ollama, openai, SYSTEM_PROMPT, type Chunk } from './engines';
 import { describeHardware, probeHardware, probeHardwareReady } from './hardware';
 import { PLAN_LIMITS, planCostWei, planHash, validatePlan, type Plan } from './plan';
 import { describePlan, makePlan } from './planner';
 import { executePlan, type Dispatch } from './executor';
-import { affordableTokens, bill, flush, hold, newLedger, serveCeiling, writeOff, type Ledger } from './billing';
+import { affordableTokens, bill, flush, hold, newLedger, reachedCeiling, serveCeiling, writeOff, type Ledger } from './billing';
 import { authorize, chunk, completion, DONE, errorBody, errorChunk, modelsBody, parseChat, parseKeys, usage, usageChunk, type Finish } from './openai-api';
 import { announceMessage, controlMessage, originOf, validNonce } from './attest';
 import { reach } from './reach';
@@ -685,6 +685,7 @@ async function takeOver(jobId: bigint, rawAuth: any): Promise<string | null> {
     nowSeconds: Math.floor(Date.now() / 1000),
     gasCostWei: gas * gasPriceWei,
     minMargin: TAKEOVER_MIN_MARGIN,
+    remainingWei: await readRemaining(jobId),
   });
   if (refusal) return refusal;
 
@@ -916,7 +917,7 @@ function openaiWire(res: http.ServerResponse, o: {
   };
 }
 
-async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse, resume?: { text: string; n: number }, session = false, opts: { wire?: Wire; maxTokens?: number; onBilled?: (tokens: number) => void } = {}) {
+async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse, resume?: { text: string; n: number }, session = false, opts: { wire?: Wire; maxTokens?: number; think?: boolean; onBilled?: (tokens: number) => void } = {}) {
   const wire = opts.wire ?? nativeWire(res);
   // A caller that asked for fewer tokens than the engine would produce. The
   // stream stops at the ceiling and the job settles for what it produced, so
@@ -960,7 +961,7 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
   // per job until now.
   let thought = '';
   try {
-    for await (const c of e.gen(effective, ac.signal)) {
+    for await (const c of e.gen(effective, ac.signal, { think: opts.think !== false })) {
       if (res.writableEnded) break;
       // Reasoning is forwarded and nothing else. It is not billed, because
       // `delta` is what settle() charges for; it is not appended to `prefix`,
@@ -989,6 +990,13 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
         // paid for reasoning that was streamed but never checkpointed. The
         // claim narrows to the visible answer; see terms.html.
         wire.th(c.th);
+        // The ceiling binds here too. Without this a model that is still
+        // reasoning runs past it unchecked, because the only test sat on the
+        // visible path below. A stream stopped here with no visible token has
+        // nothing to checkpoint, so on a job that requires checkpoints it is
+        // written off below rather than settled: the node, not the guest,
+        // carries reasoning that never reached an answer.
+        if (reachedCeiling(produced, reasoned, cap)) { finish = 'length'; break; }
         continue;
       }
       const tok = c.t;
@@ -1023,7 +1031,7 @@ async function serveJob(jobId: bigint, prompt: string, res: http.ServerResponse,
       // on a reasoning model, and made usage.completion_tokens come back above
       // the max_tokens the client sent, which an aggregator reads as a broken
       // provider.
-      if (produced + reasoned >= cap) { finish = 'length'; break; }
+      if (reachedCeiling(produced, reasoned, cap)) { finish = 'length'; break; }
       const t = throttleMs();
       if (t) await sleep(t);
     }
@@ -1810,7 +1818,7 @@ http.createServer(async (req, res) => {
     }
 
     if (req.url === '/job') {
-      const { jobId, prompt, resume, session, auth } = JSON.parse(body);
+      const { jobId, prompt, resume, session, auth, think } = JSON.parse(body);
       if (!gate(res, String(prompt ?? ''), String(resume?.text ?? ''))) return;
       admitted = true;
 
@@ -1852,8 +1860,12 @@ http.createServer(async (req, res) => {
       // so a job that spends everything has also spent its own failover.
       // Found against the live pair on 2026-09-10, job#14.
       const reserve = handoverReserveWei();
+      // The contract's own figure rather than escrow minus paid: it also
+      // applies a committed plan ceiling, and serving past that ceiling is
+      // work the chain will not pay for.
+      const left = await readRemaining(BigInt(jobId));
       let ceiling = serveCeiling({
-        remainingWei: remaining(job),
+        remainingWei: left,
         ratePerMillion: job.ratePerMillion,
         reserveWei: reserve,
       });
@@ -1864,11 +1876,11 @@ http.createServer(async (req, res) => {
       // over loses nothing it had by being served. It is logged because it is
       // the operator's signal that a client is opening below what failover
       // needs.
-      if (ceiling === 0 && remaining(job) > 0n) {
-        ceiling = affordableTokens(remaining(job), job.ratePerMillion);
-        console.log(`job#${jobId} escrow ${formatEther(remaining(job))} MON is under the ${formatEther(reserve)} MON handover reserve: serving ${ceiling} tokens with no failover margin`);
+      if (ceiling === 0 && left > 0n) {
+        ceiling = affordableTokens(left, job.ratePerMillion);
+        console.log(`job#${jobId} budget ${formatEther(left)} MON is under the ${formatEther(reserve)} MON handover reserve: serving ${ceiling} tokens with no failover margin`);
       }
-      return serveJob(BigInt(jobId), prompt, res, r, session === true, { maxTokens: ceiling });
+      return serveJob(BigInt(jobId), prompt, res, r, session === true, { maxTokens: ceiling, think: think !== false });
     }
 
     // ---- plan as a job ---------------------------------------------------
@@ -1915,7 +1927,7 @@ http.createServer(async (req, res) => {
         }
       };
 
-      const budgetWei = remaining(job);
+      const budgetWei = await readRemaining(BigInt(jobId));
       const attempt = await makePlan(String(goal), billed, { budgetWei, ratePerMillion: RATE });
       clearInterval(hb);
       if (!res.writableEnded) {
@@ -1967,7 +1979,7 @@ http.createServer(async (req, res) => {
       // arrives over the wire and nothing proves it is the one this node
       // produced, so the caps are enforced again against the escrow that is
       // actually left on this job.
-      const left = remaining(job);
+      const left = await readRemaining(BigInt(jobId));
       const v = validatePlan(plan, { budgetWei: left, ratePerMillion: RATE });
       if (!v.ok) {
         res.statusCode = 400;
@@ -1984,8 +1996,9 @@ http.createServer(async (req, res) => {
 
       const p = plan as Plan;
       // The hash is echoed so the guest can check that what ran is what they
-      // approved. It is not yet checked against a chain commitment, because
-      // DinnerNodeV2 has no commitPlan; see TODO.md P1.
+      // approved. This node does not compare it with the hash the guest
+      // committed through commitPlan; the ceiling from that commitment is
+      // enforced by the contract and read back through readRemaining above.
       res.write(`data: ${JSON.stringify({ run: { planHash: planHash(p), steps: p.steps.length, costWei: String(planCostWei(p, RATE)) } })}\n\n`);
       console.log(`[job#${id}] running plan ${planHash(p)} (${p.steps.length} steps) via ${e.kind}/${e.model}`);
 

@@ -395,7 +395,11 @@ contract DinnerNodeV2 {
         uint256 counted = _allowed(j, checkpoints[jobId], tokensDelta);
         uint256 rawDue = (counted * j.ratePerMillion) / 1_000_000;
         uint256 remaining = remainingBudget(jobId);
-        uint256 due = rawDue > remaining ? remaining : rawDue;
+        uint256 due = rawDue;
+        if (rawDue > remaining) {
+            due = remaining;
+            counted = _tokensPaidFor(due, j.ratePerMillion);
+        }
 
         j.lastSettleAt = uint64(block.timestamp);
 
@@ -440,6 +444,21 @@ contract DinnerNodeV2 {
             if (counted > proven) counted = proven;
         }
         return counted;
+    }
+
+    /// @notice How many tokens a clamped payment actually bought.
+    /// @dev When the budget runs out mid-settlement the payment is cut to what
+    ///      is left, and the token count has to be cut with it. It used to
+    ///      keep the full claimed figure, so the record said more tokens were
+    ///      bought than were paid for: job#16 on 2026-09-21 recorded 3,680
+    ///      tokens against 0.06 MON, which pays for 2,000. A receipt that
+    ///      overstates the work by 84% is not a receipt.
+    ///
+    ///      Rounded UP, so a final partial token still counts as one. Rounding
+    ///      down would record a payment of a few wei against zero tokens, and
+    ///      the count is then at most one token above what `paid` covers.
+    function _tokensPaidFor(uint256 due, uint256 ratePerMillion) internal pure returns (uint256) {
+        return (due * 1_000_000 + ratePerMillion - 1) / ratePerMillion;
     }
 
     /// @dev `earned` is a balance and always accrues, or a provider could be
@@ -611,7 +630,11 @@ contract DinnerNodeV2 {
         if (counted > 0) {
             uint256 rawDue = (counted * j.ratePerMillion) / 1_000_000;
             uint256 remaining = remainingBudget(jobId);
-            settledOut = rawDue > remaining ? remaining : rawDue;
+            settledOut = rawDue;
+            if (rawDue > remaining) {
+                settledOut = remaining;
+                counted = _tokensPaidFor(settledOut, j.ratePerMillion);
+            }
             if (settledOut > 0) {
                 j.paid += settledOut;
                 j.tokens += counted;

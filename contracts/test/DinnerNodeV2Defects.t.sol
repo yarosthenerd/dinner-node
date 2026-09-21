@@ -342,6 +342,71 @@ contract DinnerNodeV2DefectsTest is Test {
         assertEq(node.deposits(guest), 0);
     }
 
+    // ---- 6e. a clamped payment records the tokens it paid for --------------
+    //
+    // Job#16, 2026-09-21: the node over-served a 0.06 MON job, the contract
+    // clamped the second payment to the budget that was left, and the record
+    // still said 3,680 tokens for a budget that buys 2,000. Same shape here at
+    // RATE, where 0.002 ether is exactly 2,000 tokens.
+
+    function test_6_e_a_clamped_settle_records_only_the_tokens_it_paid_for() public {
+        uint256 id = _job(0.002 ether, false);
+        vm.warp(block.timestamp + 100);
+        vm.prank(alice);
+        node.settle(id, 844);
+        vm.warp(block.timestamp + 100);
+        vm.prank(alice);
+        node.settle(id, 2_836);
+
+        assertEq(node.getJob(id).paid, 0.002 ether);
+        assertEq(node.getJob(id).tokens, 2_000);
+        assertEq(node.getProvider(alice).tokensServed, 2_000);
+    }
+
+    function test_6_f_exhaustion_reports_the_paid_for_count() public {
+        uint256 id = _job(0.002 ether, false);
+        vm.warp(block.timestamp + 100);
+        vm.expectEmit(true, false, false, true);
+        emit DinnerNodeV2.JobExhausted(id, 2_000, 0.002 ether);
+        vm.prank(alice);
+        node.settle(id, 5_000);
+    }
+
+    function test_6_g_a_partial_last_token_counts_as_one() public {
+        // Half a token of budget left: the payment is half a token's price and
+        // the record says one token, never zero tokens for a non-zero payment.
+        uint256 id = _job(0.0010005 ether, false); // 1,000.5 tokens
+        vm.warp(block.timestamp + 100);
+        vm.prank(alice);
+        node.settle(id, 5_000);
+        assertEq(node.getJob(id).paid, 0.0010005 ether);
+        assertEq(node.getJob(id).tokens, 1_001);
+    }
+
+    function test_6_h_a_plan_ceiling_clamp_is_counted_the_same_way() public {
+        uint256 id = _job(0.01 ether, false);
+        vm.prank(guest);
+        node.commitPlan(id, keccak256("plan"), 1, 0.003 ether); // 3,000 tokens
+        vm.warp(block.timestamp + 100);
+        vm.prank(alice);
+        node.settle(id, 8_000);
+        assertEq(node.getJob(id).paid, 0.003 ether);
+        assertEq(node.getJob(id).tokens, 3_000);
+    }
+
+    function test_6_i_a_clamped_handover_payout_is_counted_the_same_way() public {
+        uint256 id = _job(0.002 ether, true);
+        vm.warp(block.timestamp + 100);
+        // Alice publishes progress worth 5,000 tokens against a 2,000 token
+        // budget, then the job is handed over before she settles.
+        vm.prank(alice);
+        node.commitCheckpoint(id, _cp(5_000), 5_000, 5_000);
+        vm.prank(guest);
+        node.reassign(id, bob);
+        assertEq(node.getJob(id).paid, 0.002 ether);
+        assertEq(node.getJob(id).tokens, 2_000);
+    }
+
     // ---- 7. struct reads, so index drift cannot happen ---------------------
 
     function test_7_getJob_returns_named_fields() public {

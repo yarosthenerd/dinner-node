@@ -115,6 +115,11 @@ export type TakeoverCheck = {
   /// job; the default is higher because a takeover that earns exactly its own
   /// gas back is not a reason to take a stranger's work.
   minMargin: bigint;
+  /// What the contract will still pay on this job, from `remainingBudget`.
+  /// When given it replaces `escrow - paid`, which cannot see a committed plan
+  /// ceiling: a job with escrow left but its ceiling spent pays a standby
+  /// nothing, so fronting the handover's gas for it is a pure loss.
+  remainingWei?: bigint;
 };
 
 /// Every reason to refuse, in the order that costs least to discover.
@@ -126,7 +131,7 @@ export function refuseTakeover(c: TakeoverCheck): string | null {
   if (c.used >= c.auth.maxReassigns) return 'authorisation spent';
   if (c.auth.newProvider !== ANY_PROVIDER
       && c.auth.newProvider.toLowerCase() !== c.me.toLowerCase()) return 'authorisation names another provider';
-  const left = c.job.escrow - c.job.paid;
+  const left = c.remainingWei ?? c.job.escrow - c.job.paid;
   if (left <= c.gasCostWei * c.minMargin) return 'job cannot cover the handover';
   return null;
 }
