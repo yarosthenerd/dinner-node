@@ -324,7 +324,8 @@ fleet software for small teams. No extension.
             path pads by, since Monad charges the limit. **Measured live the
             same day** on the new contract's job#2: 117,104 wildcard, 126,144
             named, 151,372 as sent. 160,000 would halve the reserve to 0.049
-            MON at 102 gwei; not changed yet.
+            MON at 102 gwei. **Set to 160,000 on 2026-09-22**, reserve and
+            takeover fallback both; the Foundry test asserts against it.
 - [ ] **Fri 25 Sep. Write down both verdicts, dated, with the evidence.**
       A4 resolved negative in the A4 section, with the six informal
       conversations and their caveat. Option 1 passed or failed against the

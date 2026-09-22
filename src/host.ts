@@ -641,9 +641,14 @@ const TAKEOVER_MIN_MARGIN = BigInt(process.env.TAKEOVER_MIN_MARGIN ?? 3);
 const TAKEOVER = (process.env.TAKEOVER ?? 'on').toLowerCase();
 
 /// What a handover costs in gas units, used to size the escrow this node holds
-/// back while serving. The same 320,000 the takeover path falls back to when
-/// estimation fails, so the reserve and the refusal agree on the number.
-const HANDOVER_GAS_UNITS = 320_000n;
+/// back while serving, and the limit the takeover path sends when estimation
+/// fails, so the reserve and the refusal agree on the number. Measured
+/// 2026-09-22 with eth_estimateGas on 0xcf642a14: 117,104 for a wildcard
+/// authorisation and 126,144 for a named one, 151,372 after the 1.2 pad. Monad
+/// charges the limit, so this is the padded worst case rounded up. It was
+/// 320,000 until then, a fallback nobody had measured, which made the reserve
+/// 0.098 MON and left every smaller job without failover.
+const HANDOVER_GAS_UNITS = 160_000n;
 
 /// The escrow a job must still hold for a standby to be willing to take it
 /// over. Mirrors the bound in `refuseTakeover`, which is what makes this
@@ -676,7 +681,7 @@ async function takeOver(jobId: bigint, rawAuth: any): Promise<string | null> {
       account: w.account,
     }).then(g => (g * 120n) / 100n);
   } catch {
-    gas = 320000n;
+    gas = HANDOVER_GAS_UNITS;
   }
 
   const refusal = refuseTakeover({

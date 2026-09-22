@@ -7,10 +7,9 @@ import "../src/DinnerNodeV2.sol";
 /// What a handover costs in gas, measured rather than assumed.
 ///
 /// `src/host.ts` sizes the escrow it holds back for failover from
-/// HANDOVER_GAS_UNITS, 320,000, which was the fallback limit the takeover path
-/// sends when estimation fails, never a measurement. At 102 gwei and a margin
-/// of 3 that reserve is 0.098 MON, which is what leaves every job under that
-/// size with no failover (D5 in .context/option1-claims.md).
+/// HANDOVER_GAS_UNITS. That was 320,000, a fallback limit nobody had measured,
+/// until these tests and a live eth_estimateGas on 2026-09-22 set it to
+/// 160,000 (D5 in .context/option1-claims.md).
 ///
 /// Each case measures a whole transaction: execution with the contract's
 /// storage cold, as it is at the start of a real transaction, plus the 21,000
@@ -26,10 +25,10 @@ contract DinnerNodeV2GasTest is Test {
     address bob = address(0xB0B);     // the standby that takes over
     address carol = address(0xCAC01); // a second standby
 
-    /// The figure host.ts reserves for. Every case below must fit under it,
-    /// or the reserve is too small and a standby would refuse a job the
-    /// serving node believed it had kept failoverable.
-    uint256 constant ASSUMED = 320_000;
+    /// HANDOVER_GAS_UNITS in host.ts. Every case below must fit under it, or
+    /// the reserve is too small and a standby would refuse a job the serving
+    /// node believed it had kept failoverable. Keep the two in step.
+    uint256 constant ASSUMED = 160_000;
 
     function setUp() public {
         node = new DinnerNodeV2();

@@ -215,9 +215,10 @@ describe('what an escrow can still buy', () => {
 
 describe('the ceiling a job is actually served to', () => {
   const RATE = 30_000_000_000_000_000_000n;
-  // 320,000 gas at 102 gwei, three times over, which is what refuseTakeover
+  // 160,000 gas at 102 gwei, three times over, which is what refuseTakeover
   // requires a job to still cover before a standby will front the handover.
-  const RESERVE = 320_000n * 102_000_000_000n * 3n;
+  // 0.04896 MON. It was 320,000 gas and 0.098 MON until measured 2026-09-22.
+  const RESERVE = 160_000n * 102_000_000_000n * 3n;
 
   it('holds back enough escrow that a handover is still possible', () => {
     // 0.3 MON, which is a budget large enough to carry the reserve AND buy
@@ -232,14 +233,16 @@ describe('the ceiling a job is actually served to', () => {
   });
 
   it('refuses to serve at all when the budget cannot carry a handover', () => {
-    // The finding from the live run of 2026-09-10, stated as arithmetic. At
-    // 102 gwei the reserve alone is 0.098 MON, so the 0.05 MON budget the kill
-    // e2e used could never have supported a failover no matter how short the
-    // answer was. The old code did not compute this and served anyway, which
-    // is why the run reached the handover before discovering it was impossible.
-    expect(RESERVE).toBeGreaterThan(50_000_000_000_000_000n);
+    // The finding from the live run of 2026-09-10, stated as arithmetic. The
+    // reserve then was 0.098 MON, so the 0.05 MON budget the kill e2e used
+    // could never have supported a failover no matter how short the answer
+    // was. The old code did not compute this and served anyway, which is why
+    // the run reached the handover before discovering it was impossible. At
+    // the measured 160,000 gas the reserve is 0.049 MON, so 0.04 MON is the
+    // budget that cannot carry one.
+    expect(RESERVE).toBeGreaterThan(40_000_000_000_000_000n);
     expect(serveCeiling({
-      remainingWei: 50_000_000_000_000_000n,
+      remainingWei: 40_000_000_000_000_000n,
       ratePerMillion: RATE,
       reserveWei: RESERVE,
     })).toBe(0);
