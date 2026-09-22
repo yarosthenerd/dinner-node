@@ -329,7 +329,9 @@ fleet software for small teams. No extension.
 - [ ] **Fri 25 Sep. Write down both verdicts, dated, with the evidence.**
       A4 resolved negative in the A4 section, with the six informal
       conversations and their caveat. Option 1 passed or failed against the
-      test above, with the five conversations.
+      test above, with the five conversations. **Then post the DeltaV update**
+      held in `.context/deltav-draft-2026-09-25.md`, with the verdict in place
+      of its "Next" line and the demo video as `xLink` if it is on X.
 - [ ] **If time, Wed 23 Sep or the weekend. Node 3 on the operator's older
       PC.** `qwen3:8b`, which `src/models.ts recommend()` already returns for
       this budget. Moved down because it does not test Option 1. It still
