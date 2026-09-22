@@ -15,7 +15,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { Identity } from '@semaphore-protocol/identity';
 import {
   RATINGS_ABI, RATINGS_ADDRESS, MIN_ANONYMITY_SET, ratingsEnabled, loadIdentity,
-  readGroup, readAverage, joinWithJob, rateProvider,
+  readGroup, readAverage, joinWithJob, rateProvider, boundRegistry,
 } from '../ratings';
 
 const NODE1 = '0x055a2e24f4588915aB133Cb85753b0E4BBBC326A' as const;
@@ -192,18 +192,43 @@ describe('readAverage', () => {
 });
 
 describe('joinWithJob', () => {
+  const GUEST = '0xCDd994F9f578895326634A3147fBa6738ea15411' as const;
+
   it('sends the job id and the commitment, capped against a fee spike', async () => {
     // Monad's base fee spikes to thousands of gwei and the chain charges
     // gas_limit rather than gas_used, so an uncapped write can commit several
     // MON from the guest's own wallet.
     const wallet = { writeContract: vi.fn() };
+    const pub = { estimateContractGas: vi.fn().mockResolvedValue(150000n) };
     const id = new Identity();
-    await joinWithJob(wallet, 12n, id);
+    await joinWithJob(pub, wallet, GUEST, 12n, id);
     const [args] = wallet.writeContract.mock.calls[0] as [Record<string, unknown>];
     expect(args.functionName).toBe('join');
     expect(args.args).toEqual([12n, id.commitment]);
     expect(args.maxFeePerGas).toBe(2000000000000n);
-    expect(args.gas).toBe(400000n);
+    // The estimate plus 20%, not the fixed 400,000 it replaced.
+    expect(args.gas).toBe(180000n);
+  });
+
+  it('sends nothing when the contract would refuse the join', async () => {
+    // The failure found on 2026-09-22: a ratings contract bound to an old
+    // registry reverts every join, and at a fixed limit each one cost the
+    // guest the whole limit.
+    const wallet = { writeContract: vi.fn() };
+    const pub = { estimateContractGas: vi.fn().mockRejectedValue(new Error('execution reverted: not your job')) };
+    await expect(joinWithJob(pub, wallet, GUEST, 12n, new Identity())).rejects.toThrow(/reverted/);
+    expect(wallet.writeContract).not.toHaveBeenCalled();
+  });
+});
+
+describe('boundRegistry', () => {
+  it('reads the registry the ratings contract checks jobs against', async () => {
+    expect(await boundRegistry(pubWith({ node: NODE1 }))).toBe(NODE1);
+  });
+
+  it('is null when the read fails, so an RPC blip does not hide the widget', async () => {
+    const pub = { readContract: vi.fn().mockRejectedValue(new Error('rpc down')) };
+    expect(await boundRegistry(pub)).toBeNull();
   });
 });
 
@@ -212,13 +237,13 @@ describe('rateProvider', () => {
 
   it('refuses a rating below one before touching the chain', async () => {
     const w = wallet();
-    await expect(rateProvider(pubWith({}), w, NODE1, 0, new Identity())).rejects.toThrow(/1 to 5/);
+    await expect(rateProvider(pubWith({}), w, NODE1, NODE1, 0, new Identity())).rejects.toThrow(/1 to 5/);
     expect(w.writeContract).not.toHaveBeenCalled();
   });
 
   it('refuses a rating above five before touching the chain', async () => {
     const w = wallet();
-    await expect(rateProvider(pubWith({}), w, NODE1, 6, new Identity())).rejects.toThrow(/1 to 5/);
+    await expect(rateProvider(pubWith({}), w, NODE1, NODE1, 6, new Identity())).rejects.toThrow(/1 to 5/);
     expect(w.writeContract).not.toHaveBeenCalled();
   });
 
@@ -228,7 +253,7 @@ describe('rateProvider', () => {
     const w = wallet();
     const id = new Identity();
     await expect(
-      rateProvider(pubWith({ allCommitments: [1n, 2n, 3n] }), w, NODE1, 5, id),
+      rateProvider(pubWith({ allCommitments: [1n, 2n, 3n] }), w, NODE1, NODE1, 5, id),
     ).rejects.toThrow(/has not joined/);
     expect(w.writeContract).not.toHaveBeenCalled();
   });

@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   MIN_ANONYMITY_SET, RATINGS_ABI, RATINGS_ADDRESS,
-  joinWithJob, loadIdentity, rateProvider, readAverage, readGroup,
+  boundRegistry, joinWithJob, loadIdentity, rateProvider, readAverage, readGroup,
 } from '../lib/ratings';
 import { readJob } from '../lib/registry';
 
@@ -32,6 +32,9 @@ export default function ProviderRating({ pub, wallet, provider, nodeAddress, job
   const [average, setAverage] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
+  /// False when the ratings contract checks jobs against a registry other
+  /// than the one this site opens them on, so no job here could ever join.
+  const [bound, setBound] = useState<boolean | null>(null);
 
   /// A job can buy a membership when it is this guest's, closed, actually paid
   /// for, and has not already been spent on a membership. All four are read
@@ -56,6 +59,10 @@ export default function ProviderRating({ pub, wallet, provider, nodeAddress, job
 
   const refresh = useCallback(async () => {
     try {
+      const reg = await boundRegistry(pub);
+      const ok = reg === null || reg.toLowerCase() === nodeAddress.toLowerCase();
+      setBound(ok);
+      if (!ok) return;
       const g = await readGroup(pub, identity.commitment);
       setMembers(g.members.length);
       setJoined(g.joined);
@@ -64,7 +71,7 @@ export default function ProviderRating({ pub, wallet, provider, nodeAddress, job
     } catch (e) {
       console.error('ratings read failed', e);
     }
-  }, [pub, identity, provider, findEligible]);
+  }, [pub, identity, provider, nodeAddress, findEligible]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
@@ -73,7 +80,7 @@ export default function ProviderRating({ pub, wallet, provider, nodeAddress, job
     setBusy(true);
     setNote('joining the rating group with a job you paid for…');
     try {
-      const h = await joinWithJob(wallet, eligible, identity);
+      const h = await joinWithJob(pub, wallet, guestAddress, eligible, identity);
       await pub.waitForTransactionReceipt({ hash: h });
       setNote('joined. your rating is now unlinkable to any single job.');
       await refresh();
@@ -87,7 +94,7 @@ export default function ProviderRating({ pub, wallet, provider, nodeAddress, job
     setBusy(true);
     setNote('proving membership… the first proof in a session takes a few seconds');
     try {
-      const h = await rateProvider(pub, wallet, provider, stars, identity);
+      const h = await rateProvider(pub, wallet, guestAddress, provider, stars, identity);
       await pub.waitForTransactionReceipt({ hash: h });
       setNote(`rated ${stars}/5, verified on chain`);
       await refresh();
@@ -100,6 +107,16 @@ export default function ProviderRating({ pub, wallet, provider, nodeAddress, job
         ? 'you have already rated this provider'
         : e?.shortMessage ?? 'the rating was rejected');
     } finally { setBusy(false); }
+  }
+
+  // Nothing to offer: a join would check this site's job ids against another
+  // registry and revert. Said once, quietly, rather than shown as a button.
+  if (bound === false) {
+    return (
+      <div className="engram-head dim" style={{ display: 'block' }}>
+        ratings are paused while the rating contract is moved to the current registry.
+      </div>
+    );
   }
 
   return (

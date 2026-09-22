@@ -10,6 +10,7 @@ import { Group } from '@semaphore-protocol/group';
 import { Identity } from '@semaphore-protocol/identity';
 import { generateProof } from '@semaphore-protocol/proof';
 import { parseAbi } from 'viem';
+import { estimateGas } from '../lib';
 
 /// Monad's base fee spikes to thousands of gwei and the chain charges
 /// gas_limit rather than gas_used, so an uncapped write during a spike can
@@ -28,6 +29,7 @@ export const RATINGS_ABI = parseAbi([
   'function ratingSum(address) view returns (uint256)',
   'function ratingCount(address) view returns (uint256)',
   'function averageRating(address) view returns (uint256)',
+  'function node() view returns (address)',
 ]);
 
 /// Address of the deployed DinnerRatings, or null when the feature is not
@@ -104,12 +106,35 @@ export async function readGroup(pub: any, commitment: bigint): Promise<GroupStat
   };
 }
 
+/// The registry this ratings contract checks jobs against, or null when it
+/// cannot be read. `node` is immutable, so every registry redeploy strands the
+/// ratings contract on the old one. That happened on 2026-09-03 and was found
+/// on 2026-09-22: every join from the site checked the job id against a
+/// registry that no longer held it, and reverted. The widget compares this
+/// with the registry the site uses and stays out of the way when they differ.
+export async function boundRegistry(pub: any): Promise<`0x${string}` | null> {
+  try {
+    return await pub.readContract({ address: RATINGS_ADDRESS!, abi: RATINGS_ABI, functionName: 'node' });
+  } catch {
+    return null;
+  }
+}
+
 /// Join the group with a job you paid for. The contract enforces that the job
 /// is yours, closed, paid and unused; this only has to send it.
-export async function joinWithJob(wallet: any, jobId: bigint, identity: Identity) {
+///
+/// The limit is estimated, not fixed. Monad charges the limit, so the fixed
+/// 400,000 this sent before cost about 0.04 MON on every join, and on a join
+/// the contract refuses it cost that for a revert. `estimateGas` throws on a
+/// revert instead, so a refused join costs nothing.
+export async function joinWithJob(pub: any, wallet: any, account: `0x${string}`, jobId: bigint, identity: Identity) {
+  const args = [jobId, identity.commitment] as const;
+  const gas = await estimateGas({
+    pub, address: RATINGS_ADDRESS!, abi: RATINGS_ABI, fn: 'join', args, account, fallback: 400000n,
+  });
   return wallet.writeContract({
     address: RATINGS_ADDRESS!, abi: RATINGS_ABI, functionName: 'join',
-    args: [jobId, identity.commitment], gas: 400000n, maxFeePerGas: MAX_FEE,
+    args, gas, maxFeePerGas: MAX_FEE,
   });
 }
 
@@ -120,7 +145,7 @@ export async function joinWithJob(wallet: any, jobId: bigint, identity: Identity
 /// Proof generation pulls the Groth16 artifacts for the tree depth on first
 /// use, so the first rating in a browser session is slow.
 export async function rateProvider(
-  pub: any, wallet: any, provider: `0x${string}`, rating: number, identity: Identity,
+  pub: any, wallet: any, account: `0x${string}`, provider: `0x${string}`, rating: number, identity: Identity,
 ) {
   if (rating < 1 || rating > 5) throw new Error('rating must be 1 to 5');
 
@@ -131,17 +156,23 @@ export async function rateProvider(
   const scope = BigInt(provider);
   const proof = await generateProof(identity, group, BigInt(rating), scope);
 
+  const args = [provider, BigInt(rating), {
+    merkleTreeDepth: BigInt(proof.merkleTreeDepth),
+    merkleTreeRoot: BigInt(proof.merkleTreeRoot),
+    nullifier: BigInt(proof.nullifier),
+    message: BigInt(proof.message),
+    scope: BigInt(proof.scope),
+    points: proof.points.map((p: string | bigint) => BigInt(p)) as unknown as readonly [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint],
+  }] as const;
+  // Estimated for the same reason as join. A second rating of the same
+  // provider reverts on the nullifier, and at the fixed 800,000 this sent
+  // before, finding that out cost the guest about 0.08 MON.
+  const gas = await estimateGas({
+    pub, address: RATINGS_ADDRESS!, abi: RATINGS_ABI, fn: 'rate', args, account, fallback: 800000n,
+  });
   return wallet.writeContract({
     address: RATINGS_ADDRESS!, abi: RATINGS_ABI, functionName: 'rate',
-    args: [provider, BigInt(rating), {
-      merkleTreeDepth: BigInt(proof.merkleTreeDepth),
-      merkleTreeRoot: BigInt(proof.merkleTreeRoot),
-      nullifier: BigInt(proof.nullifier),
-      message: BigInt(proof.message),
-      scope: BigInt(proof.scope),
-      points: proof.points.map((p: string | bigint) => BigInt(p)) as unknown as readonly [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint],
-    }],
-    gas: 800000n, maxFeePerGas: MAX_FEE,
+    args, gas, maxFeePerGas: MAX_FEE,
   });
 }
 
