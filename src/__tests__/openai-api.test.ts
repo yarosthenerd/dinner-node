@@ -118,6 +118,24 @@ describe('parsing a chat request', () => {
     const c = parse({ messages: [{ role: 'user', content: 'hi' }], stream_options: { include_usage: true } });
     expect(c.ok && c.req.includeUsage).toBe(false);
   });
+
+  it('leaves reasoning off unless the caller asks for it', () => {
+    // Reasoning is billed like output, so a capped job spent on it can end
+    // with no answer. Off is the default an agent gets without asking.
+    const think = (extra: object) => {
+      const r = parse({ messages: [{ role: 'user', content: 'hi' }], ...extra });
+      return r.ok && r.req.think;
+    };
+    expect(think({})).toBe(false);
+    expect(think({ reasoning_effort: 'medium' })).toBe(true);
+    expect(think({ reasoning_effort: 'minimal' })).toBe(false);
+    expect(think({ reasoning_effort: 'none' })).toBe(false);
+    expect(think({ reasoning: { effort: 'high' } })).toBe(true);
+    expect(think({ reasoning: { enabled: true } })).toBe(true);
+    expect(think({ reasoning: { max_tokens: 500 } })).toBe(true);
+    expect(think({ reasoning: { enabled: false, effort: 'high' } })).toBe(false);
+    expect(think({ reasoning: {} })).toBe(false);
+  });
 });
 
 describe('usage', () => {

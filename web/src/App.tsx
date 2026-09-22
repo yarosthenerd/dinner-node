@@ -922,6 +922,9 @@ export default function App() {
             // it here is what moves the job.
             body: JSON.stringify({
               jobId: jid.toString(), prompt: cleanPrompt, session: true,
+              // The node answers without reasoning unless asked. The site
+              // shows the reasoning and bills it visibly, so it asks.
+              think: true,
               resume: cp?.h ? { text: cp.text, n: cp.n, h: cp.h } : undefined,
               auth: handoverAuth ? toWire(handoverAuth) : undefined,
             }),

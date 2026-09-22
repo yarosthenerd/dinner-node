@@ -220,7 +220,8 @@ fleet software for small teams. No extension.
       clean `npm run verify`. **798 tests passing: 448 root, 278 web, 72
       contract**, up from the 793 measured 2026-09-12, the five new ones being
       `countryCode()`.
-- [ ] **Mon 21 Sep. Deploy `web/`.** Unchanged and still first. The site has
+- [x] **Mon 21 Sep. Deploy `web/`.** Deployed by the operator 2026-09-22.
+      Unchanged and still first. The site has
       not been redeployed since 2026-09-12. The corrected privacy footer in
       `web/src/App.tsx`, the one that used to say the reply is absent from the
       chain when an unsalted keccak of the answer prefix sits in permanent
@@ -257,8 +258,8 @@ fleet software for small teams. No extension.
       worked, because `JobExhausted` fires only on escrow (claim sheet,
       "Cannot say").
 - [~] **Defects the demo found, 2026-09-21, and what was fixed the same
-      evening.** Detail in `.context/option1-claims.md`. **Nothing here is
-      committed yet.** `npm run verify`: **809 passing, 454 root, 278 web, 77
+      evening.** Detail in `.context/option1-claims.md`. Committed
+      2026-09-21 as `0082bad`. `npm run verify`: **809 passing, 454 root, 278 web, 77
       contract**, up from 798. Both nodes restarted on the new code, node 2
       then node 1, and node 1's model is still resident.
       - [x] **D1. The node's cap did not bind during reasoning.** Fixed in
@@ -276,8 +277,15 @@ fleet software for small teams. No extension.
             `_reassign`, rounded up so a final partial token counts as one.
             Five Foundry tests (`test_6_e` to `test_6_i`), each confirmed to fail
             on the old contract, `test_6_e` reproducing job#16's 3,680 exactly.
-            **Not deployed:** it needs a redeploy, a new address in
-            `web/src/config.ts` and `.env`, and both nodes re-registered. On the
+            **Deployed 2026-09-22** at
+            `0xcf642a144f3cb1159b05563506698fc2db375029`
+            ([tx](https://testnet.monadvision.com/tx/0x7cbfb1ce82a0bf015dc74f1258577d12deffca19cdfa35d069625e80c3418aa8)),
+            bytecode matching the build outside the two EIP-712 immutables.
+            `set-registry.mjs --write` ran, both nodes re-registered, and the
+            demo's job#1 there billed 898 tokens for 0.03 MON. Open: the web
+            deploy that points the site at it, `DinnerRatings` still pinned to
+            the old contract, and 0.456 MON left in the old contract.
+            Previously: On the
             live contract it only bites when a node over-serves, which the D1
             fix stops, so the redeploy can wait for the next contract change.
             Quote `paid`, not `tokens`, until then.
@@ -293,8 +301,12 @@ fleet software for small teams. No extension.
             site behaves as before. **Measured on the same 0.06 MON budget:**
             reasoning on (job#17), 2 of 8 steps answered for 0.0545 MON;
             reasoning off (job#18), all 8 answered for 0.0444 MON with 26% of
-            the budget left. `scripts/capped-job-demo.mjs --think off`. Open
-            product call: whether agent-facing jobs should default to off.
+            the budget left. **Decided 2026-09-22: off by default.** `/job`
+            reasons only on `think: true`, which the site now sends, and `/v1`
+            only on `reasoning_effort` or OpenRouter's `reasoning` object. The
+            LAN page is unchanged. The demo script defaults to off,
+            `--think on` to compare. Needs a node restart and a web deploy
+            together, or the site loses its reasoning panel in between.
       - [ ] **D5. Jobs below the handover reserve have no failover.** Not a
             code defect, so not changed. The reserve is 320,000 gas x 102 gwei x
             `TAKEOVER_MIN_MARGIN` 3 = 0.098 MON. One handover costs about 0.033
@@ -303,7 +315,16 @@ fleet software for small teams. No extension.
             having. Options are an operator decision: lower the margin, measure
             real `reassignWithAuth` gas in place of the 320,000 fallback, or
             stop claiming failover for small jobs. The claim sheet already does
-            the third.
+            the third. **Measured 2026-09-22 in Foundry**,
+            `contracts/test/DinnerNodeV2Gas.t.sol`, whole transaction with cold
+            storage: wildcard first handover 109,394, named 115,434, second
+            handover 92,307. That is the EVM floor: Monad prices cold storage
+            higher, so an `eth_estimateGas` on the deployed contract is the
+            number to set `HANDOVER_GAS_UNITS` from, times the 1.2 the takeover
+            path pads by, since Monad charges the limit. **Measured live the
+            same day** on the new contract's job#2: 117,104 wildcard, 126,144
+            named, 151,372 as sent. 160,000 would halve the reserve to 0.049
+            MON at 102 gwei; not changed yet.
 - [ ] **Fri 25 Sep. Write down both verdicts, dated, with the evidence.**
       A4 resolved negative in the A4 section, with the six informal
       conversations and their caveat. Option 1 passed or failed against the

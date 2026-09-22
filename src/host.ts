@@ -1737,6 +1737,7 @@ http.createServer(async (req, res) => {
           promptTokens: estTokens(cr.prompt) + SYSTEM_TOKENS,
         }),
         maxTokens: cr.maxTokens ?? undefined,
+        think: cr.think,
       });
     }
 
@@ -1880,7 +1881,11 @@ http.createServer(async (req, res) => {
         ceiling = affordableTokens(left, job.ratePerMillion);
         console.log(`job#${jobId} budget ${formatEther(left)} MON is under the ${formatEther(reserve)} MON handover reserve: serving ${ceiling} tokens with no failover margin`);
       }
-      return serveJob(BigInt(jobId), prompt, res, r, session === true, { maxTokens: ceiling, think: think !== false });
+      // Reasoning is opt-in. It is billed like output, and on a capped job it
+      // can spend the whole budget before a visible token: on 0.06 MON,
+      // reasoning on answered 2 of 8 agent steps (job#17), off answered all 8
+      // with 26% left (job#18). The site asks for it with `think: true`.
+      return serveJob(BigInt(jobId), prompt, res, r, session === true, { maxTokens: ceiling, think: think === true });
     }
 
     // ---- plan as a job ---------------------------------------------------

@@ -14,7 +14,7 @@ import { randomBytes } from 'node:crypto';
 import { requestPlan, runPlan, waves, type ExecEvent } from '../web/src/lib/plan-client.js';
 
 const chain = defineChain({ id: 10143, name: 'Monad Testnet', nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 }, rpcUrls: { default: { http: ['https://testnet-rpc.monad.xyz'] } } });
-const ADDR = (process.env.DINNER_NODE_ADDRESS || '0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c') as `0x${string}`;
+const ADDR = (process.env.DINNER_NODE_ADDRESS || '0xcf642a144f3cb1159b05563506698fc2db375029') as `0x${string}`;
 const ABI = [
   { name: 'deposit', type: 'function', stateMutability: 'payable', inputs: [], outputs: [] },
   { name: 'deposits', type: 'function', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] },

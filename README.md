@@ -8,7 +8,7 @@ continues on another node from a signed checkpoint, the guest signs nothing, and
 providers are paid for disjoint ranges of the same answer. That is verified on chain, not
 argued for: see the receipt under Protocol.
 
-**Live:** https://dinnernode.xyz · **Registry:** [0x7E98…423c](https://testnet.monadvision.com/address/0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c) (`DinnerNodeV2`, deployed 2026-09-03) · Monad testnet (10143)
+**Live:** https://dinnernode.xyz · **Registry:** [0xcf64…5029](https://testnet.monadvision.com/address/0xcf642a144f3cb1159b05563506698fc2db375029) (`DinnerNodeV2`, deployed 2026-09-22) · Monad testnet (10143)
 
 Testnet only. MON here has no monetary value. See [terms](web/public/terms.html) and
 [acceptable use](web/public/acceptable-use.html).

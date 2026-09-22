@@ -5,7 +5,8 @@ across 5 suites.
 
 | Source | Deployed | State |
 |---|---|---|
-| `src/DinnerNodeV2.sol` | [`0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c`](https://testnet.monadvision.com/address/0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c) | **Live.** Everything in the repo points here |
+| `src/DinnerNodeV2.sol` | [`0xcf642a144f3cb1159b05563506698fc2db375029`](https://testnet.monadvision.com/address/0xcf642a144f3cb1159b05563506698fc2db375029) | **Live** since 2026-09-22, source `0082bad`. Everything in the repo points here |
+| `src/DinnerNodeV2.sol` | [`0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c`](https://testnet.monadvision.com/address/0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c) | Superseded 2026-09-22 by the D2 fix (`j.tokens` overstated what was paid). Jobs #1 to #19 in `.context/option1-claims.md` are on it. Still callable for `withdraw` and `refund`: about 0.456 MON remains in it |
 | `src/DinnerNode.sol` | [`0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd`](https://testnet.monadvision.com/address/0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd) | Superseded, still callable. Reach for it only to `withdraw` or `refund` |
 | `src/DinnerRatings.sol` | `0xb418490c7679765ae5e05069c6ebedc132cba731` | **Live.** Redeployed 2026-08-28 against V2. This is what `web/.env` sets as `VITE_RATINGS_ADDRESS`, and what the app reads |
 | `src/DinnerRatings.sol` | `0xeb0de71314322e6b0b5d754997dc3ddc1358d87f` | Superseded. Bound to V1 and not repointable: `node` is immutable and the old IDinnerNode decoded V1's six-field `jobs()`. Its group had no members, so nothing was lost. This row said "Live" until 2026-09-12 |

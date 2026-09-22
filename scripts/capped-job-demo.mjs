@@ -8,11 +8,11 @@
 // across many jobs, or a plan ceiling below the escrow; see
 // .context/option1-claims.md for why the second one is left out.
 //
-//   node scripts/capped-job-demo.mjs [--host http://localhost:4173] [--budget 0.06] [--think off] [--out file.md]
+//   node scripts/capped-job-demo.mjs [--host http://localhost:4173] [--budget 0.03] [--think on] [--out file.md]
 //
-// --think off asks the node to answer without reasoning, which is how an agent
-// keeps a hard budget from being spent on text it never sees (D4 in
-// .context/option1-claims.md). The default leaves reasoning on.
+// Reasoning is off by default, as it is on the node's /job since D4 in
+// .context/option1-claims.md, so a hard budget is spent on answers. --think on
+// asks for it, and shows how fast reasoning spends the same budget.
 //
 // Uses GUEST_PK from .env as the agent's wallet and the node at --host as the
 // provider. Real testnet MON, a few cents' worth of test tokens at most.
@@ -26,7 +26,7 @@ const chain = defineChain({
   nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
   rpcUrls: { default: { http: ['https://testnet-rpc.monad.xyz'] } },
 });
-const ADDR = process.env.DINNER_NODE_ADDRESS || '0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c';
+const ADDR = process.env.DINNER_NODE_ADDRESS || '0xcf642a144f3cb1159b05563506698fc2db375029';
 const EXPLORER = 'https://testnet.monadvision.com';
 const MAX_FEE = 2000000000000n;
 const JOB = [{ name: 'requester', type: 'address' }, { name: 'provider', type: 'address' }, { name: 'escrow', type: 'uint256' }, { name: 'paid', type: 'uint256' }, { name: 'tokens', type: 'uint256' }, { name: 'ratePerMillion', type: 'uint256' }, { name: 'maxTokensPerSecond', type: 'uint256' }, { name: 'openedAt', type: 'uint64' }, { name: 'lastSettleAt', type: 'uint64' }, { name: 'open', type: 'bool' }, { name: 'requireCheckpoints', type: 'bool' }];
@@ -45,9 +45,9 @@ const ABI = [
 
 const arg = (flag, dflt) => { const i = process.argv.indexOf(flag); return i > -1 ? process.argv[i + 1] : dflt; };
 const HOST = arg('--host', 'http://localhost:4173');
-const BUDGET = parseEther(arg('--budget', '0.06'));
+const BUDGET = parseEther(arg('--budget', '0.03'));
 const OUT = arg('--out', '');
-const THINK = arg('--think', 'on') !== 'off';
+const THINK = arg('--think', 'off') === 'on';
 
 // The agent's work: steps that each need a real answer, more of them than the
 // budget can pay for, so the run ends on the cap rather than on the list.
@@ -78,7 +78,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function step(jobId, prompt) {
   const res = await fetch(HOST + '/job', {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ jobId: String(jobId), prompt, session: true, ...(THINK ? {} : { think: false }) }),
+    body: JSON.stringify({ jobId: String(jobId), prompt, session: true, think: THINK }),
   });
   if (!res.ok) return { refused: `${res.status} ${await res.text()}`, text: '', think: 0, frames: 0 };
   const reader = res.body.getReader();

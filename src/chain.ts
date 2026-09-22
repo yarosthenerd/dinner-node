@@ -23,7 +23,7 @@ export const monadTestnet = defineChain({
 // DinnerNodeV2, deployed and verified on Monad testnet 2026-08-28. The v1
 // instance at 0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92 stays callable
 // forever and is what to point at to withdraw or refund value left in it.
-export const DEFAULT_ADDR = '0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c' as const;
+export const DEFAULT_ADDR = '0xcf642a144f3cb1159b05563506698fc2db375029' as const;
 export const V1_ADDR = '0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92' as const;
 export const ADDR = (process.env.DINNER_NODE_ADDRESS ?? DEFAULT_ADDR) as `0x${string}`;
 export const EXPLORER = 'https://testnet.monadvision.com';

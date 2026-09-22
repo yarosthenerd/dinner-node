@@ -42,7 +42,7 @@ describe('the deployed addresses', () => {
   it('defaults to DinnerNodeV2 and keeps V1 reachable under its own name', () => {
     // These two are quoted in the README, the terms page and the handoff. A
     // change here is a change to published fact, so it should break a test.
-    expect(DEFAULT_ADDR).toBe('0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c');
+    expect(DEFAULT_ADDR).toBe('0xcf642a144f3cb1159b05563506698fc2db375029');
     expect(V1_ADDR).toBe('0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92');
     expect(DEFAULT_ADDR).not.toBe(V1_ADDR);
     expect(EXPLORER).toBe('https://testnet.monadvision.com');

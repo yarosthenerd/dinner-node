@@ -30,6 +30,12 @@ export type ChatRequest = {
   includeUsage: boolean;
   /** Visible-token ceiling for this request, or null for the node default. */
   maxTokens: number | null;
+  /**
+   * Whether the model may reason before answering. Off unless the caller asks,
+   * because reasoning is billed like output and a capped job can spend its
+   * whole budget on text the caller never reads (D4, 2026-09-21).
+   */
+  think: boolean;
 };
 
 export type Rejection = { status: number; body: string };
@@ -162,8 +168,24 @@ export function parseChat(raw: string, opts: { maxTokensCeiling: number }): Pars
       stream: j.stream === true,
       includeUsage: j.stream === true && j.stream_options?.include_usage === true,
       maxTokens,
+      think: wantsReasoning(j),
     },
   };
+}
+
+/// `reasoning_effort` is the OpenAI name and `reasoning` the object OpenRouter
+/// normalises to. Either one asking for effort turns reasoning on; the lowest
+/// settings and an explicit `enabled: false` leave it off.
+function wantsReasoning(j: any): boolean {
+  const off = (e: unknown) => e === 'none' || e === 'minimal';
+  if (typeof j.reasoning_effort === 'string') return !off(j.reasoning_effort);
+  const r = j.reasoning;
+  if (r && typeof r === 'object') {
+    if (r.enabled === false) return false;
+    if (typeof r.effort === 'string') return !off(r.effort);
+    return r.enabled === true || r.max_tokens !== undefined;
+  }
+  return false;
 }
 
 // ---- response framing ------------------------------------------------------

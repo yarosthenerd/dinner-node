@@ -153,8 +153,9 @@ the commit is a security fix.
 ### 1.1 settle() allows a provider to drain the entire escrow
 
 Severity: critical. Status: **fixed and DEPLOYED 2026-09-03** at
-`0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c`, which every client now points
-at. The text below describes `DinnerNode.sol`, the v1 instance, which remains
+`0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c`, and carried into its
+replacement `0xcf642a144f3cb1159b05563506698fc2db375029` (2026-09-22), which
+every client now points at. The text below describes `DinnerNode.sol`, the v1 instance, which remains
 callable on chain and which nothing in this repository references. Corrected
 2026-09-10: this line read "NOT yet deployed" for a week after the deploy.
 
@@ -887,15 +888,15 @@ makes commissioning it a decision rather than a project.
 
 | | |
 |---|---|
-| Contract | `contracts/src/DinnerNodeV2.sol`, 668 lines |
-| Source revision | `c1b3f07`, unchanged in the working tree |
-| sha256 of source | `378f3918a053a50591bfb1f946d5db24888fafe86587fc491e4c3207cb746d34` |
-| Deployed at | `0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c` |
+| Contract | `contracts/src/DinnerNodeV2.sol`, 691 lines |
+| Source revision | `0082bad`, unchanged in the working tree |
+| sha256 of source | `7cb5cbabf4ea5f2a3e8e0f2643a093fef1f8ec5ced1a544bff1544d5eaf07783` |
+| Deployed at | `0xcf642a144f3cb1159b05563506698fc2db375029` |
 | Chain | Monad testnet, chain ID 10143 |
-| Deployed on | 2026-09-03, by `scripts/deploy-v2.mjs` |
+| Deployed on | 2026-09-22, by `scripts/deploy-v2.mjs`. Replaces `0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c` (source `c1b3f07`, sha256 `378f3918…6d34`), deployed 2026-09-03. The change is D2, `_tokensPaidFor` in `settle` and `_reassign` |
 | Compiler | `^0.8.28`, foundry default profile |
 | Dependency | OpenZeppelin `ECDSA` only |
-| Tests | 72 across 5 files in `contracts/test/`, all passing 2026-09-10 |
+| Tests | 80 across 6 files in `contracts/test/`, all passing 2026-09-22 |
 
 Secondary, and lower priority: `DinnerRatings.sol` (144 lines, 11 tests).
 `DinnerNode.sol` is the v1 instance. It carries the critical defect in 1.1, it

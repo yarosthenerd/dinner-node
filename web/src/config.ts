@@ -1,7 +1,7 @@
 // DinnerNodeV2, deployed and verified on Monad testnet 2026-08-28. v1 was
 // 0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92 and remains callable; nothing in
 // the app points at it any more.
-export const ADDR = '0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c' as `0x${string}`;
+export const ADDR = '0xcf642a144f3cb1159b05563506698fc2db375029' as `0x${string}`;
 // DinnerZK.sol is deployed at 0x1D6fE5F98A9b0cE6415925859DFF4dd624CFc8A0 and is
 // not wired to anything. The Semaphore proof path was removed from App.tsx and
 // the address is deliberately not exported: an export invites a claim the code
