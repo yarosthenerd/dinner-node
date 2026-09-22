@@ -1,116 +1,352 @@
-import { useEffect, useRef, useState } from 'react';
-import { keccak256, parseEther, parseEventLogs } from 'viem';
-import { ABI, ADDR, EXPLORER, pub, guestWallet, guestAddress, faucet, fmt } from './lib';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
+import { formatEther, keccak256, parseEther, parseEventLogs, toHex } from 'viem';
+import { ABI, ADDR, EXPLORER, pub, faucet, fmt, gasFor } from './lib';
+import { useWallet, connect, disconnect, switchChain, MONAD_CHAIN_ID } from './lib/wallet';
+import { isOursAndOpen, readJob, readProvider } from './lib/registry';
+import { proveControl } from './lib/attest';
+import { signReassignAuth, toWire, isLive, type ReassignAuth } from './lib/reassign-auth';
+import { DISCOVERY, KNOWN_PROVIDERS } from './config';
 import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+// Lazy on purpose. Semaphore's proving stack is about 450 kB and only a guest
+// who actually rates ever needs it, so importing it eagerly would put that
+// weight on every first paint for a feature most sessions never touch.
+const ProviderRating = lazy(() => import('./components/ProviderRating'));
+// Lazy for the same reason: a guest who only wants one answer should not pay
+// for the plan UI in their first paint.
+const PlanPanel = lazy(() => import('./components/PlanPanel'));
+// Read straight from the environment rather than through lib/ratings, or the
+// check itself would pull the module it is trying to defer.
+const RATINGS_ON = !!import.meta.env.VITE_RATINGS_ADDRESS;
 import { EngramSelector } from './components/EngramSelector';
-import { initEngramSystem, preparePrompt, onJobOpen, onJobClose } from './lib/engram-integration';
+import { initEngramSystem, preparePrompt, onJobOpen, onJobClose, applyPendingEngrams, resolvePendingEngrams, behavioralPreamble } from './lib/engram-integration';
+import type { PendingEngrams } from './lib/engram-integration';
 
 const short = (h: string) => h.slice(0, 6) + '…' + h.slice(-4);
+const DEFAULT_HOST = 'https://litter-unfunded-improvise.ngrok-free.dev';
+const TUNNEL_HEADERS = { 'bypass-tunnel-reminder': '1', 'ngrok-skip-browser-warning': 'true' };
+
+// Monad's base fee is slow to rise and fast to fall, spiking to thousands of
+// gwei, and the chain charges gas_limit rather than gas_used. Without this cap
+// viem falls back to estimateFeesPerGas and a single openJob during a spike
+// can commit several MON. The daemons already cap every write; the browser did
+// not, which is where the guest's own wallet is spent.
+const MAX_FEE = 2000000000000n;
+// The balance below which the app offers to fetch the guest more MON. See the
+// funding invariant comment in the balance effect below before changing.
+// Re-derived 2026-08-26 with the 0.30 MON escrow: a first order costs the guest
+// 0.30 of escrow plus about 0.06 of gas, so the trigger has to clear 0.36.
+// The half of the invariant that named house constants is gone with the house
+// faucet (deleted 2026-08-28, see lib.ts). What survives is the half that was
+// always the real one: the trigger must clear the cost of one full order, or a
+// guest sits above the threshold, below an order, and stuck. The public
+// testnet faucet's grant size is not ours to set, so there is no upper bound
+// to satisfy any more, only a lower one.
+const TOPUP_TRIGGER = parseEther('1.2');
+
+// How many jobs back the receipt walks. Each one is a sequential eth_call, so
+// this is a latency budget as much as a display choice, and it is the reason
+// every total on the page is scoped to a window rather than to all time: the
+// public Monad RPC caps eth_getLogs at 100 blocks, so there is no cheap way to
+// read the full history from a browser. Every label that shows one of these
+// numbers has to say so.
+const FEED_WINDOW = 25n;
+
+// Same four-characters-per-token rule the host uses, so the number shown here
+// matches the number the host enforces instead of disagreeing with it.
+const estTokens = (s: string) => Math.ceil(s.length / 4);
+
+type Session = { ts: number; prompt: string; answer: string; jobId: string; cost: string };
+
+// History is OPT IN, and off until the guest turns it on.
+//
+// Keeping prompts and replies on the device across restarts is not necessary
+// to serve an order, so under ePrivacy Article 5(3) it needs consent rather
+// than a control that deletes it afterwards. The receipt still lists what this
+// visit ordered, because that list lives in React state and nothing is
+// written; the switch decides only whether it survives the tab closing.
+const HISTORY_KEY = 'dn_sessions';
+const HISTORY_OPT_IN = 'dn_keep_history';
+const keepingHistory = (): boolean => {
+  try { return localStorage.getItem(HISTORY_OPT_IN) === '1'; } catch { return false; }
+};
+const loadSessions = (): Session[] => {
+  if (!keepingHistory()) return [];
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
+};
+
+// Fenced blocks become downloadable files. Markdown first, then whatever the
+// fence is labelled with.
+const EXT: Record<string, string> = { markdown: 'md', md: 'md', json: 'json', ts: 'ts', tsx: 'tsx', js: 'js', python: 'py', py: 'py', sh: 'sh', bash: 'sh', sol: 'sol', yaml: 'yml', yml: 'yml', html: 'html', css: 'css' };
+function artifactsOf(text: string) {
+  const out: { name: string; body: string }[] = [];
+  const re = /```([A-Za-z0-9_+-]*)\n([\s\S]*?)```/g;
+  let m: RegExpExecArray | null;
+  let n = 0;
+  while ((m = re.exec(text))) {
+    const lang = (m[1] || 'md').toLowerCase();
+    out.push({ name: `dinnernode-${++n}.${EXT[lang] ?? 'txt'}`, body: m[2] });
+  }
+  return out;
+}
 
 export default function App() {
+  // The guest's wallet: their own if they connected one, otherwise the burner
+  // key in lib.ts. Destructured under the old names so every call site below
+  // reads the same as it did when there was only ever a burner. Each render
+  // captures the wallet that was current when it ran, which is what an order
+  // already in flight should keep using if the guest switches account
+  // mid-answer.
+  const wallet = useWallet();
+  const { address: guestAddress, client: guestWallet } = wallet;
   const [providers, setProviders] = useState<any[]>([]);
   const [feed, setFeed] = useState<any[]>([]);
   const [total, setTotal] = useState(0n);
   const [jobs, setJobs] = useState(0n);
   const [bal, setBal] = useState(0n);
   const [sessionCost, setSessionCost] = useState(0n);
-  const [url, setUrl] = useState(() => new URLSearchParams(window.location.search).get('host') || 'https://litter-unfunded-improvise.ngrok-free.dev');
+  const [url, setUrl] = useState(() => new URLSearchParams(window.location.search).get('host') || DEFAULT_HOST);
+  // Hosts named by the link rather than by the guest. `?host=` decides who
+  // receives the prompt on the first attempt and `?peer=` who receives it on a
+  // failover.
+  //
+  // Both are now VERIFIED before anything is sent: `proveControl` makes the
+  // machine sign a nonce this browser chose and checks the registry still
+  // calls it active, so a host that merely claims an address in its own
+  // /health is skipped. What that proves is that the machine is the provider
+  // it says it is. It says nothing about who that provider is, and a provider
+  // can put itself in a link, so the guest is still told which machines a link
+  // named before ordering.
+  const linkNamedHosts = useMemo(() => {
+    const q = new URLSearchParams(window.location.search);
+    return [...(q.get('host') ? [q.get('host')!] : []), ...q.getAll('peer')];
+  }, []);
   const [prompt, setPrompt] = useState('How much is the cost of an average dinner in Belgrade?');
   const [stream, setStream] = useState('');
+  // The model's reasoning, streamed as {th} frames. It IS billed, as output
+  // tokens, the way every commercial provider bills it. It is held apart from
+  // `stream` because it is still not part of the answer: it is not in the
+  // checkpoint chain, and must not reach the markdown renderer or the saved
+  // session. Showing it is what makes the charge honest, and it is also what
+  // makes 15 to 47 seconds of silence look like a model working rather than a
+  // dead node.
+  const [thinking, setThinking] = useState('');
+  /// Reasoning tokens BILLED, which is not derivable from `thinking`. One {th}
+  /// frame is one billed token, and a frame's token boundaries are gone once
+  /// the text is concatenated, so this counts frames as they arrive and then
+  /// takes the node's own figure from the final frame. It used to be
+  /// `thinking.length / 4`, which showed 836 on a stream that billed 920.
+  const [thinkTokens, setThinkTokens] = useState(0);
+  const [thinkOpen, setThinkOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [sanitization, setSanitization] = useState<'minimal' | 'balanced' | 'maximal'>('balanced');
+  const [pendingEngrams, setPendingEngrams] = useState<PendingEngrams>({});
   const [note, setNote] = useState('');
   const [pulse, setPulse] = useState(0);
-  const [hosting, setHosting] = useState(false);
-  const [simRows, setSimRows] = useState<any[]>([]);
-  const [simEarned, setSimEarned] = useState(0n);
-  const [zkC, setZkC] = useState<bigint>(0n);
-  const [zkLine, setZkLine] = useState('private by design — prompts are zk-committed on-chain; guests appear as semaphore pseudonyms, not wallets.');
+  const [sentPrompt, setSentPrompt] = useState('');
+  const [budgetTokens, setBudgetTokens] = useState(30720);
+  // What the selected host actually runs. /health has always carried `engine`
+  // and nothing in the browser read it, so a guest could not tell a node
+  // serving a real model from one serving canned text while settling real MON.
+  const [hostEngine, setHostEngine] = useState<{ engine?: string; model?: string } | null>(null);
+  // Whether the selected host executes plans, read from /health rather than
+  // discovered from a 404 after a job is already open and paid for.
+  const [hostPlans, setHostPlans] = useState(false);
+  const [hostProvider, setHostProvider] = useState<`0x${string}` | null>(null);
+  // Why the host was rejected, so a guest is told "this machine could not
+  // prove who it is" rather than being left to read "the kitchen is warming
+  // up" forever, which is the least useful thing to say about the one failure
+  // that is actually about their prompt going somewhere it should not.
+  const [hostUnproven, setHostUnproven] = useState<string | null>(null);
+  const [mode, setMode] = useState<'answer' | 'plan'>('answer');
+  const [sessions, setSessions] = useState<Session[]>(loadSessions);
+  const [keepHistory, setKeepHistory] = useState<boolean>(keepingHistory);
+  // Read at WRITE time, not captured when an order started. `rent()` is a long
+  // async call, so a guest who unticks the box mid-answer would otherwise have
+  // the finished order written to storage by a closure holding the old value:
+  // consent withdrawn, and the write happens anyway, invisibly, with no
+  // control left in the interface to remove it.
+  const keepHistoryRef = useRef(keepHistory);
+  const sessionsRef = useRef(sessions);
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  // Turning it off is a withdrawal of consent, so it deletes what was kept
+  // rather than merely stopping the next write.
+  const toggleHistory = (on: boolean) => {
+    setKeepHistory(on);
+    keepHistoryRef.current = on;
+    try {
+      if (on) {
+        localStorage.setItem(HISTORY_OPT_IN, '1');
+        // Overwritten with what is on screen, never left to merge with what
+        // was there. Otherwise switching on resurrects entries written by the
+        // build that stored history without asking, and the guest is shown
+        // prompts from before they consented to anything.
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(sessionsRef.current));
+      } else { localStorage.removeItem(HISTORY_OPT_IN); localStorage.removeItem(HISTORY_KEY); }
+    } catch { /* storage blocked: nothing is persisted either way */ }
+  };
+  // Anything written by the build that shipped before history was opt-in is
+  // deleted on first load. Those browsers hold up to 20 prompts and replies
+  // with no opt-in flag, which this app no longer reads, so without this they
+  // sit unreadable and unremovable: the receipt is empty, so the clear control
+  // never renders. Default off has to mean nothing stored, not nothing shown.
+  useEffect(() => {
+    if (keepingHistory()) return;
+    try { localStorage.removeItem(HISTORY_KEY); } catch { /* nothing to clean */ }
+  }, []);
+  // The provider this browser has actually paid. Ratings are gated on a paid
+  // job by the contract, so there is nothing to show before the first one.
+  const [ratedProvider, setRatedProvider] = useState<`0x${string}` | null>(null);
+  const [canResume, setCanResume] = useState(false);
+  const [discoveryUp, setDiscoveryUp] = useState<boolean | null>(null);
+  // The record of a mid-answer handover, shown above the answer it happened
+  // inside. This is the differentiator made visible: without it the guest sees
+  // one uninterrupted answer and has no way to tell that the machine producing
+  // it changed halfway through, or that the first one was paid for its half.
+  const [handover, setHandover] = useState<{
+    job: string; from: string; to: string; tokens: number; paidOut: bigint;
+    tx: string; fresh?: boolean;
+  } | null>(null);
+
+  // The last checkpoint published by whichever provider was streaming. This is
+  // what lets a replacement continue the same answer instead of starting over
+  // and charging the guest twice for the same prefix.
+  const cpRef = useRef<{ text: string; n: number; h: string } | null>(null);
+  // The running answer, kept out of cpRef on purpose. cpRef.text must hold the
+  // prefix the checkpoint hash actually covers, not everything received since.
+  const liveRef = useRef('');
+  const finalPromptRef = useRef('');
+  const abortRef = useRef<AbortController | null>(null);
   const reloadRef = useRef<() => void>(() => {});
+  // How long to wait for the provider's final settle before closing a job to
+  // recover escrow. Published by the node as settleMaxMs, because the host no
+  // longer settles on a fixed timer: it settles once the unsettled tokens are
+  // worth more than the gas, with settleMaxMs as the backstop. A constant here
+  // silently stopped matching the moment that cadence changed.
+  const settleGraceRef = useRef(65000);
   const streamRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => { streamRef.current?.scrollTo(0, 999999); }, [stream]);
   useEffect(() => { initEngramSystem(); }, []);
+  // Abort any in-flight stream if the component goes away mid-order.
+  useEffect(() => () => { try { abortRef.current?.abort(); } catch {} }, []);
 
-  useEffect(() => {
-    (async () => {
+  // The behaviour preamble is prepended to the prompt that is actually sent
+  // and is gated by the host's context check along with it, so it has to be
+  // inside the number shown here. Counting the raw box alone understated the
+  // request and let a guest over the host's budget press an enabled button.
+  const preambleTokens = useMemo(
+    () => estTokens(behavioralPreamble(resolvePendingEngrams(pendingEngrams))),
+    [pendingEngrams],
+  );
+  const promptTokens = useMemo(() => estTokens(prompt) + preambleTokens, [prompt, preambleTokens]);
+  const overBudget = promptTokens > budgetTokens;
+  const artifacts = useMemo(() => artifactsOf(stream), [stream]);
+  const renderedStream = useMemo(
+    () => DOMPurify.sanitize(marked.parse(stream || '') as string),
+    [stream],
+  );
+  // Provider discovery. The listener is primary; the on-chain read of the
+  // known list is the fallback. Note that scanning ProviderRegistered logs is
+  // NOT an option here: the public Monad RPC rejects any eth_getLogs wider
+  // than 100 blocks, so there is no way to recover registration history from
+  // the browser. Every entry below is confirmed with a providers(addr) read.
+  async function loadProviders() {
+    if (DISCOVERY) {
       try {
-        const { Identity } = await import('@semaphore-protocol/identity');
-        const saved = localStorage.getItem('dn_zk');
-        const id = saved ? (Identity as any).import(saved) : new (Identity as any)();
-        if (!saved) localStorage.setItem('dn_zk', id.export());
-        setZkC(BigInt(id.commitment));
-      } catch {}
-    })();
-  }, []);
-
-  useEffect(() => {
-    if (!hosting) return;
-    let n = 0;
-    const iv = setInterval(() => {
-      n++;
-      const tok = 1 + Math.floor(Math.random() * 7);
-      const amt = BigInt(tok) * 2000000000000n;
-      setSimRows(r => [{ id: n, tok, amt, job: 100 + Math.floor(n / 8) }, ...r].slice(0, 8));
-      setSimEarned(e => e + amt);
-    }, 1200);
-    return () => clearInterval(iv);
-  }, [hosting]);
+        const r = await fetch(DISCOVERY.replace(/\/$/, '') + '/providers', { signal: AbortSignal.timeout(4000) });
+        if (r.ok) {
+          const j = await r.json();
+          if (Array.isArray(j.providers)) {
+            setDiscoveryUp(true);
+            setProviders(j.providers.map((p: any) => ({
+              p: p.address, model: p.model, hw: p.hw, url: p.url,
+              earned: BigInt(p.earned), tokensServed: BigInt(p.tokensServed),
+              jobsDone: BigInt(p.jobsDone), active: p.active,
+            })));
+            return;
+          }
+        }
+      } catch (e) {
+        // Worth surfacing: a plain http listener fetched from an https page is
+        // blocked as mixed content, which otherwise looks like "offline".
+        console.error('discovery fetch failed', e);
+      }
+      setDiscoveryUp(false);
+    }
+    const rows = await Promise.all(KNOWN_PROVIDERS.map(async a => {
+      try {
+        const pr = await readProvider(ADDR, a);
+        return { p: a, model: pr.model, hw: pr.hw, url: null, earned: pr.earned,
+                 tokensServed: pr.tokensServed, jobsDone: pr.jobs, active: pr.active };
+      } catch { return null; }
+    }));
+    setProviders(rows.filter((x: any) => x && x.model && x.active));
+  }
 
   useEffect(() => {
     let timer: any = null, un: any = null;
-
-    const getRawLogs = async () => {
-      const cur = await pub.getBlockNumber().catch(() => 0n);
-      const spans: any[] = ['earliest', cur - 50000n, cur - 20000n, cur - 5000n, cur - 1000n];
-      for (const f of spans) {
-        try { return await pub.getLogs({ address: ADDR, fromBlock: typeof f === 'bigint' && f < 0n ? 0n : f, toBlock: 'latest' }) as any[]; } catch {}
-      }
-      return [];
-    };
-
     const load = async () => {
-      try { setBal(await pub.getBalance({ address: guestAddress })); } catch {}
+      // One read, used for both the header figure and the funding check. This
+      // was two identical eth_getBalance calls back to back on every poll.
+      let bb: bigint | null = null;
+      try { bb = await pub.getBalance({ address: guestAddress }); setBal(bb); } catch {}
       try {
-        const bb = await pub.getBalance({ address: guestAddress });
-        if (bb < parseEther('5') && !sessionStorage.getItem('dn_topped')) {
-          sessionStorage.setItem('dn_topped', '1');
-          await faucet();
+        if (bb === null) throw new Error('balance unavailable');
+        // FUNDING INVARIANT. Measured on testnet at a 100 gwei base fee, and
+        // Monad charges
+        // gas_limit rather than gas_used: openJob alone costs 0.03 MON, and a
+        // first order that also deposits costs about 0.06. So every trigger
+        // here must sit ABOVE the cost of one full order, or a guest holding
+        // more than the threshold and less than an order is stuck forever with
+        // no way to move their own balance.
+        // Burner only, still, even though the money is no longer the house's.
+        // A guest with their own wallet connected did not ask us to go asking
+        // a third-party faucet on their behalf, and the per-IP cooldown is a
+        // shared resource: spending it on a wallet that does not need it is
+        // what leaves the next burner in the room unable to order. The manual
+        // button stays available in both modes.
+        if (wallet.mode === 'burner' && bb < TOPUP_TRIGGER && !sessionStorage.getItem('dn_topped')) {
+          // Flag set only on success. Set before the await, one 429 from the
+          // shared per-IP cooldown permanently disabled the auto-path for the
+          // tab, which is the likeliest failure in a demo room behind one NAT.
+          try {
+            await faucet(guestAddress);
+            sessionStorage.setItem('dn_topped', '1');
+          } catch (e) { console.error('auto top-up failed', e); }
         }
       } catch {}
-      try { setJobs(await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobCounter' }) as bigint); } catch {}
+      await loadProviders().catch(() => {});
       try {
-        const raw = await getRawLogs();
-        try {
-          const known: `0x${string}`[] = ['0xEAdCAED4b65660475E8e7bfb8deae1FFBABE61AB', '0xb2bA4914cd0b2F5FE36B58d861274051e83032fC'];
-          let addrs = known;
+        // One jobCounter read drives both the stat and the walk below. It was
+        // read twice per poll, and the second read could disagree with the
+        // first if a job opened between them.
+        const n2 = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobCounter' }) as bigint;
+        setJobs(n2);
+        const rows: any[] = []; let tot = 0n;
+        // Bounded: with no open job this used to walk every job back to 1,
+        // one sequential RPC call each, on mount and on every settlement.
+        const floor = n2 > FEED_WINDOW ? n2 - FEED_WINDOW : 0n;
+        // Every job in the window, not just the newest and the first open one.
+        // The old loop pushed a row only when `open || id === n2` and then broke
+        // at the first open job, so a section headed "live settlements" with a
+        // row labelled TOTAL was, in the ordinary case, one job: the newest.
+        // Anything already closed and paid - which is to say every settlement
+        // that had actually completed - was read from the chain and discarded.
+        for (let id = n2; id > floor; id--) {
           try {
-            const regs = parseEventLogs({ abi: ABI, logs: raw, eventName: 'ProviderRegistered' });
-            addrs = [...new Set([...known, ...regs.map(r => r.args.provider as any)])] as `0x${string}`[];
+            const j = await readJob(ADDR, id);
+            const { open, paid, tokens } = j;
+            if (paid === 0n && tokens === 0n && !open) continue; // opened and refunded, nothing to show
+            tot += paid;
+            rows.push({ jobId: id, tokens, amount: paid, open });
           } catch {}
-          setProviders((await Promise.all(addrs.map(async p => {
-            const [model, hw, , earned, tokensServed, jobsDone, active] =
-              await pub.readContract({ address: ADDR, abi: ABI, functionName: 'providers', args: [p] }) as readonly any[];
-            return { p, model, hw, earned, tokensServed, jobsDone, active };
-          }))).filter((x: any) => x.model));
-        } catch {}
-        try {
-          const n2 = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobCounter' }) as bigint;
-          const rows: any[] = []; let tot = 0n;
-          for (let id = n2; id >= 1n; id--) {
-            try {
-              const j = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [id] }) as readonly any[];
-              const open = j[5] as boolean;
-              if (open || id === n2) { tot += j[3] as bigint; rows.push({ jobId: id, tokens: j[4], amount: j[3], open }); }
-              if (open) break;
-            } catch {}
-          }
-          setFeed(rows);
-          setTotal(tot);
-          setPulse(x => x + 1);
-        } catch {}
+        }
+        setFeed(rows);
+        setTotal(tot);
+        setPulse(x => x + 1);
       } catch {}
     };
-
     reloadRef.current = () => { clearTimeout(timer); timer = setTimeout(load, 1200); };
     load();
     const startWatch = () => {
@@ -125,7 +361,43 @@ export default function App() {
     startWatch();
     const iv = setInterval(load, 30000);
     return () => { clearTimeout(timer); clearInterval(iv); try { un?.(); } catch {} };
-  }, []);
+    // Re-runs when the guest connects, disconnects or switches account, or the
+    // header would keep showing the previous address's balance and the funding
+    // check would keep testing the wrong wallet.
+  }, [guestAddress, wallet.mode]);
+
+  // Ask the selected host what it will accept, so the token counter reflects
+  // that host's real context window rather than a guess.
+  useEffect(() => {
+    let dead = false;
+    setHostUnproven(null);
+    (async () => {
+      try {
+        const h = await (await fetch(url + '/health', { headers: TUNNEL_HEADERS, signal: AbortSignal.timeout(6000) })).json();
+        if (!dead && h?.promptBudget) setBudgetTokens(Number(h.promptBudget));
+        if (!dead) setHostEngine({ engine: h?.engine, model: h?.model });
+        if (!dead) setHostPlans(!!h?.plans?.supported);
+        // Proven before it is usable, not merely read. PlanPanel sends the
+        // goal and every step's output straight to this host, so a plan run
+        // against an unproven `?host=` would be the same disclosure the chat
+        // path just closed, through a door nobody looked at. Cleared on
+        // failure, and the plan panel renders only when it is set.
+        if (!dead && h?.provider) {
+          const p = h.provider as `0x${string}`;
+          try {
+            await proveControl(url, p, TUNNEL_HEADERS);
+            if (!dead) setHostProvider(p);
+          } catch (e) {
+            console.error('host could not prove itself', e);
+            if (!dead) { setHostProvider(null); setHostUnproven(String((e as any)?.message ?? e)); }
+          }
+        }
+        // Plus five seconds for the settle transaction itself to land.
+        if (!dead && h?.settleMaxMs) settleGraceRef.current = Number(h.settleMaxMs) + 5000;
+      } catch {}
+    })();
+    return () => { dead = true; };
+  }, [url]);
 
   async function attempt<T>(fn: () => Promise<T>, label: string, tries = 8): Promise<T> {
     let e: any;
@@ -139,99 +411,661 @@ export default function App() {
     throw e;
   }
 
-  async function rent() {
-    setBusy(true); setStream(''); setNote('');
+  // The job this conversation is running on, or null before the first order.
+  // Held in a ref rather than state because the order flow reads it inside
+  // closures that outlive a render.
+  const sessionRef = useRef<{ jobId: bigint; provider: string } | null>(null);
+  // The guest's standing permission for this job to move providers without
+  // them. Signed once, held for the session, and handed to a standby rather
+  // than sent to the chain by this browser. See lib/reassign-auth.ts for what
+  // the guest is agreeing to.
+  const authRef = useRef<ReassignAuth | null>(null);
+  // Whether the deployed registry has reassignWithAuth at all. The older
+  // deployment does not, and against it every failover is a wallet prompt as
+  // before. Probed once, because the answer cannot change under a running
+  // page.
+  const authSupported = useRef<boolean | null>(null);
+
+  // Escrow that must remain before a session job is reused. One measured turn
+  // on this node bills between 788 and 4,508 tokens, so the floor is set above
+  // the largest of those: reusing a job that cannot fund the next answer just
+  // moves the failure from openJob to mid-sentence, which is the failure mode
+  // the escrow raise exists to remove.
+  const SESSION_MIN_REMAINING = parseEther('0.20');
+
+  /// Decide whether an existing job can carry another turn. Every condition is
+  /// read from the chain, because the provider, the cloud kitchen and settle()
+  /// can all have closed it since the last turn without telling the browser.
+  async function reusableJob(
+    session: { jobId: bigint; provider: string } | null,
+    provider: string,
+  ): Promise<bigint | null> {
+    if (!session) return null;
+    if (session.provider.toLowerCase() !== String(provider).toLowerCase()) return null;
     try {
+      const j = await readJob(ADDR, session.jobId);
+      if (!isOursAndOpen(j, guestAddress, String(provider))) return null;
+      const { escrow, paid } = j;
+      if (escrow - paid < SESSION_MIN_REMAINING) return null;
+      return session.jobId;
+    } catch {
+      // A read failure is not evidence the job is usable.
+      return null;
+    }
+  }
+
+  // Any job we opened and did not finish still holds escrow. closeJob returns
+  // the unspent remainder to the guest's deposit balance. Without this every
+  // failover permanently stranded a job's budget on chain.
+  async function releaseJob(jobId: bigint, graceMs = settleGraceRef.current) {
+    try {
+      // The host settles when the unsettled tokens are worth more than the gas
+      // to settle them, with a backstop it publishes as settleMaxMs. Closing
+      // from here the instant the stream breaks would trip settle()'s
+      // require(j.open) and rob the provider of tokens it already delivered.
+      // The old fixed 5s was sized against a 3 second flush interval that no
+      // longer exists: with a 60s backstop it could confiscate an entire
+      // answer's worth of unsettled work on any failover. Wait out the node's
+      // own window, polling so the common case still returns in about a second.
+      const deadline = Date.now() + graceMs;
+      for (;;) {
+        const cur = await readJob(ADDR, jobId);
+        if (!cur.open) return;
+        if (Date.now() >= deadline) break;
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      const j = await readJob(ADDR, jobId);
+      if (!j.open) return;
+      const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'closeJob', args: [jobId], gas: await gasFor('closeJob', [jobId], guestAddress, 150000n), maxFeePerGas: MAX_FEE });
+      await pub.waitForTransactionReceipt({ hash: h });
+    } catch (e) {
+      console.error('closeJob failed for job', jobId.toString(), e);
+    }
+  }
+
+  /// Hand a live job to another provider on chain, and return the jobId the
+  /// order continues on.
+  ///
+  /// The guest's one signature for this job, or null if we cannot have one.
+  ///
+  /// Signing is free and is not a transaction, so this costs the guest a
+  /// wallet prompt at order time and buys them a night in which a dying node
+  /// does not stop their answer. With the burner there is no prompt at all.
+  ///
+  /// Every reason this can return null is a reason to fall back to the
+  /// wallet-prompt handover rather than to fail: an older registry with no
+  /// reassignWithAuth, a guest who declined the signature, or an
+  /// authorisation that has outlived its deadline.
+  async function ensureAuth(id: bigint): Promise<ReassignAuth | null> {
+    if (authSupported.current === null) {
+      authSupported.current = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'DOMAIN_SEPARATOR' })
+        .then(() => true)
+        .catch(() => false);
+      if (!authSupported.current) {
+        console.info('registry has no reassignWithAuth; failover will ask for a transaction');
+      }
+    }
+    if (!authSupported.current) return null;
+
+    const held = authRef.current;
+    if (held && held.jobId === id && isLive(held)) return held;
+    try {
+      setNote('sign once so this answer can survive a node going away — no gas, no transaction');
+      const auth = await signReassignAuth(guestWallet, MONAD_CHAIN_ID, ADDR, id);
+      authRef.current = auth;
+      return auth;
+    } catch (e) {
+      // Declining is a real choice and not an error. The order proceeds, and
+      // a handover will ask for a transaction the way it always did.
+      console.info('guest declined the failover authorisation', e);
+      authRef.current = null;
+      return null;
+    }
+  }
+
+  /// The happy path keeps the same job. `reassign` is callable only by the
+  /// requester, which is this browser, and it does three things the browser
+  /// cannot do for itself: it pays the outgoing provider up to what its own
+  /// published checkpoint evidences and no further, it refuses to let the
+  /// replacement's rate or throughput rise above what the guest locked at
+  /// open, and it leaves the checkpoint chain in place so the replacement's
+  /// first settle is clamped to the suffix it actually produced.
+  ///
+  /// The fallback opens a fresh job. It is needed because reassign can be
+  /// legitimately impossible: a provider on its way down may have called
+  /// closeJob, and a closed job cannot be handed anywhere. It is strictly
+  /// weaker, and the difference is the point of this function existing: a new
+  /// job carries no checkpoint the contract knows about, so on that path
+  /// "the replacement is not paid for the prefix it inherited" holds only
+  /// because the host chooses to settle what it produced. That is a promise
+  /// rather than a rule, which is why it is the fallback and not the path.
+  async function handOver(
+    id: bigint,
+    to: `0x${string}`,
+    budget: bigint,
+    promptTag: `0x${string}`,
+    opened: bigint[],
+  ): Promise<bigint> {
+    try {
+      // Estimated rather than padded. reassign's cost swings on whether the
+      // outgoing provider has a checkpoint to be settled out of, and Monad
+      // charges the gas limit rather than the gas used, so a fixed limit sized
+      // for the expensive case is a real overpayment on every cheap one.
+      const gas = await pub.estimateContractGas({
+        address: ADDR, abi: ABI, functionName: 'reassign', args: [id, to], account: guestAddress,
+      }).then(g => (g * 12n) / 10n).catch(() => 300000n);
+      const h = await guestWallet.writeContract({
+        address: ADDR, abi: ABI, functionName: 'reassign', args: [id, to], gas, maxFeePerGas: MAX_FEE,
+      });
+      const rc = await pub.waitForTransactionReceipt({ hash: h });
+      // writeContract resolves on acceptance, not on success. Without this a
+      // reverted handover reads as a completed one and the loop streams from a
+      // provider the contract never gave the job to, whose settle then reverts
+      // against a job that is not its own.
+      if (rc.status !== 'success') throw new Error('reassign reverted');
+      const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobReassigned' });
+      const settledOut = (log?.args as any)?.settledOut as bigint | undefined;
+      setHandover({
+        job: id.toString(),
+        from: String((log?.args as any)?.from ?? ''),
+        to,
+        tokens: cpRef.current?.n ?? 0,
+        paidOut: settledOut ?? 0n,
+        tx: h,
+      });
+      return id;
+    } catch (e) {
+      console.error('reassign failed, opening a fresh job instead', e);
+      setNote('the job could not be handed over on chain — opening a new one on the standby node…');
+      const dep = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'deposits', args: [guestAddress] }) as bigint;
+      if (dep < budget) {
+        const depHash = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: budget, gas: await gasFor('deposit', [], guestAddress, 200000n, budget), maxFeePerGas: MAX_FEE });
+        await pub.waitForTransactionReceipt({ hash: depHash });
+      }
+      // requireCheckpoints stays true on the fallback job as well. It cannot
+      // bound the inherited prefix, since this job has never seen one, but it
+      // still bounds everything the replacement produces from here.
+      const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [to, budget, promptTag, true], gas: await gasFor('openJob', [to, budget, promptTag, true], guestAddress, 300000n), maxFeePerGas: MAX_FEE });
+      const rc = await pub.waitForTransactionReceipt({ hash: h });
+      const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
+      const fresh = log.args.jobId as bigint;
+      opened.push(fresh);
+      setHandover({
+        job: fresh.toString(), from: '', to, tokens: cpRef.current?.n ?? 0,
+        paidOut: 0n, tx: h, fresh: true,
+      });
+      // The old job is not ours to keep holding. It is closed rather than
+      // abandoned so its unspent escrow returns to the guest's deposit.
+      await releaseJob(id);
+      return fresh;
+    }
+  }
+
+  async function rent(resume = false) {
+    if (overBudget) { setNote(`prompt is ${promptTokens} tokens, over this host's ${budgetTokens} limit — shorten it`); return; }
+    setBusy(true);
+    setNote('');
+    // The transcript shows the prompt as submitted, so a guest editing the box
+    // while an answer streams does not silently rewrite the question it was an
+    // answer to. On a resume the original prompt stays; it is the same question.
+    if (!resume) { setStream(''); cpRef.current = null; liveRef.current = ''; setCanResume(false); setSentPrompt(prompt); setHandover(null); }
+    setThinking(''); setThinkTokens(0);
+    const opened: bigint[] = [];
+    let finished = false;
+    // Set by a {warn} frame, which means the answer completed but the
+    // provider's own settlement or closeJob failed. Declared out here because
+    // it has to survive the break and drive cleanup below.
+    let warned = '';
+    try {
+      if (!wallet.chainOk) {
+        setNote('your wallet is on the wrong network. switch it to Monad testnet and order again.');
+        return; // the finally below clears busy and releases anything open
+      }
       let b = await pub.getBalance({ address: guestAddress }).catch(() => 0n);
-      if (b < parseEther('0.02')) {
-        setNote('guest is broke — hitting the faucet…');
-        try { await faucet(); } catch {}
+      if (b < TOPUP_TRIGGER) {
+        if (wallet.mode === 'injected') {
+          // A connected wallet is the guest's own money, so this stops and
+          // says so rather than quietly asking the house to fund it. The
+          // faucet button in the header is still there if they want to try it.
+          setNote(`this wallet holds ${fmt(b)} MON and one order needs about ${formatEther(TOPUP_TRIGGER)}. top it up, or disconnect to use the burner.`);
+          return; // the finally below clears busy
+        }
+        setNote('guest is broke, hitting the faucet…');
+        try { await faucet(guestAddress); } catch (e) { console.error('faucet failed', e); }
         for (let i = 0; i < 10; i++) {
           await new Promise(r => setTimeout(r, 2000));
           b = await pub.getBalance({ address: guestAddress }).catch(() => 0n);
-          if (b >= parseEther('0.02')) break;
+          if (b >= TOPUP_TRIGGER) break;
         }
       }
-      const health = await attempt(async () => (await fetch(url + '/health', { signal: AbortSignal.timeout(9000), headers: { 'bypass-tunnel-reminder': '1', 'ngrok-skip-browser-warning': 'true' } })).json(), 'warming the tunnel');
-      const budget = parseEther('0.01');
-      const dep = await attempt(() => pub.readContract({ address: ADDR, abi: ABI, functionName: 'deposits', args: [guestAddress] }) as Promise<bigint>, 'checking your tab');
-      if (dep < budget) {
-        setNote('depositing 0.01 MON…');
-        const depHash = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: budget, gas: 200000n });
-        await pub.waitForTransactionReceipt({ hash: depHash });
-      }
+
+      // 0.30 MON at RATE_PER_MILLION = 3.353e19 buys about 8,940 billable
+      // tokens. Sized from the longest measured job, not from a round number:
+      // when a settle exhausts the escrow the CONTRACT closes the job itself
+      // (DinnerNode.sol:78), so the guest's answer stops mid-sentence.
+      //
+      // Raised from 0.10 because the node now bills reasoning tokens, and
+      // reasoning is most of what a reasoning model produces. A measured 900
+      // word briefing is about 1,200 visible tokens on top of about 3,090
+      // reasoning tokens, so it is a 4,290 token job, not a 1,200 token one.
+      // The old 0.10 ceiling was 2,980 tokens, which the briefing would have
+      // blown through with the answer roughly a third written.
+      //
+      // The escrow is a ceiling rather than a charge, and it is deposited once:
+      // closeJob refunds the unspent remainder to deposits[guest], and the next
+      // order tops that back up to budget rather than depositing again. So
+      // raising it costs the guest a larger one-time deposit and nothing per
+      // order beyond the tokens actually produced.
+      // Raised from 0.30 to 1.00 with session jobs. A measured ten turn
+      // conversation on this node billed 19,604 tokens; 0.30 MON buys 8,947, so
+      // a session at the old ceiling needed two mid-conversation top-ups and
+      // every one of them is a moment the answer can stop mid-sentence.
+      // 1.00 MON is about 29,800 tokens, which carried the whole measured
+      // conversation with room over.
+      const budget = parseEther('1.00');
       setNote('opening job…');
-      const prepared = await preparePrompt(prompt, sanitization);
-      setNote(prepared.redactionCount > 0 ? 'privacy: ' + prepared.redactionCount + ' item(s) redacted locally before hashing' : 'privacy: no personal data detected in prompt');
+      // The staged engrams go in here, not only into applyPendingEngrams below.
+      // Storage cannot hold them until openJob has landed, and by then this
+      // prompt is already sanitized, hashed and on its way, so the panel's
+      // selection has to be applied to the prompt at this point or it never
+      // touches the job it was staged for.
+      const prepared = await preparePrompt(prompt, sanitization, pendingEngrams);
+      setNote(prepared.redactionCount > 0
+        ? `privacy: ${prepared.redactionCount} item(s) redacted locally before hashing (pattern matching, best effort, not a guarantee)`
+        : 'privacy: no personal data matched by the local patterns (best effort, not a guarantee)');
       await new Promise(r => setTimeout(r, 600));
       const cleanPrompt = prepared.sanitized;
-      const promptTag = keccak256(new TextEncoder().encode(cleanPrompt + '|' + zkC.toString()));
-      const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [health.provider, budget, promptTag], gas: 300000n });
-      const rc = await pub.waitForTransactionReceipt({ hash: h });
-      const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
-      const jobId = log.args.jobId as bigint;
-      await onJobOpen(jobId.toString());
-      setNote(`job#${jobId} open — prompt zk-committed (${promptTag.slice(0, 10)}…) — streaming from ${health.model}…`);
-      let gotDone = false; let finalJobId = jobId;
-      const urls = [url, window.location.origin + '/api/p'];
-      for (const u of urls) {
+      finalPromptRef.current = cleanPrompt;
+
+      // A fresh random salt per job. The previous construction hashed the
+      // prompt with the long-lived Semaphore commitment, which is stable per
+      // browser, so identical prompts produced identical tags and short
+      // prompts were trivially brute-forceable from the public event.
+      // Unlinkability comes from the salt being fresh per job and never
+      // leaving this function. Parking it in sessionStorage would only widen
+      // the blast radius of any script running on the page.
+      const salt = toHex(crypto.getRandomValues(new Uint8Array(32)));
+      const promptTag = keccak256(new TextEncoder().encode(salt + '|' + cleanPrompt));
+
+      // Failover, and the thing that makes it the contract's business rather
+      // than a convention between two hosts.
+      //
+      // The first target is whatever the guest selected; the rest are the
+      // other live nodes discovery knows about. That list exists again because
+      // the second entry used to be the hosted kitchen, which answered every
+      // failure with a canned passage and a real settlement, so a guest whose
+      // node died paid for text no model produced. Deleting it in fd86fb8 was
+      // right and left the browser with no failover target at all.
+      //
+      // ONE job crosses every target. That is the whole difference from the
+      // loop this replaces, which opened a job per attempt: the escrow, the
+      // rate locked at open, the prompt commitment and the checkpoint chain
+      // all stay on the same jobId, and the handover is `reassign`, which
+      // settles the outgoing provider against its own published checkpoint
+      // before moving the job and clamps the replacement to the suffix it
+      // produces itself. A job per attempt can do neither, because the second
+      // job has no checkpoint history the contract knows about: "the
+      // replacement is not paid for the prefix it inherited" is then a promise
+      // the browser makes rather than a rule the chain holds.
+      const norm = (x: string) => x.replace(/\/+$/, '');
+      // Discovery is the source of peer URLs, because a provider's URL is not
+      // on chain: registerProvider records a model, a rate and a throughput
+      // figure and nothing about where to reach the machine. So when
+      // VITE_DISCOVERY_URL is unset, or the listener is unreachable, the
+      // fallback list has url:null on every row and there is no failover
+      // target at all. `?peer=` is the way to name one by hand, and it takes
+      // the same trust as the `?host=` parameter beside it, which has always
+      // decided who receives the prompt in the first place.
+      const named = new URLSearchParams(window.location.search).getAll('peer');
+      const peers = [
+        ...named,
+        ...providers.filter((p: any) => p.active && p.url).map((p: any) => String(p.url)),
+      ].filter((u, i, a) => norm(u) !== norm(url) && a.findIndex(x => norm(x) === norm(u)) === i);
+      // Two spares. Every failed attempt costs a health timeout plus a
+      // reassign, and a guest watching an answer stall does not sit through
+      // five of them.
+      const targets = [url, ...peers.slice(0, 2)];
+      let finalJobId: bigint | null = null;
+      // Both survive the loop body: after one target has the job open, the
+      // next takes it over instead of opening its own.
+      let jobId: bigint | null = null;
+      let servedBy: string | null = null;
+      // Set for one attempt only: the authorisation this target should carry
+      // to the chain on the guest's behalf, or null when the browser did the
+      // handover itself.
+      let handoverAuth: ReassignAuth | null = null;
+
+      for (const u of targets) {
+        const first = u === targets[0];
         try {
-          let jobId2 = jobId;
-          if (u !== url) {
-            const h2 = await (await fetch(u + '/health', { headers: { 'bypass-tunnel-reminder': '1', 'ngrok-skip-browser-warning': 'true' } })).json();
-            const hh = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [h2.provider, budget, promptTag], gas: 300000n });
-            const rc2 = await pub.waitForTransactionReceipt({ hash: hh });
-            const [lg] = parseEventLogs({ abi: ABI, logs: rc2.logs, eventName: 'JobOpened' });
-            jobId2 = lg.args.jobId as bigint;
-            finalJobId = jobId2;
-            setNote('host dropped mid-answer — auto-switching to cloud kitchen…');
+          const health = await attempt(async () => (await fetch(u + '/health', {
+            signal: AbortSignal.timeout(9000), headers: TUNNEL_HEADERS,
+          })).json(), first ? 'warming the tunnel' : 'reaching a standby node', first ? 8 : 3);
+          const nextProvider = String(health.provider) as `0x${string}`;
+          // Before the prompt goes anywhere. `/health` is the host describing
+          // itself, so a link naming a hostile machine would hand it the
+          // prompt on the strength of its own claim. This makes it sign a
+          // nonce we chose, and checks the registry still calls it active.
+          // A host that cannot do both is skipped like any dead node.
+          await attempt(() => proveControl(u, nextProvider, TUNNEL_HEADERS),
+            first ? 'checking who you are ordering from' : 'checking the standby node', 1);
+
+          if (jobId === null) {
+            // One job per session rather than one per turn. Reuse is always
+            // decided by reading the chain, never by trusting local state: the
+            // provider closes a session job when it goes idle, and settle()
+            // used to close a job the moment its escrow was exhausted. Any of
+            // those can have happened since the last turn, so a job is only
+            // reused when the chain says it is open, belongs to this guest and
+            // this provider, and still has headroom.
+            jobId = await reusableJob(sessionRef.current, nextProvider);
+
+            if (jobId === null) {
+              const dep = await attempt(() => pub.readContract({ address: ADDR, abi: ABI, functionName: 'deposits', args: [guestAddress] }) as Promise<bigint>, 'checking your tab');
+              if (dep < budget) {
+                setNote(`depositing ${formatEther(budget)} MON…`);
+                const depHash = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'deposit', args: [], value: budget, gas: await gasFor('deposit', [], guestAddress, 200000n, budget), maxFeePerGas: MAX_FEE });
+                await pub.waitForTransactionReceipt({ hash: depHash });
+              }
+
+              // The fourth argument is requireCheckpoints, and true is the
+              // whole point of v2 from the guest's side: the node cannot be
+              // paid for tokens it has not published a keccak checkpoint
+              // covering, so the most a failure can cost is one settlement's
+              // worth of work rather than the escrow. A chat turn is one
+              // growing answer, which is exactly the shape the bound is
+              // written for, and it is also what a replacement provider needs
+              // in order to be bounded at all. PlanPanel passes false, because
+              // a plan has no single prefix and takes its ceiling from
+              // commitPlan instead.
+              const h = await guestWallet.writeContract({ address: ADDR, abi: ABI, functionName: 'openJob', args: [nextProvider, budget, promptTag, true], gas: await gasFor('openJob', [nextProvider, budget, promptTag, true], guestAddress, 300000n), maxFeePerGas: MAX_FEE });
+              const rc = await pub.waitForTransactionReceipt({ hash: h });
+              const [log] = parseEventLogs({ abi: ABI, logs: rc.logs, eventName: 'JobOpened' });
+              jobId = log.args.jobId as bigint;
+            } else {
+              setNote(`continuing job#${jobId} — this session's escrow is still open`);
+            }
+            sessionRef.current = { jobId, provider: nextProvider };
+            // Asked for once the job exists and before a token is streamed,
+            // which is the only moment the guest is certainly present. A
+            // failover at 3am cannot ask them for anything.
+            await ensureAuth(jobId);
+          } else if (servedBy && servedBy.toLowerCase() !== nextProvider.toLowerCase()) {
+            // THE HANDOVER. Same jobId, new provider, and the contract does
+            // the accounting: it pays the outgoing provider up to what its own
+            // published checkpoint evidences, bounded by exactly the rules a
+            // settle would have been, and a provider that published nothing is
+            // owed nothing. Then it moves the job, taking the replacement's
+            // rate and throughput only if they are LOWER than the ones the
+            // guest locked at open.
+            setNote(`${nextProvider.slice(0, 8)}… is taking over job#${jobId}${cpRef.current ? ` from token ${cpRef.current.n}` : ''}…`);
+            // Two ways to move the job, and the difference is who has to be
+            // awake. With an authorisation the standby submits the handover
+            // itself, using the signature this browser already holds, and the
+            // guest sends nothing: that is the whole point, because a node
+            // dying at 3am used to leave the answer stopped until somebody
+            // confirmed a wallet prompt. `auth` rides on the /job request
+            // below; the transaction is the standby's.
+            //
+            // Without one, this is the path it always was.
+            const held = authRef.current;
+            handoverAuth = held && held.jobId === jobId && isLive(held) ? held : null;
+            if (!handoverAuth) {
+              jobId = await handOver(jobId, nextProvider, budget, promptTag, opened);
+            }
+            sessionRef.current = { jobId, provider: nextProvider };
           }
+
+          const jid = jobId; // stable binding: the closures below outlive the narrowing
+          // Tracked once per distinct job rather than once per attempt. Under
+          // reassign there is normally exactly one for the whole order, and
+          // the only way to get a second is the fallback inside handOver.
+          if (!opened.includes(jid)) opened.push(jid);
+          servedBy = nextProvider;
+          await onJobOpen(jid.toString());
+          // Only now does a job binding exist, so this is the first moment the
+          // staged template or custom engram can legally be stored. A failure
+          // here must not abort the order: the engram is optional and the
+          // escrow is already committed on chain.
+          await applyPendingEngrams(pendingEngrams).catch(e => console.error('engram apply failed', e));
+
+          const cp = cpRef.current;
+          setNote(first
+            ? `job#${jid} open — prompt committed (${promptTag.slice(0, 10)}…) — streaming from ${health.model}…`
+            : `job#${jid} handed to ${health.model}${cp ? ` at token ${cp.n}` : ''} — continuing the same answer…`);
+
+          // Show the committed prefix and nothing after it. Whatever this
+          // provider sends either continues that prefix or replaces it, so
+          // anything the previous provider streamed past the last checkpoint
+          // must be dropped rather than concatenated with the new answer.
+          const base = cp?.h ? cp.text : '';
+          liveRef.current = base;
+          setStream(base);
+          // Reasoning belongs to the attempt that produced it. A failover to a
+          // second provider starts its own.
+          setThinking(''); setThinkTokens(0);
+
+          const ac = new AbortController();
+          abortRef.current = ac;
+          // The host heartbeats ": hb" every second, which keeps the socket
+          // open forever if the engine wedges after headers are sent. Without
+          // a watchdog the reader never resolves and busy never clears.
+          //
+          // Two budgets. The pre-first-byte phase covers the POST and a cold
+          // model load, which routinely exceeds twenty seconds on ollama; the
+          // old single 20s budget aborted every cold start. Once tokens are
+          // flowing, twenty seconds of silence past the 1s heartbeat is a wedge.
+          // Measured against TOKENS, not bytes. The heartbeat is a byte, so
+          // keying off bytes broke this twice over: the first ": hb" at t=1s
+          // flipped `streaming` true and collapsed the cold-start grace to 20s
+          // long before any token existed, and the 1s heartbeat then kept
+          // refreshing the deadline, which is exactly the wedge this watchdog
+          // exists to catch. Time-to-first-token is ~48s for a 27B that has to
+          // evict and load, so the cold budget has to clear that with room.
+          //
+          // The cold budget scales with prompt length, because prompt
+          // evaluation dominates it. A fixed budget cannot serve both ends of a
+          // long range: a small constant aborts every long prompt, and one big
+          // enough for the longest leaves a wedged short job hanging.
+          //
+          // REMEASURED 2026-08-28, `scripts/bench-throughput.py`, seven prompt
+          // lengths from 517 to 95,128 tokens. Prefill is 460 to 490 tok/s and
+          // essentially FLAT across that whole range, not the 158 tok/s an
+          // earlier single reading suggested. The old divisor of 150 was
+          // therefore budgeting about three times the time prefill actually
+          // needs, so a wedged long-prompt job hung for minutes past the point
+          // it was already dead.
+          //
+          // 300 is deliberately not 490. It is the measured rate with a margin
+          // of about 1.6x, because prefill on a busy node is slower than on the
+          // idle one these numbers came from, and because aborting a healthy
+          // job is a worse failure than waiting out a dead one.
+          //
+          // What the same measurements say NOT to fold in here: model load,
+          // which dominates and does not scale with the prompt at all. It ran
+          // 16s at num_ctx 16k, 43s at 32k and 114s at 40k, and it is paid only
+          // when the node has to load or reload. That is what firstTokenMs
+          // below is for.
+          let lastToken = Date.now();
+          let streaming = false;
+          let streamErr = '';
+          //
+          // The 60s floor is not enough on its own. A node serving a model too
+          // large for its VRAM runs most layers on the CPU: measured on the
+          // reference laptop, a 27B already resident took 84s to the first
+          // token on a 14 token prompt, so every job on it was aborted before
+          // it produced anything. The host now measures that on startup and
+          // publishes it as firstTokenMs, so the budget can come from the node
+          // in front of us rather than from an assumption about it. Three times
+          // measured, because the measurement was taken on an idle machine and
+          // a guest arrives on a busy one. Capped, because a node this slow is
+          // one the guest should be leaving, not waiting on for ten minutes.
+          const measured = Number(health?.firstTokenMs) || 0;
+          const PREFILL_TOK_S = 300;
+          const COLD_BUDGET_MS =
+            Math.min(300000, Math.max(60000, measured * 3)) + Math.ceil(promptTokens / PREFILL_TOK_S) * 1000;
+          const watchdog = setInterval(() => {
+            const budget = streaming ? 30000 : COLD_BUDGET_MS;
+            if (Date.now() - lastToken > budget) ac.abort();
+          }, 2000);
+
           const res = await attempt(() => fetch(u + '/job', {
-            method: 'POST', headers: { 'content-type': 'application/json', 'bypass-tunnel-reminder': '1', 'ngrok-skip-browser-warning': 'true' },
-            body: JSON.stringify({ jobId: jobId2.toString(), prompt: cleanPrompt }),
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...TUNNEL_HEADERS },
+            signal: ac.signal,
+            // The checkpoint travels with the request. Only a checkpoint with
+            // a real hash is sendable: the host verifies keccak(text) === h and
+            // rejects the request outright on a mismatch.
+            // `auth` is present only on a handover this browser did not pay
+            // for. The host ignores it on a job that is already its own, so
+            // sending it on the first attempt would be harmless and sending
+            // it here is what moves the job.
+            body: JSON.stringify({
+              jobId: jid.toString(), prompt: cleanPrompt, session: true,
+              // The node answers without reasoning unless asked. The site
+              // shows the reasoning and bills it visibly, so it asks.
+              think: true,
+              resume: cp?.h ? { text: cp.text, n: cp.n, h: cp.h } : undefined,
+              auth: handoverAuth ? toWire(handoverAuth) : undefined,
+            }),
           }), 'waking the GPU');
+
+          if (!res.ok) { setNote(await res.text()); throw new Error('host refused'); }
+
           const reader = res.body!.getReader();
           const dec = new TextDecoder();
           let buf = '';
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buf += dec.decode(value, { stream: true });
-            let i: number;
-            while ((i = buf.indexOf('\n')) >= 0) {
-              const l = buf.slice(0, i); buf = buf.slice(i + 1);
-              if (l === 'data: [DONE]') gotDone = true;
-              else if (l.startsWith('data: ')) { try { setStream(x => x + JSON.parse(l.slice(6)).t); } catch {} }
+          let gotDone = false;
+          try {
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buf += dec.decode(value, { stream: true });
+              let i: number;
+              while ((i = buf.indexOf('\n')) >= 0) {
+                const l = buf.slice(0, i); buf = buf.slice(i + 1);
+                if (l === 'data: [DONE]') { gotDone = true; continue; }
+                if (!l.startsWith('data: ')) continue;
+                try {
+                  const msg = JSON.parse(l.slice(6));
+                  // Only a real token proves the engine is producing, so this
+                  // is the one place the watchdog's clock may be reset.
+                  if (msg.t) { lastToken = Date.now(); streaming = true; liveRef.current += msg.t; setStream(x => x + msg.t); }
+                  // A thinking frame proves the engine is producing just as a
+                  // token does, so it refreshes the watchdog. It deliberately
+                  // does NOT set `streaming`: that collapses the budget to the
+                  // 30s wedge timer, and this node thinks for up to 47s before
+                  // the first visible character. Reasoning is displayed, never
+                  // appended to liveRef, so it cannot enter a checkpoint or
+                  // the visible answer. It is billed by the host, but the
+                  // checkpoint chain covers the visible answer only.
+                  if (msg.th) { lastToken = Date.now(); setThinking(x => x + msg.th); setThinkTokens(n => n + 1); }
+                  // A checkpoint frame is written after the tokens it covers,
+                  // so at this instant liveRef holds exactly the prefix that
+                  // msg.cp.h hashes. Snapshotting here, rather than tracking
+                  // the running text, is what makes the resume payload
+                  // verifiable by the next provider.
+                  if (msg.cp) cpRef.current = { text: liveRef.current, n: msg.cp.n, h: msg.cp.h };
+                  // The node's own count, which is what it settled against.
+                  // Frame counting above should already agree; this makes the
+                  // displayed number the billed number by construction rather
+                  // than by the two staying in step.
+                  if (msg.bill && typeof msg.bill.reasoning === 'number') setThinkTokens(msg.bill.reasoning);
+                  // The host writes {err} and then STILL writes the final
+                  // checkpoint and [DONE]. Treating [DONE] as success here
+                  // showed the guest a truncated answer, a success message and
+                  // a charge, with no failover and the error overwritten a
+                  // moment later. Record it and refuse to call the stream
+                  // finished, so the loop moves to the next provider and the
+                  // checkpoint continuation resumes the prefix already paid for.
+                  if (msg.err) { console.error('provider error frame', u, msg.err); streamErr = String(msg.err); setNote('provider error: ' + msg.err); }
+                  // {warn} means the answer arrived but a settlement or
+                  // closeJob failed on the provider side. Not an answer
+                  // failure, so it must not trigger failover, but it does mean
+                  // the job may still be open with escrow in it.
+                  if (msg.warn) { console.warn('settlement warning', u, msg.warn); warned = String(msg.warn); }
+                } catch {}
+              }
             }
+            // A producer that ends without a trailing newline would strand
+            // the last line, and that line can be [DONE]. Neither producer
+            // does this today; the flush costs nothing and removes the class.
+            if (buf.trim() === 'data: [DONE]') gotDone = true;
+          } finally {
+            clearInterval(watchdog);
+            abortRef.current = null;
+            try { await reader.cancel(); } catch {}
           }
-          if (gotDone) { finalJobId = jobId2; break; }
-        } catch {}
+          if (gotDone && !streamErr) { finalJobId = jid; finished = true; break; }
+          throw new Error(streamErr ? 'provider errored mid-stream: ' + streamErr : 'stream ended without [DONE]');
+        } catch (e) {
+          console.error('provider attempt failed', u, e);
+          // Deliberately does NOT release the job. The next target takes this
+          // one over, and closing it here would throw away the escrow, the
+          // locked rate and the checkpoint chain that make the handover worth
+          // anything. The finally below releases it if no target finishes.
+        }
       }
-      if (!gotDone) throw new Error('no provider finished the order');
-      const job = await pub.readContract({ address: ADDR, abi: ABI, functionName: 'jobs', args: [finalJobId] }) as readonly any[];
-      setSessionCost(c => c + (job[3] as bigint));
-      setNote('order up — see the check →');
+
+      if (!finished || finalJobId === null) {
+        setCanResume(!!cpRef.current?.n);
+        throw new Error('no provider finished the order');
+      }
+
+      const job = await readJob(ADDR, finalJobId);
+      const cost = job.paid;
+      setSessionCost(c => c + cost);
+      setNote(warned
+        ? 'order delivered, but the provider reported a settlement problem. Releasing any unspent escrow.'
+        : 'order up, see the check →');
+      setCanResume(false);
+      // Read the finished answer from the ref rather than from a setState
+      // updater. The updater ran twice under StrictMode and prepended the
+      // entry each time, and it stored the raw pre-sanitization prompt, which
+      // put exactly the text the redaction pipeline exists to remove into
+      // localStorage permanently.
+      const entry: Session = {
+        ts: Date.now(), prompt: finalPromptRef.current, answer: liveRef.current,
+        jobId: finalJobId.toString(), cost: cost.toString(),
+      };
+      if (cost > 0n && sessionRef.current) setRatedProvider(sessionRef.current.provider as `0x${string}`);
+      // Both read through refs, so a list cleared or a switch turned off while
+      // this order was streaming is respected rather than overwritten by the
+      // values this closure started with.
+      const next = [entry, ...sessionsRef.current].slice(0, 20);
+      if (keepHistoryRef.current) { try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)); } catch {} }
+      sessionsRef.current = next;
+      setSessions(next);
       reloadRef.current();
-      (async () => {
-        try {
-          const { Identity } = await import('@semaphore-protocol/identity');
-          const { Group } = await import('@semaphore-protocol/group');
-          const { generateProof, verifyProof } = await import('@semaphore-protocol/proof');
-          const saved = localStorage.getItem('dn_zk');
-          if (!saved) return;
-          const id2 = (Identity as any).import(saved);
-          const c = BigInt(id2.commitment);
-          let g: any; try { g = new (Group as any)([c]); } catch { g = new (Group as any)(); g.addMember(c); }
-          const pf = await (generateProof as any)(id2, g, promptTag, 'dinnernode-job');
-          if (await (verifyProof as any)(pf)) setZkLine('private by design — prompt zk-committed on-chain · groth16 proof verified in your browser ✓ guests = semaphore pseudonyms, not wallets.');
-        } catch {}
-      })();
     } catch (e: any) {
-    console.error('rent failed', e);
-      setNote('the kitchen is still warming up — give it a couple seconds and tap place order again.');
+      console.error('rent failed', e);
+      setNote(e?.message === 'no provider finished the order'
+        ? 'no provider finished the order — escrow released. tap resume to continue from the last checkpoint.'
+        : 'the kitchen is still warming up — give it a couple seconds and tap place order again.');
+    } finally {
+      // Belt and braces: close anything still open, including on a thrown
+      // programmer error, so escrow is never left stranded.
+      //
+      // The last opened job is skipped on success. Under session jobs that is
+      // deliberate rather than incidental: the provider leaves it open for the
+      // next turn, and closes it itself once the session goes idle. A {warn}
+      // frame is the provider telling us that its own settle or closeJob
+      // failed, so in that case the escrow is still sitting there and we are
+      // the only party left who can release it. Skipping it on a warn was
+      // exactly backwards.
+      const providerClosedIt = finished && !warned;
+      for (const id of opened) if (!providerClosedIt || id !== opened[opened.length - 1]) await releaseJob(id);
+      onJobClose();
+      setBusy(false);
     }
-    onJobClose();
-  setBusy(false);
+  }
+
+  function download(a: { name: string; body: string }) {
+    const blob = new Blob([a.body], { type: 'text/plain' });
+    const href = URL.createObjectURL(blob);
+    const el = document.createElement('a');
+    el.href = href; el.download = a.name; el.click();
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
   }
 
   return (
@@ -241,13 +1075,47 @@ export default function App() {
         <p className="tag">idle compute, settling every second</p>
         <span className="addr">
           contract <a href={`${EXPLORER}/address/${ADDR}`} target="_blank" rel="noreferrer">{short(ADDR)}</a>
-          {' '}· guest {short(guestAddress)} · {fmt(bal)} MON
-          <button onClick={async () => { try { await faucet(); } catch {} reloadRef.current(); }}>faucet</button>
+          {' '}· {wallet.mode === 'injected' ? wallet.label : 'burner'}{' '}
+          <a href={`${EXPLORER}/address/${guestAddress}`} target="_blank" rel="noreferrer">{short(guestAddress)}</a>
+          {' '}· {fmt(bal)} MON
+          {wallet.mode === 'injected'
+            ? <button onClick={() => disconnect()}>disconnect</button>
+            : wallet.wallets.length > 1
+              // With two extensions installed, connecting to "the wallet"
+              // means connecting to whichever one won a race. EIP-6963 is what
+              // makes them distinguishable, so having discovered them the page
+              // should let the guest say which.
+              ? wallet.wallets.map(w => (
+                  <button key={w.rdns} disabled={wallet.connecting} onClick={() => void connect(w.rdns)}>
+                    connect {w.name}
+                  </button>
+                ))
+              : <button disabled={wallet.connecting} onClick={() => void connect()}>
+                  {wallet.connecting ? 'connecting…' : 'connect wallet'}
+                </button>}
+          <button onClick={async () => { try { await faucet(guestAddress); } catch {} reloadRef.current(); }}>faucet</button>
+        </span>
+        {wallet.mode === 'injected' && !wallet.chainOk && (
+          <span className="addr">
+            this wallet is not on Monad testnet, so it cannot open a job.
+            <button onClick={() => void switchChain()}>switch network</button>
+          </span>
+        )}
+        {wallet.error && <span className="addr">{wallet.error}</span>}
+        {wallet.mode === 'burner' && (
+          <span className="addr dim">
+            you are spending a burner key this page generated and the house funded.
+            connect a wallet to pay the provider with testnet MON of your own.
+          </span>
+        )}
+        <span className="addr">
+          <a href="/hosting.html">run a node</a> · <a href="/terms.html">terms</a> · <a href="/acceptable-use.html">acceptable use</a> · testnet only, MON here has no monetary value
         </span>
       </header>
 
       <div className="stats">
-        jobs {jobs.toString()} · providers {providers.length} · settled total <b>{fmt(total)} MON</b> · settlements {feed.length}+
+        jobs {jobs.toString()} · providers {providers.length} · settled in the last {feed.length} jobs <b>{fmt(total)} MON</b>
+        {discoveryUp === false && <span className="dim"> · discovery offline, using known list</span>}
       </div>
 
       <main>
@@ -256,39 +1124,181 @@ export default function App() {
           {providers.length === 0 && <div className="card dim">nobody's cooking yet — run `npm run host`</div>}
           {providers.map(p => (
             <div className="card" key={p.p}>
-              <div className="model">{p.model}{p.active ? <span className="dot small" /> : null}</div>
+              <div className="model">
+                {p.model}{p.active ? <span className="dot small" /> : null}
+                {p.url && p.url !== url && <button onClick={() => setUrl(p.url)}>use</button>}
+              </div>
               <div className="dim">{p.hw}</div>
               <div className="dim">earned {fmt(p.earned)} MON · {p.tokensServed.toString()} tok · {p.jobsDone.toString()} jobs</div>
             </div>
           ))}
+          {/* Replaced the "your kitchen (sim)" card. It generated rows locally
+              and settled nothing, so the one thing on the page inviting someone
+              to become a provider was the one thing that was not real. */}
           <div className="card">
-            <div className="model">your kitchen (sim)</div>
-            <button onClick={() => setHosting(h => !h)}>{hosting ? '■ stop hosting' : '▶ start hosting'}</button>
-            {hosting && <div className="note">started hosting! your kitchen is on the clock (simulation)</div>}
-            {hosting && simRows.map(r => (
-              <div className="dim" key={r.id}>job#{r.job} +{r.tok} tok +{fmt(r.amt)} MON</div>
-            ))}
-            {hosting && <div className="model">earned {fmt(simEarned)} MON (sim)</div>}
+            <div className="model">your kitchen</div>
+            <div className="dim">Turn an idle GPU into a node. One command, and it serves real jobs
+              for real settlements.</div>
+            <a className="cta" href="/hosting.html">run a node →</a>
           </div>
         </section>
 
         <section>
           <h2>rent compute</h2>
+          <div className="note">You are interacting with an AI system. Responses are machine generated and may be inaccurate.</div>
+          {hostUnproven && (
+            <div className="note">
+              <strong>{(() => { try { return new URL(url).host; } catch { return url; } })()} could not prove it is the provider it claims to be</strong>,
+              {' '}so nothing has been sent to it. {hostUnproven}
+              {' '}<a href="/terms.html#s29" target="_blank" rel="noreferrer">terms 2.9</a>
+            </div>
+          )}
+          {linkNamedHosts.length > 0 && (
+            <div className="note">
+              this link names the {linkNamedHosts.length === 1 ? 'machine' : 'machines'} that will receive your prompt
+              {' '}({linkNamedHosts.map(h => { try { return new URL(h).host; } catch { return h; } }).join(', ')}).
+              {' '}chosen by whoever gave you the link, not by us. each one has to prove it holds its
+              {' '}on-chain provider key before your prompt is sent, which says the machine is who it
+              {' '}claims, not who runs it. don't send anything sensitive.
+              {' '}<a href="/terms.html#s29" target="_blank" rel="noreferrer">terms 2.9</a>
+            </div>
+          )}
           <div className="rowline">
             <input value={url} onChange={e => setUrl(e.target.value)} />
-            <button onClick={() => setUrl(window.location.origin + '/api/p')}>☁ cloud</button>
+
           </div>
-          <div className="rowline">
-            <EngramSelector onSanitizationChange={setSanitization} />
-            <textarea value={prompt} onChange={e => setPrompt(e.target.value)} rows={3} />
-            <button className="order" disabled={busy} onClick={rent}>{busy ? 'streaming…' : 'place order'}</button>
+          {hostEngine?.engine === 'mock' && (
+            <div className="note">
+              Note: this host reports engine "mock". It returns canned text rather than model
+              output, and its settlements are still real MON. Pick another host.
+            </div>
+          )}
+          {hostPlans && (
+            <div className="rowline">
+              <button className={mode === 'answer' ? 'order' : ''} onClick={() => setMode('answer')}>one answer</button>
+              <button className={mode === 'plan' ? 'order' : ''} onClick={() => setMode('plan')}>plan a job</button>
+              <span className="dim">this host executes plans</span>
+            </div>
+          )}
+          {hostEngine?.engine && hostEngine.engine !== 'mock' && (
+            <div className="dim">host runs {hostEngine.model} via {hostEngine.engine}</div>
+          )}
+          {/* The selector used to sit inside the .rowline flex row alongside the
+              textarea. It is a full panel, so it took the row's width and the
+              textarea's flex:1 collapsed it to a few pixels. It is its own block
+              now and the row holds only the prompt and its controls. */}
+          {mode === 'plan' && hostPlans && hostProvider && (
+            <Suspense fallback={<div className="dim">loading the plan panel…</div>}>
+              <PlanPanel
+                pub={pub}
+                wallet={guestWallet}
+                guestAddress={guestAddress}
+                nodeAddress={ADDR}
+                nodeAbi={ABI}
+                host={url}
+                provider={hostProvider}
+                maxFee={MAX_FEE}
+                explorer={EXPLORER}
+              />
+            </Suspense>
+          )}
+
+          <EngramSelector onSanitizationChange={setSanitization} onPendingChange={setPendingEngrams} />
+
+          {/* Transcript above, composer below, which is the shape every reader
+              already knows from a chat client. The answer used to sit in a
+              180px box under the controls, so the most valuable thing on the
+              page was also the smallest. */}
+          <div className="chat" style={{ display: mode === 'plan' ? 'none' : undefined }}>
+            <div className="transcript" ref={streamRef}>
+              {!sentPrompt && !stream && (
+                <div className="empty">
+                  <p>Ask for something.</p>
+                  <p className="dim">It is served by the node selected above, and settles on chain
+                    token by token as it streams. Long jobs are the interesting case: the answer
+                    survives its provider going away.</p>
+                </div>
+              )}
+              {sentPrompt && <div className="msg user">{sentPrompt}</div>}
+              {(stream || busy) && (
+                <div className="msg assistant">
+                  {/* The answer is attacker-controlled: a hostile provider can
+                      stream markup, and the guest key sits in localStorage
+                      under dn_pk. marked does not sanitize, so the output is
+                      scrubbed before it is set. */}
+                  {/* The handover, stated where the answer it interrupted is
+                      read. A guest who is told nothing sees one uninterrupted
+                      answer and cannot tell that the machine producing it
+                      changed, nor that the first one was paid for its half.
+                      Every figure here is on chain and the link goes to the
+                      transaction that moved the job. */}
+                  {handover && (
+                    <div className="note">
+                      {handover.fresh
+                        ? `the node serving this answer stopped${handover.tokens ? ` after ${handover.tokens} tokens` : ''} and the job could not be handed over on chain, so job#${handover.job} is a new one on ${handover.to.slice(0, 8)}…. it continues from the last published checkpoint.`
+                        : `job#${handover.job} changed hands mid-answer${handover.tokens ? ` at token ${handover.tokens}` : ''}: ${handover.from.slice(0, 8)}… was settled ${fmt(handover.paidOut)} MON for what it had published, and ${handover.to.slice(0, 8)}… continued the same answer under the same escrow.`}
+                      {' '}
+                      <a href={`${EXPLORER}/tx/${handover.tx}`} target="_blank" rel="noreferrer">receipt</a>
+                    </div>
+                  )}
+                  {/* Collapsed by default, and open on its own while nothing
+                      visible has arrived yet. Before this existed the guest saw
+                      an empty box for the whole reasoning phase, which reads as
+                      a broken node rather than as a working one. Reasoning is
+                      plain text, not markdown: it is untrusted provider output
+                      and there is no reason to give it a renderer. */}
+                  {thinking && (
+                    <div className={'thinking' + (thinkOpen || !stream ? ' open' : '')}>
+                      <button className="thinking-head" onClick={() => setThinkOpen(o => !o)}>
+                        {stream ? '▸ thought before answering' : '◌ thinking…'}
+                        <span className="dim"> ({thinkTokens} tok, billed as output)</span>
+                      </button>
+                      {(thinkOpen || !stream) && <div className="thinking-body">{thinking}</div>}
+                    </div>
+                  )}
+                  <div className="md" dangerouslySetInnerHTML={{ __html: renderedStream }} />
+                  {busy && !stream && !thinking && <span className="caret">▍</span>}
+                  {artifacts.length > 0 && (
+                    <div className="artifacts">
+                      {artifacts.map(a => <button key={a.name} onClick={() => download(a)}>⭳ {a.name}</button>)}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="composer">
+              <textarea
+                value={prompt}
+                onChange={e => setPrompt(e.target.value)}
+                rows={3}
+                placeholder="Ask for something…"
+                onKeyDown={e => {
+                  // Enter sends, shift-enter breaks the line. Guard on busy and
+                  // overBudget too, or the keyboard bypasses the button's own
+                  // disabled state and opens a job the guest cannot afford.
+                  if (e.key === 'Enter' && !e.shiftKey && !busy && !overBudget) {
+                    e.preventDefault();
+                    rent(false);
+                  }
+                }}
+              />
+              <div className="composer-row">
+                <span className="dim" style={{ color: overBudget ? '#ff6b6b' : undefined }}>
+                  {promptTokens} / {budgetTokens} tokens
+                </span>
+                <span className="note">{note}</span>
+                {canResume && !busy && <button onClick={() => rent(true)}>resume from checkpoint</button>}
+                <button className="order" disabled={busy || overBudget} onClick={() => rent(false)}>
+                  {busy ? 'streaming…' : 'place order'}
+                </button>
+              </div>
+            </div>
           </div>
-          <div className="note">{note}</div>
-          <div className="stream md" ref={streamRef} dangerouslySetInnerHTML={{ __html: marked.parse(stream || '') as string }} />
         </section>
 
         <section>
-          <h2>the check — live settlements</h2>
+          <h2>the check — last {FEED_WINDOW.toString()} jobs</h2>
           <div className="receipt">
             {feed.map((l, i) => (
               <div className="rrow" key={String(l.jobId) + ':' + i}>
@@ -297,12 +1307,53 @@ export default function App() {
                 <span>{fmt(l.amount)} MON</span>
               </div>
             ))}
-            <div className="rtotal"><span>TOTAL</span><b>{fmt(total)} MON</b></div>
+            {feed.length === 0 && <div className="rrow dim"><span>no jobs yet</span></div>}
+            {/* Not an all-time total and it must not be labelled as one. It is
+                the sum of the window walked above. */}
+            <div className="rtotal"><span>WINDOW TOTAL</span><b>{fmt(total)} MON</b></div>
             {sessionCost > 0n && <div className="rcost">guest cost −{fmt(sessionCost)} MON</div>}
           </div>
+          {RATINGS_ON && ratedProvider && sessions.length > 0 && (
+            <Suspense fallback={<div className="dim">loading the proving stack…</div>}>
+            <ProviderRating
+              pub={pub}
+              wallet={guestWallet}
+              provider={ratedProvider}
+              nodeAddress={ADDR}
+              guestAddress={guestAddress}
+              jobIds={sessions.map(x => BigInt(x.jobId))}
+            />
+            </Suspense>
+          )}
+          {sessions.length > 0 && (
+            <>
+              <h2>earlier orders</h2>
+              <div className="receipt">
+                {sessions.slice(0, 6).map(s => (
+                  <div className="rrow" key={s.ts} onClick={() => { setPrompt(s.prompt); setStream(s.answer); }} style={{ cursor: 'pointer' }}>
+                    <span>{s.prompt.slice(0, 28)}{s.prompt.length > 28 ? '…' : ''}</span>
+                    <span>job#{s.jobId}</span>
+                    <span>{fmt(BigInt(s.cost))} MON</span>
+                  </div>
+                ))}
+                <label className="rrow" style={{ cursor: 'pointer' }}>
+                  <span>
+                    <input type="checkbox" checked={keepHistory} onChange={e => toggleHistory(e.target.checked)} style={{ marginRight: 6 }} />
+                    keep history on this device{' '}
+                    <a href="/terms.html#s27" target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}>what this stores</a>
+                  </span>
+                  <span />
+                  <span>{keepHistory ? 'saved until you clear it' : 'this visit only'}</span>
+                </label>
+                <div className="rcost" onClick={() => { try { localStorage.removeItem(HISTORY_KEY); } catch {} sessionsRef.current = []; setSessions([]); }} style={{ cursor: 'pointer' }}>clear history</div>
+              </div>
+            </>
+          )}
         </section>
       </main>
-      <footer>every token is a tip. · {zkLine}</footer>
+      <footer>
+        every token is a tip. · the prompt that opens a job is committed on-chain as a salted hash, never as text. the answer is hashed on-chain as well, repeatedly as it grows, and that hash carries no salt: anyone holding a candidate answer can confirm this job produced it. see <a href="/terms.html#s26">terms 2.6</a>. ordering has no ZK layer: the guest wallet address is public on chain and is not anonymised. ratings do, through a semaphore group, and the group is still too small to hide anyone.
+      </footer>
     </div>
   );
 }

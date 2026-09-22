@@ -1,0 +1,970 @@
+# DinnerNode security review
+
+Status: in progress. Last audited in full 2026-08-31, from an audit of what is
+RUNNING rather than of what is written. Read section 0 first: the node-side
+controls in section 2c went live with a reboot on 2026-08-30, and the browser
+half of 2c.1 is still the old deployed bundle.
+
+**Deployment state re-probed 2026-09-07** after a restart of both providers.
+Section 0.2 has the results. Only the deployment state was checked. Every other
+section of this file still carries its 2026-08-31 date, 2c.1 included.
+
+**Reconciled against the 2026-09-03 deploy on 2026-09-10.** Three status lines
+in this file described a contract that had been live for a week. 1.1 and 1.2
+said "NOT yet deployed" of fixes that were deployed, which is stale in the safe
+direction. 2.3 said DinnerNodeV2 was "unreviewed and undeployed", severity n/a,
+and carried the instruction "do not deploy without an independent read". That
+one is stale in the dangerous direction: the deploy happened, the read did not,
+and this file recorded the opposite throughout. 2.3 is now high and gates
+advertising. Section 5 is the scope package the review has always needed and
+never had. One new finding, 2.4, came out of the same pass.
+
+This file was right about something the rest of the repository got wrong for a
+week. Section 0 recorded on 2026-08-31 that both providers run as systemd user
+units. `SNAPSHOT.md` and `TODO.md` both went on asserting they were bare `tsx`
+processes, and used that to explain why the kill e2e could not run. Nothing
+cross-reads these three documents. Worth knowing when the next audit here
+disagrees with a roadmap item: this file audits what runs, and that is the one
+that wins.
+
+This file is the checklist that P0-OPS gates on ("wallet and contract review
+before real wallets"). It was listed in `.context/HANDOFF.md` section 4 as an
+existing file. It did not exist on disk and has never been committed, so this
+is a first version rather than an update.
+
+Scope: `contracts/src/*.sol`, `src/chain.ts`, `src/host.ts`, `src/guest.ts`,
+`src/faucet.ts`, `src/discovery.ts`, `web/api/**`, and every `writeContract`
+call in `web/src/`.
+
+---
+
+## 0. Deployment state, audited 2026-08-31
+
+**The node-side controls in section 2c are now running.** The machine rebooted
+at 21:33:28 on 2026-08-30 and all four user units came back. `dinnernode.service`
+runs `npm run host` and `dinnernode2.service` runs `npx tsx src/host.ts`, both
+straight off the working tree rather than off a build artifact, so the
+2026-08-28 late session's work went live with the reboot. That was an accident
+of the restart, not a decision, and the 2026-08-29 audit below it is superseded.
+
+Probed on the live daemons on 2026-08-31:
+
+```
+POST /lanjob   (via ngrok)  -> 403  "the free LAN path serves this network only"
+POST /challenge             -> 400  on a malformed nonce, so the route exists
+GET  /provider/models       -> 200
+GET  /announce/nonce        -> 400, so the route exists (discovery, port 4175)
+GET  /v1/models             -> 501  endpoint_disabled, no API_KEYS set
+```
+
+### 0.1 CLOSED: `/lanjob` was an open faucet on the public internet
+
+Recorded here because it was live for about two days and the record should
+survive. `/lanjob` opens a job the NODE pays for, out of the node's own
+deposit, and the running build had no peer check of any kind. The endpoint was
+safe on the sole premise that nobody outside the flat could reach port 4173,
+and `dinnernode-tunnel.service` had been publishing that port to the internet
+through ngrok the whole time. A well-formed prompt would have escrowed 0.01 MON
+of the node's deposit per call, plus opening, settle and close gas, with no
+key, no wallet and no rate limit on the caller.
+
+Nobody found it. The journals showed inbound requests from external addresses
+and no `/lanjob` traffic, and node 1's on-chain totals were unchanged.
+
+`src/reach.ts` closes it, requiring both a private or loopback peer AND no
+forwarding header, and defaulting `LANJOB` to `lan`. It is running now:
+the probe above is a real request through the public tunnel, refused.
+
+The lesson worth keeping: the control was written on 2026-08-28 and the hole
+stayed open until a reboot happened to pick it up. Writing a fix is not
+shipping it, and neither this file nor `SNAPSHOT.md` noticed the reboot that
+shipped it.
+
+### 0.2 Half closed: the announce hijack is fixed, the browser is not
+
+The node and discovery halves of 2c.1 are live: discovery answers
+`/announce/nonce` and requires a signed announce, and the node answers
+`/challenge`. **The deployed client is still the old one.** The live bundle
+`assets/index-CN5UhUbj.js` contains no `challenge` and no `proveControl`, so a
+`?host=` or `?peer=` link is still trusted on the strength of the named
+machine's own `/health`.
+
+The published `terms.html` still carries the old 2.9, which tells the guest we
+do not verify the operator of a machine a link names, so the notice and the
+deployed code still agree and no published claim is false. The deploy of `web/`
+closes this and is no longer the hazard it was on 2026-08-29: the ordering
+warning in that audit assumed the nodes 404 on `/challenge`, and they do not.
+
+### 0.3 Not affected
+
+2c.3 and 2c.4 concern `/v1/chat/completions`, which is running but refuses
+every request with `endpoint_disabled` because no node sets `API_KEYS`. Before
+any node sets it, the API path needs its own notice; see `TODO.md`. Sections 1,
+2 and 2b are unaffected by the tree and production split.
+
+### 0.2 Deployment state re-probed 2026-09-07
+
+Both providers were restarted at 09:19 to pick up `2731062` and `c6da42e`,
+which had been committed that morning and touch files the running processes
+import. The daemons had been up since 2026-09-05 07:35 and were therefore
+serving the older tree.
+
+The 2026-08-31 probe set, re-run afterwards through the public tunnels rather
+than against localhost, so the answers are what a stranger gets:
+
+```
+POST /lanjob        (public)  -> 403  the free LAN path serves this network only
+POST /challenge               -> 400  on a malformed nonce, so the route exists
+GET  /provider/models         -> 200
+GET  /v1/models               -> 501  endpoint_disabled, no API_KEYS set
+GET  /announce/nonce          -> 400  discovery, port 4175
+GET  node2 /provider/models   -> 200
+```
+
+Every answer matches 2026-08-31. Node 1 came back registered on chain, warm in
+24.1s, and announced to discovery.
+
+Two notes on reading these:
+
+- `is_ready` is `false` on every model in `/provider/models`, on both nodes,
+  including after the model is warm. That is the `PROVIDER_IS_READY` gate doing
+  its job. The catalogue is published unauthenticated on purpose, because a
+  router has to read a price list before it holds a key, and the flag is what
+  stops publishing it from inviting traffic on its own.
+- `/provider/models` is byte-identical across the restart on both nodes.
+  `2731062` changes what a node charges for a model named the way LM Studio or
+  llama.cpp names it, and both nodes here are named the way ollama names them,
+  so there was nothing for it to change. `SNAPSHOT.md` section 3.1 of the
+  2026-09-07 snapshot has the longer form.
+
+**This is the deployment state only.** No control in sections 1 through 2c was
+re-audited on 2026-09-07, and the browser half of 2c.1 is still carried as
+unverified since 2026-08-31.
+
+The standing hazard this section keeps demonstrating is unchanged: a commit
+changes nothing about a running node until somebody restarts the unit, and
+nothing on this machine notices the gap. Section 0.1 is what that costs when
+the commit is a security fix.
+
+---
+
+## 1. Confirmed defects
+
+### 1.1 settle() allows a provider to drain the entire escrow
+
+Severity: critical. Status: **fixed and DEPLOYED 2026-09-03** at
+`0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c`, and carried into its
+replacement `0xcf642a144f3cb1159b05563506698fc2db375029` (2026-09-22), which
+every client now points at. The text below describes `DinnerNode.sol`, the v1 instance, which remains
+callable on chain and which nothing in this repository references. Corrected
+2026-09-10: this line read "NOT yet deployed" for a week after the deploy.
+
+`contracts/src/DinnerNode.sol:61-82`. `settle(jobId, tokensDelta)` accepts any
+`tokensDelta` from the provider. `rawDue` is computed from it directly and
+`due` is clamped only by `escrow - paid`. A provider calls
+`settle(jobId, 10**12)` once, takes the whole escrow having produced nothing,
+and the `rawDue >= remaining` branch then closes the job.
+
+`README.md:16` claims "guest worst-case loss = one settlement". That is false
+for the deployed contract. Worst case is the full budget.
+
+Fix: `DinnerNodeV2.sol` clamps `tokensDelta` to
+`(block.timestamp - lastSettleAt) * maxTokensPerSecond`, snapshotted per job.
+
+### 1.2 Provider can raise its rate mid-job
+
+Severity: high. Status: **fixed and DEPLOYED 2026-09-03** at
+`0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c`. Same correction as 1.1: this
+line also read "NOT yet deployed" for a week after the deploy.
+
+`DinnerNode.sol:66` reads `providers[msg.sender].ratePerMillion` at settlement
+time, and `registerProvider` (line 37) can be called at any time to change it.
+A provider advertises one rate, opens a job, then re-registers at a higher rate
+and drains faster than the guest agreed to.
+
+Fix: V2 snapshots `ratePerMillion` and `maxTokensPerSecond` into the `Job`
+struct at `openJob` and settles against the snapshot.
+
+### 1.3 Escrow permanently stranded by failover
+
+Severity: high. Status: fixed in `web/src/App.tsx`.
+
+`closeJob` was never called anywhere in `web/src`. The old failover path opened
+a second job for the same prompt and abandoned the first, leaving it `open`
+with its full escrow locked and unrefundable by the app. Every failover leaked
+0.01 MON.
+
+Fix: `releaseJob()` plus a `finally` block that closes every job opened and not
+finished.
+
+### 1.4 Plaintext prompt written on-chain from the LAN path
+
+Severity: high. Status: fixed in `src/host.ts`.
+
+`src/host.ts` passed `String(prompt).slice(0, 40)` as the `openJob` promptTag,
+putting 40 characters of the guest's raw prompt into a public indexed event.
+This contradicted `README.md`'s "prompts never touch the chain". The LAN page
+is part of the documented test matrix, so the path was exercised.
+
+Fix: the tag became `keccak256(stringToHex(prompt))`, an unsalted commitment.
+That was itself a defect, closed later the same day; see 1.14, which salts
+this same line.
+
+### 1.5 Unsalted prompt commitment bound to a stable identifier
+
+Severity: high. Status: fixed in `web/src/App.tsx`.
+
+The web path computed `keccak256(sanitizedPrompt + '|' + zkC)` where `zkC` is
+the Semaphore identity commitment persisted indefinitely in `localStorage`
+under `dn_zk`, identical for every job that browser ever opens. No salt, and
+prompts are low-entropy natural language, so the public tag was brute-forceable
+from a candidate dictionary and linkable across jobs.
+
+Fix: a fresh 32-byte `crypto.getRandomValues` salt per job, held only in a
+local variable for the duration of the call and never written to storage.
+`zkC` removed from the preimage. `web/src/App.tsx:283` deliberately keeps the
+salt out of `sessionStorage`: a comment there notes that storing it would only
+widen the blast radius of any script running on the page.
+
+### 1.6 containsPII returns alternating results for identical input
+
+Severity: medium. Status: fixed in `web/src/lib/engram-sanitizer.ts`.
+
+`containsPII` called `pattern.test(text)` on module-level regexes carrying the
+`/g` flag. `.test()` advances `lastIndex` on the shared object, so consecutive
+calls on the same string returned true, false, true, false. Reproduced
+directly. This function backs the "no personal data detected in prompt" line
+shown to the user, so the assurance was not deterministic.
+
+Fix: reset `lastIndex` before and after in `containsPII` and `getPIIStats`.
+
+### 1.7 getLogs cascade never worked
+
+Severity: medium (cause of the "providers 0" bug). Status: fixed.
+
+`HANDOFF.md` section 10 prescribes a getLogs cascade over spans (earliest,
+-50k, -20k, -5k, -1k) and `App.tsx` implemented it. The public Monad RPC
+rejects all of them:
+
+```
+{"code":-32614,"message":"eth_getLogs is limited to a 100 range"}
+```
+
+The maximum usable window is 100 blocks, roughly 40 seconds. Registration
+history is not recoverable from this endpoint. The old fallback list also
+contained only the two wallets retired in the key rotation.
+
+Fix: `src/discovery.ts` uses announce plus `providers(addr)` verification plus
+a rolling 99-block tail scan with a persisted cache. `App.tsx` reads the
+listener and falls back to on-chain reads of a corrected known list.
+
+### 1.8 Engine streaming truncated long answers
+
+Severity: medium. Status: fixed in `src/engines.ts`.
+
+`ollama()` and `openai()` split each network chunk on `\n` without carrying the
+remainder forward, so a JSON object spanning a chunk boundary threw out of the
+generator and truncated the answer. Probability rises with output length, which
+made it a direct blocker on the P0 "long outputs" item.
+
+Fix: a shared `lines()` reader that buffers across chunks.
+
+### 1.9 Host logged guest prompt text
+
+Severity: medium. Status: fixed in `src/host.ts`.
+
+The host logged the first 60 characters of every prompt to stdout with no
+retention policy and no notice to the guest. The node operator is a processor,
+not a recipient. Now logs the input token count only.
+
+### 1.10 web/api/topup.js was an unbounded dispenser
+
+Severity: high. Status: bounded, not eliminated. Must not reach mainnet.
+
+The endpoint sent 10 MON to any well-formed address on request. Its only
+control was a module-scope `Map` keyed on the caller-supplied address, which on
+Vercel is per-serverless-instance and resets on cold start. An attacker looping
+fresh addresses met no cooldown at all, and there was no balance check, no
+global cap and no per-IP limit.
+
+Fix: **one** control bounds loss, and it is on-chain, so it is global across
+instances and unforgeable. The house balance is read before sending; below
+`TOPUP_HOUSE_FLOOR` (default 1 MON) the endpoint refuses, so total dispensable
+value is `houseBalance - floor` rather than the whole wallet.
+
+The recipient balance check against `TOPUP_RECIPIENT_MAX` is **not** a second
+bound and an earlier draft of this section wrongly said it was. An attacker
+forwards the grant out in one cheap transfer and requests again with the same
+address, and fresh addresses are free regardless. What it does is stop an
+honest returning guest re-triggering the faucet.
+
+The floor is also a soft floor: the read and the send are not atomic, so N
+concurrent instances read the same pre-drain balance and the wallet can
+undershoot by up to `N * AMOUNT`.
+
+**The one control not previously written down is the strongest.** The file
+hardcodes `chainId 10143` and a testnet RPC, so it physically cannot dispense
+mainnet value without a source edit. That is now an explicit assertion at the
+top of the handler rather than an implicit property, and it is a legal control,
+not a config default.
+
+Also: amount cut from 10 MON to 0.25, per-IP cooldown alongside per-address,
+cooldown claimed only when the request is actually going to spend, both maps
+swept so an address-cycling caller cannot grow them without bound, method
+allowlist, and a `TOPUP_DISABLED=1` kill switch.
+
+This remains an operator sending native tokens to strangers on request. On
+mainnet that is a regulatory exposure independent of the drain risk, and
+hardening does not move it: an endpoint that reads a recipient's balance,
+applies an eligibility rule and disburses a fixed amount to a named address is
+arguably *closer* to a transfer service than an undifferentiated giveaway, not
+further from it. There is no de minimis threshold in MiCA's transfer-services
+definition and none at all in sanctions screening.
+
+**`TOPUP_DISABLED` is not the mainnet gate.** It is an environment variable, and
+a deploy that forgets to set it is a one-variable mistake with regulatory
+consequences. The gate is deletion of the file before a mainnet key exists in
+the same project. Nothing here logs which addresses were funded either, which
+is irrelevant on testnet and a recordkeeping failure on mainnet independent of
+licensing. See section 4, and cross-reference 2.1 (shared `HOUSE_PK`): a faucet
+drain and provider operation share a failure domain.
+
+### 1.11 web/api/p/health.js registered from an unauthenticated GET
+
+Severity: high. Status: FIXED.
+
+Registration hung off a `catch` around a contract read, so any RPC blip made a
+public health poll send a transaction, with no `maxFeePerGas` cap and a 500000
+gas limit that Monad charges in full. A public endpoint that spends the house
+wallet whenever the RPC is unhappy is a denial-of-wallet.
+
+Fix: a read failure now reports `registered: 'unknown'` with a `degraded` field
+and sends nothing. Registration requires a successful read that says the
+provider is inactive, is gated behind a ten minute cooldown and a
+concurrency guard, and goes through `sendChecked` so it is estimated, fee
+capped and receipt checked.
+
+Both guards are **per serverless instance**, because module scope on Vercel is
+per instance and resets on cold start. If the contract read genuinely reports
+inactive, every warm instance and every cold start fires its own
+`registerProvider`, and anyone can drive instance count by polling the public
+GET. The residual is bounded and self-closing, since the first success flips
+`active` and every subsequent read short-circuits. The read-failure property,
+which is the one that mattered, is global and holds unconditionally.
+
+### 1.12 Serverless settlements were loose on gas and swallowed reverts
+
+Severity: medium. Status: FIXED.
+
+`web/api/p/job.js` used `gas: 300000n` for `settle` against a host that needs
+roughly 118000, and `200000n` for `closeJob` against 120000, on a `settle` that
+fires every fifteen tokens. Monad charges the limit, so this overpaid by two to
+three times on every call. Both writes also ended in `.catch(() => {})`, which
+is the same defect as 1.3 in a different file: `writeContract` resolves on
+acceptance, so a reverted settlement was indistinguishable from a payment.
+
+Fix: `gasFor` and `sendChecked` moved into `web/api/p/_lib.js`, matching
+`src/host.ts`. Estimate per call plus twenty percent, fall back to the host's
+own limits, cap `maxFeePerGas`, and check the receipt. Settlements are
+serialized on a promise chain so `closeJob` cannot overtake the `settle` before
+it, and a failure is reported to the client on the stream rather than dropped.
+
+### 1.13 ABI index drift would have broken every client silently
+
+Severity: medium. Status: **FIXED everywhere, closed 2026-08-28, recorded here
+2026-09-12.**
+
+The "OPEN elsewhere" half below was already false when it was written, and it
+named the V2 deploy as its gate. V2 shipped on 2026-09-03 with the fix in place.
+`src/registry.ts` and `web/src/lib/registry.ts` both read through `getJob` and
+`getProvider`, which decode named structs on chain and do no positional indexing
+at all, and `src/host.ts` and `web/src/App.tsx` reach the chain only through
+`readJob` and `readProvider` from those two files. `TODO.md` marks the same work
+done 2026-08-28 with the note that no call site had to change. The original text
+follows.
+
+DinnerNodeV2 grows `jobs()` from six fields to ten and `providers()` from seven
+to eight, moving `open` from index 5 to 9 and `active` from 6 to 7. Every
+liveness check reads those by hand-written index, and a non-zero rate at the
+old index is truthy, so deploying V2 would have made every client believe every
+job was open. Note that viem returns a positional array for these reads even
+when the ABI names its outputs, so named outputs alone do not fix this.
+
+Fix: `readJob` and `readProvider` in `web/api/p/_lib.js` decode in one place.
+`src/host.ts` and `web/src/App.tsx` still index by hand and must be given the
+same treatment before V2 is deployed. Tracked as TODO.md P1 item 16.
+
+(End of the original text. `web/api/p/_lib.js` was later deleted with the rest
+of `web/api/`; the one-place decode now lives in the two `registry.ts` files.)
+
+### 1.14 Host LAN commitment was unsalted
+
+Severity: medium. Status: FIXED.
+
+`src/host.ts` wrote `keccak256(prompt)` as the `openJob` tag. Prompts are
+low-entropy natural language, so an unsalted commitment on a public event is
+recoverable with a candidate dictionary. The browser path was salted on
+2026-08-25 (1.5) and the LAN path was left leaking what the browser path
+protects. Now salted with 32 random bytes, used once and discarded, matching
+`web/src/App.tsx`.
+
+**Terminology, corrected.** Earlier drafts, and the code comment, described this
+as landing in the EDPB "commitment carve-out". It does not. EDPB Guidelines
+02/2025 v2.0 para 53 requires a **perfectly hiding** scheme (Pedersen and
+similar); keccak is computationally hiding. What applies is **para 52**, salted
+hashing, whose conditions we do meet: CSPRNG salt, destroyed before the function
+returns, algorithm unbroken. Para 52 also states plainly that the hash is itself
+personal data at the moment it is written. So the accurate claim is "salted hash
+under para 52, salt destroyed at generation", never "inside the commitment
+carve-out". A diligence reader will check whether the scheme is perfectly hiding.
+
+**A third path was missed entirely.** `src/guest.ts` still passed
+`prompt.slice(0, 40)` to `openJob` until it was fixed alongside this entry. See
+1.16.
+
+### 1.15 Engram layer: ReDoS, lost engrams, and overstated copy
+
+Severity: high (ReDoS), medium (the rest). Status: FIXED, with regression tests.
+
+- `extractSanitizationRules` compiled engram statement text into `new RegExp`.
+  Measured: 28 characters took 1612 ms, 41 characters did not return in 110
+  seconds. The tab freezes before the prompt is ever sent. Engram targets are
+  now escaped and matched literally, with a length cap and a rule-count cap.
+- `getAllEngrams` and `runCleanup` removed from `sessionStorage` while walking
+  it by index. Because the store is indexed live, every key after a removal was
+  skipped, so stale engrams survived and valid ones were dropped from the set
+  used to sanitize the prompt. Keys are now snapshotted first.
+- `location_personal` was reported as detected and then discarded at minimal
+  strictness, telling the user their city had been removed when it had not.
+- `credit_card` could never fire, because `phone` shared its priority and ran
+  first. `[CREDIT_CARD]` appeared in no output the app has ever produced. Note
+  that reordering the priorities alone did not close this: a mutation test that
+  restored the original ordering still passed, because the phone pattern's new
+  digit-count guard rejects a 16 digit run. The card pattern was also only ever
+  a 16 digit 4x4 layout, so a 15 digit Amex fell through to `phone` and was
+  labelled `[PHONE]`. Both are now fixed: the card pattern matches 13 to 19
+  digits and is gated on a Luhn check, which is what actually distinguishes a
+  card from a phone number, and the priority ordering is load-bearing again.
+- `EngramSelector.tsx` claimed "Providers and the chain never see raw personal
+  data". False in both halves. Replaced with what is actually true.
+
+`web/src/lib/__tests__/` now holds 22 vitest cases, one per defect. Run with
+`npm test` in `web/`.
+
+### 1.16 src/guest.ts wrote the raw prompt on chain, uncapped and unsequenced
+
+Severity: high. Status: FIXED.
+
+`src/guest.ts:23` passed `prompt.slice(0, 40)` as the `openJob` tag. This is
+defect 1.4 verbatim in a third file. It was fixed in `src/host.ts` and in
+`web/src/App.tsx`, and missed here, while `README.md` and the published
+`web/public/terms.html` section 2.2 both went on to assert that prompt text
+never reaches the chain. A false statement in a published legal document is a
+worse posture than the leak itself.
+
+It is not dead code: `package.json` exposes it as `npm run rent`, and it is the
+documented CLI demo path. Note the CLI has no sanitizer at all, because
+sanitization is browser-only, so a CLI prompt reaches the provider exactly as
+typed. That is now stated in the file.
+
+The same file also violated three Monad rules: no `gas` and no `maxFeePerGas`
+on either write, and `openJob` issued immediately after `deposit()` with no
+receipt in between. The last is the documented nonce-collision case; it
+survived only because viem re-fetches a pending nonce, which is racy rather
+than correct. All fixed, and the commitment now matches the other two paths
+byte for byte.
+
+### 1.17 Serverless closeJob was sent after the contract had already closed the job
+
+Severity: medium. Status: FIXED.
+
+Verified with Foundry: when `rawDue >= remaining`, `settle` sets
+`j.open = false` (`DinnerNode.sol:78-81`), so the `closeJob` that follows
+reverts on `require(j.open)`. `gasFor` swallows the estimate revert and returns
+the fallback, so the code sent a transaction it had already been told would
+fail, and Monad charged the full limit for it. Reachable today on the host path:
+at `RATE_PER_MILLION = 2e18` and a 0.01 MON budget the escrow exhausts at 5000
+tokens, which a long answer reaches.
+
+Fix: re-read the job and skip `closeJob` when it is already closed. The
+`closeJob` fallback limit also dropped from 120000 to 60000 against a measured
+26706.
+
+### 1.18 Engram replacement text was unbounded, and multi-rule statements collapsed
+
+Severity: high. Status: FIXED. Introduced by the 1.15 fix, found by audit.
+
+The 1.15 ReDoS fix capped the rule *target* and left the *replacement* as a
+greedy `(.+)` running to end of line. Two consequences, both measured:
+
+- A padded statement expanded a 350 character prompt to 600,050 characters, a
+  1714x amplification. That expansion is what gets hashed and sent to the
+  provider, while the token estimate shown to the user is computed on the
+  pre-sanitization text.
+- `replace Alice with [A]. replace Bob with [B]` extracted as ONE rule whose
+  replacement was `[A]. replace Bob with [B]`, splicing literal statement text
+  into the user's prompt. This also made `MAX_RULES_PER_ENGRAM` unreachable for
+  every period-separated statement, which is how the library templates are
+  written.
+
+Fix: the replacement is bounded to 64 characters and may not cross a sentence
+or newline.
+
+---
+
+## 2. Open items
+
+### 2.1 House wallet is also the cloud-kitchen provider — CLOSED 2026-09-12
+
+Closed by deletion rather than by fix, and the date is when it was recorded
+rather than when it happened. `fd86fb8` deleted the cloud kitchen and the whole
+`web/api/` path went with it, so `web/api/p/_lib.js` does not exist and no live
+code references `HOUSE_PK`. Section 3 of this file has said so for a fortnight
+while this item still read OPEN, which is the same defect the review exists to
+catch, in the review itself.
+
+**The metrics warning outlives the code and still applies.** Any "jobs",
+"settled total" or "earned" figure drawn from the chain includes the closed loop
+this item describes for as long as those historic jobs are on it. Filter them
+out before presenting any number as usage or revenue. The original text follows.
+
+### 2.1 House wallet is also the cloud-kitchen provider
+
+Severity: medium, and a metrics-integrity problem more than a security one.
+Status: OPEN.
+
+`web/api/p/_lib.js` derives the cloud-kitchen provider account from the same
+`HOUSE_PK` used by the faucet. The on-chain graph is a closed loop: house funds
+guest, guest escrows, escrow pays house. Any "jobs", "settled total", or
+"earned" figure that includes this loop is house-to-house flow and must not be
+presented as usage or revenue.
+
+### 2.2 Model is not pinned — CLOSED 2026-08-28
+
+`MODEL` set to something not installed used to fall back to whatever was first
+in the local ollama list. It now refuses to start and prints what is installed.
+The original text follows.
+
+### 2.2 Model is not pinned
+
+Severity: low. Status: OPEN.
+
+`src/host.ts` falls back to `process.env.MODEL ?? names[0]`, so a node serves
+whatever model happens to be first in the local ollama list. A node operator
+with a restrictively licensed model installed would serve it commercially
+without deciding to. `/health` reports the model, so an allowlist is possible.
+
+### 2.3 DinnerNodeV2 is unreviewed by a third party, and is deployed
+
+Severity: **high, raised 2026-09-10.** Status: OPEN, and the mitigation this
+item used to rely on is gone.
+
+This item read "unreviewed by a third party and undeployed", severity n/a, with
+the instruction "do not deploy without an independent read". **The contract was
+deployed on 2026-09-03** at `0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c`, the
+site and both nodes were pointed at it, and this line was never updated. So the
+instruction was not followed, and the file that exists to catch that recorded
+the opposite for a week.
+
+What that changes. While V2 was undeployed, "unreviewed" cost nothing, which is
+why the severity was n/a. It now holds live escrow, and it is the contract that
+every claim in `TODO.md` about correctness is made against. It also gained
+surface after the review that never happened was first requested:
+`reassignWithAuth`, `commitPlan`, the checkpoint chain and `_allowed` are all
+newer than the request.
+
+This is the gate on advertising. The value at risk today is testnet MON, which
+under `terms.html` section 6 has none, so the exposure is reputational rather
+than financial. Inviting strangers to escrow against unreviewed code is the act
+that changes that, whichever direction the token value goes.
+
+Scope for the review that has to happen is in section 5.
+
+### 2.4 The answer checkpoint is an unsalted commitment to the model's reply
+
+Severity: medium. Status: OPEN, found 2026-09-10, **confirmed against live
+chain state rather than against the code.**
+
+`src/host.ts:505` publishes `keccak256(stringToHex(p.prefix))`, an unsalted
+keccak256 of the answer text produced so far. It goes to `settle()` and
+`commitCheckpoint()` and is kept in permanent contract storage in the
+`Checkpoint` struct, alongside a token count and a running chain hash. It is
+written repeatedly as an answer grows, not once per job.
+
+Read off `0x7E98...` on 2026-09-10:
+
+```
+job#12  prefixHash 0x6c56163b...af64  tokens 843  billed 2511
+job#15  prefixHash 0x70136b15...c804b tokens 280  billed 1687
+```
+
+Those are storage reads, not events, on jobs the operator ran.
+
+**Why it is not simply fixable the way 1.5 was.** 1.5 was the same defect on the
+prompt side and was closed with a per-job random salt. That works because only
+the browser needs to reproduce the hash. Here a REPLACEMENT provider is handed
+the answer prefix and must recompute the identical hash to prove where it is
+resuming, so a salt would have to travel to a party that does not have it yet.
+Fixing this is a protocol change, not a one-line change, and it is recorded
+here rather than attempted.
+
+**What the exposure actually is.** It is a confirmation oracle rather than a
+disclosure. Nobody can recover the answer from the hash. Anyone holding a
+candidate answer can hash it and prove that a given job, and therefore a given
+wallet address, produced that text, permanently. Since the answer is a function
+of the prompt, that is a check on the prompt too, for anyone who can guess or
+obtain the pair.
+
+**The published notice was false, and that is the blocking half.** This is the
+same class as the finding the 2026-08-28 legal review called blocking, and it
+was created the same way: a mechanism landed and the privacy notice was not
+re-read against it.
+
+- `terms.html` 2.1 said "exactly two items of data about you are recorded".
+- `terms.html` 2.2 said the model's reply is not written and "only the hash
+  commitment described above is written".
+- The summary bullet said "Two things about you are written permanently".
+
+All three were false against the deployed contract from the moment
+checkpointing went live. **Corrected 2026-09-10** in `web/public/terms.html`:
+2.1 now lists the checkpoint hashes and the settlement and handover records,
+2.2 no longer claims the reply is absent from the chain, 2.6 states the
+unsalted property and what follows from it, and the summary bullet matches.
+**Deployed 2026-09-10**, the same afternoon, and confirmed live on both
+`dinnernode.xyz` and `www.dinnernode.xyz` on 2026-09-12: 5.1 present, the three
+false sentences gone. This paragraph read "Not deployed at the time of writing"
+until 2026-09-12, having been written minutes before the deploy it was waiting
+on.
+
+**Two copies of the false text survived the correction and were fixed
+2026-09-12**: the privacy section and one-liner in `README.md`, and the footer
+in `web/src/App.tsx`, which said "prompts are committed on-chain as salted
+hashes, never as text" and is the disclosure most guests actually read. The
+lesson is the one this section already carries, one layer out: correcting the
+notice is not the same as correcting everywhere the notice is repeated. **The
+site has not been rebuilt since those two fixes**, so the footer correction is
+true of the repository and not yet of `dinnernode.xyz`.
+
+---
+
+### 2.5 The Semaphore identity was not the one that was stored — CLOSED 2026-09-12
+
+Severity: medium. A guest lost a paid job, and the anonymity set lost a member.
+Found by a test written on 2026-09-12 against `web/src/lib/ratings.ts`, which
+had never had one.
+
+`loadIdentity` created an `Identity`, handed it to the caller, and stored
+`id.privateKey.toString()`. `privateKey` is a `Uint8Array`, so that string is a
+comma separated list of bytes rather than the key. Read back, `new Identity(s)`
+treats a string as a SEED and derives a key from it, so the value written on the
+first page load never reproduced the identity used on that load.
+
+**What it cost the guest.** Joining the group spends a closed, paid, unused job,
+and the contract records the commitment of the identity that joined. A guest who
+joined on their first page load came back on their next one as a different
+identity, `readGroup` reported `joined: false`, and `rateProvider` refused with
+"this browser has not joined the group with a paid job yet". The job was spent
+and the membership was unreachable. Joining a second time worked and stayed
+working, because every load after the first derives the same identity from the
+same stored string, which is why this looked like "the first join is wasted"
+rather than like an identity that changed constantly.
+
+**Why nobody noticed.** The group has no members, so there was nobody to be
+turned away. The defect would have surfaced on the first real rating.
+
+Fixed by storing `id.export()`, which round-trips through `Identity.import`.
+**A legacy comma-separated value is still read as a seed rather than imported**,
+because anyone who already joined did so as the derived identity, and importing
+their stored value instead would take their membership away. The two formats are
+told apart by shape: an export is base64 and a byte list has commas.
+
+Regression cover: `web/src/lib/__tests__/ratings.test.ts` asserts the round
+trip, the reload, the legacy path and that a legacy value is not rewritten.
+Mutation-checked by restoring the old write, which the suite catches.
+
+## 2b. Unpriced prefill, found 2026-08-28 (night)
+
+`settle()` charges `tokensDelta`, which counts tokens the node GENERATED. A
+prompt is therefore free, however long it is, and that is a deliberate pricing
+choice published as "free on input". It is also an unmetered claim on the
+node's scarcest resource.
+
+**The shape of it.** `gate()` in `src/host.ts` rejects a prompt only when it
+exceeds `PROMPT_BUDGET`, derived from `CONTEXT_TOKENS` (32,768). Under that
+ceiling, a guest can send a 30,000 token prompt, receive one token, and pay for
+one token, while the node performs the full prefill. No exploit code is
+required. The cost to the attacker is one `openJob` and its gas; the cost to
+the node is its entire context window of GPU work, repeated.
+
+`MAX_CONCURRENT` and the pressure throttle bound how many run at once, which
+makes this a degradation rather than a takedown, and a job still needs escrow
+to open. Neither bounds the work per job.
+
+**Not fixed.** It sits with a product decision rather than alone: free input is
+the strongest economic claim the project has at high input-to-output ratios,
+and honouring that claim means serving long contexts, which the current
+`CONTEXT_TOKENS` cannot do and `.context/REFRAME.md` section 4 says we will not
+sell. Bill input at a nominal rate, or bound prompt length against the escrow,
+and decide both together. See `TODO.md` P2.
+
+**Standing invariant, worth stating once.** The legal review of 2026-08-28
+named the strongest single compliance fact this project has, and it became true
+only that day: *no key the operator controls may sign a value movement a third
+party can trigger.* The faucet deletion and the removal of `web/api/p/*` are
+what made it true, and `reassign` does not weaken it, since
+`DinnerNodeV2.sol:456` requires `msg.sender == j.requester`. Treat it as a rule
+for anything proposed later rather than as a closed item.
+
+## 2c. Closed in the tree 2026-08-28 (late), NOT deployed
+
+Four items, each verified by attacking it rather than by reading the fix.
+
+**Read with section 0.** These fixes are written, tested and uncommitted. The
+running node and discovery have none of them, and two of the four holes below
+are open in production today. The wording "closed" throughout this section
+means closed in the working tree.
+
+### 2c.1 `/announce` and `?peer=` accepted a machine's claim about itself
+
+`POST /announce` verified that an announced address was a registered provider
+and never that the announcer controlled it, so anyone could point a live
+provider's slot at their own host and be handed guests' prompts. They could not
+be paid, because settlement goes to the registered address on chain, but they
+read the prompt and the partial answer. The browser had the same hole through
+`?host=` and `?peer=`, where it read a provider address out of the named
+machine's own `/health`.
+
+Closed with one mechanism for both: a nonce the claimant did not choose, signed
+by the key the registry pays. `src/attest.ts` holds the format and the store,
+imports nothing, and is unit tested. The signed claim names purpose, registry,
+chain, provider, URL, model and nonce, so a signature cannot be replayed as a
+control proof, against another deployment, or lifted onto a different host. The
+nonce is single use, expires in 60 seconds, and is CONSUMED BEFORE the
+signature is checked so a wrong signature burns it rather than allowing
+grinding. The nonce must be exactly 64 hex characters, which is load bearing
+rather than tidy: the message is line-based and the nonce is the one
+caller-supplied field, so a newline in it would sign a claim the signer never
+saw.
+
+Attacked against a local anvil: a hijack signed by another key, an unsigned
+announce in the old shape, a valid signature replayed, and a valid signature
+moved onto a different URL. All four refused.
+
+**Still open in production, 2026-08-29.** See section 0.2. The live discovery
+404s `/announce/nonce`, and the deployed client has no `proveControl`.
+
+**Not backward compatible.** An old node announcing to a new discovery is
+rejected; a new node finds no nonce endpoint on an old discovery. Restart nodes
+and discovery together.
+
+### 2c.2 `/lanjob` was about to become an open faucet
+
+It opens a job the NODE pays for, which is the point of the LAN guest page, and
+it was safe for exactly one reason: nobody outside the network could reach the
+port. A tunnel ends that invisibly, because every tunnelled request arrives at
+the node from 127.0.0.1, so an address check alone reads "local" for the whole
+internet. `src/reach.ts` requires both halves, a private or loopback peer AND
+no forwarding header, and was verified against the exact shapes cloudflared and
+ngrok send. `LANJOB=off|lan|open`, default `lan`.
+
+**The tunnel did not end it invisibly at some future point. It had already
+ended it.** The running build has no peer check and is published through ngrok,
+so this is a live exposure rather than an anticipated one. See section 0.1,
+which records the probe.
+
+### 2c.3 A new endpoint that spends the node's own money
+
+`/v1/chat/completions` fronts jobs from the node's deposit, because an OpenAI
+client holds a key rather than a wallet. Controls, all of them defaults rather
+than options: the endpoint is OFF unless `API_KEYS` is set, keys are compared
+as SHA-256 digests in constant time so neither length nor a matching prefix
+leaks, `V1_DAILY_TOKENS` caps what it can bill in a rolling day, `max_tokens`
+is clamped to what the escrow can pay for, and the existing concurrency and
+pressure gates apply unchanged.
+
+### 2c.4 Two defects in the job-opening path, older than the endpoint
+
+Found by running four concurrent requests rather than by review. Every write
+from the provider key was serialized through `queue` except the one that opens
+a job, so an opening raced the previous job's `closeJob` on the nonce. And the
+deposit check was not atomic with the opening, so concurrent requests all saw
+enough float for one job and the rest reverted, reported as "cannot read
+properties of undefined" because the code read the event off a reverted
+receipt. Both halves now run inside one `serialized()` unit, and receipt status
+is checked before the event is read. `/lanjob` shared both and never hit them.
+
+## 3. Monad transaction discipline checklist
+
+Applied to every `writeContract` and `sendTransaction` site.
+
+- [x] Explicit `gas` on every write, including `src/guest.ts`, which previously
+      had none at all. Monad charges gas_limit, not gas_used. See the item below
+      on which of these are actually tight.
+- [x] `maxFeePerGas` capped at 2000 gwei in `src/host.ts` and `src/guest.ts`.
+      The `web/api/p/*` and `web/api/topup.js` sites this also covered no longer
+      exist; both were deleted, `web/api/p/*` in `fd86fb8` and the faucet on
+      2026-08-28.
+- [x] `maxFeePerGas` cap on the `web/src` guest writes.
+- [x] Gas estimated per call for `settle` and `closeJob` in `src/host.ts`. A
+      fixed limit reverted after every key rotation. The two serverless
+      endpoints this also covered are deleted.
+- [x] `deposit`, `openJob` and `registerProvider` used fixed padded limits in
+      `src/host.ts`, `src/guest.ts` and `web/src/App.tsx`. Measured with
+      Foundry: `deposit` 55094 against a 200000 limit (3.6x), `openJob` 166702
+      against 250000 to 300000 (1.5x to 1.8x), `registerProvider` 126392 first
+      and 29665 on a repeat against 250000 (2.0x to 8.4x). Explicit, but not
+      tight, and Monad charges the limit.
+      **Closed 2026-09-10.** Every one of them now estimates. `src/host.ts` had
+      already converted; the guest side had not, which is where the money
+      actually was, because the guest pays it.
+      Re-measured against the live registry at 102 gwei rather than in Foundry:
+      `deposit` estimates at **34,483** against the fixed 200,000 (5.8x) and
+      `openJob` at **180,498** against 300,000 (1.7x). With the 20% pad a guest
+      order goes from 500,000 gas to 257,976, which is **0.0247 MON saved per
+      order, a 48% cut**. Job#15 paid 0.049 MON for the inference itself, so
+      the padding had been costing about half an answer per order.
+      One implementation, in `src/chain.ts`, used by host and CLI; the browser
+      has its own in `web/src/lib.ts` because it cannot import node code. Both
+      raise a revert rather than falling back to the fixed limit, which is
+      `47b123a`'s lesson: estimation is the cheapest place to learn a write
+      cannot succeed, and padding over it broadcasts a transaction the chain
+      has already refused. Seven tests on the browser one, with the estimator
+      injected.
+- [x] Receipt checked on every write. `writeContract` resolves on acceptance.
+- [x] `deposit()` sequenced on a receipt before `openJob()` in host, web and CLI.
+- [n/a] House writes are serialized per serverless instance only. Two concurrent
+      cloud-kitchen jobs on different Vercel instances share `HOUSE_PK` and
+      collide on the nonce; a public `health.js` poll can collide with an
+      in-flight settle the same way.
+      **Moot 2026-09-10.** There are no serverless instances. `web/api/` does
+      not exist as a path, `fd86fb8` deleted the cloud kitchen and the faucet
+      went on 2026-08-28, and no live code references `HOUSE_PK` at all: the
+      only hits in the tree are this file, `SNAPSHOT.md`, `TODO.md`, an agent
+      definition and five one-shot deploy scripts run by hand. Struck rather
+      than fixed, because the surface it describes was deleted two weeks ago
+      and this checklist went on carrying it.
+- [n/a] Sweep reserve rule. `src/faucet.ts` only POSTs to the external devnads
+      faucet API and sends no transaction of its own, so there is no sweep in
+      the repo for the rule to apply to. The sweep described in HANDOFF
+      section 8 was run ad hoc and is not committed.
+- [x] No `getLogs` call exceeds the 100-block RPC ceiling.
+
+---
+
+## 4. Before real wallets or mainnet
+
+Blocking, in order:
+
+0. Get the tree deployed, which is a prerequisite for every claim this file
+   makes about a fix being in place. Added 2026-08-29. Section 0 is the state,
+   and 0.1 is live and reachable today.
+1. Deploy and independently review a fixed contract. Items 1.1 and 1.2 are
+   exploitable by any registered provider against any guest.
+2. ~~**Delete** `web/api/topup.js`~~. **Done 2026-08-28**, deleted rather than
+   disabled (1.10), because `TOPUP_DISABLED` is an environment variable and is
+   not a gate. The reasoning it was deleted for stands as a rule for anything
+   proposed later: on mainnet an operator sending native tokens of value to
+   users on request, with no KYC, no limit and no sanctions screening, has
+   regulatory exposure separate from the drain risk. Users fund their own
+   wallets. `web/src/lib.ts` `faucet()` now calls only the public testnet
+   faucet, which is not operated by us.
+3. ~~Separate the faucet key from the provider key (2.2).~~ Moot 2026-08-28:
+   there is no faucet and no serverless provider, so `HOUSE_PK` signs nothing a
+   guest can trigger.
+4. Legal review. See the separate legal findings: escrow-as-custody under MiCA
+   and the Serbian Law on Digital Assets, and the house wallet as a possible
+   transfer service, both need Serbian counsel before any value is real.
+
+---
+
+## 5. Scope for the independent contract review
+
+Added 2026-09-10, because section 2.3 has asked for this review since it was
+written and has never said what would be handed to a reviewer. This section is
+that package. Nothing here is a substitute for the review; it is the thing that
+makes commissioning it a decision rather than a project.
+
+### 5.1 Exactly what is under review
+
+| | |
+|---|---|
+| Contract | `contracts/src/DinnerNodeV2.sol`, 691 lines |
+| Source revision | `0082bad`, unchanged in the working tree |
+| sha256 of source | `7cb5cbabf4ea5f2a3e8e0f2643a093fef1f8ec5ced1a544bff1544d5eaf07783` |
+| Deployed at | `0xcf642a144f3cb1159b05563506698fc2db375029` |
+| Chain | Monad testnet, chain ID 10143 |
+| Deployed on | 2026-09-22, by `scripts/deploy-v2.mjs`. Replaces `0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c` (source `c1b3f07`, sha256 `378f3918…6d34`), deployed 2026-09-03. The change is D2, `_tokensPaidFor` in `settle` and `_reassign` |
+| Compiler | `^0.8.28`, foundry default profile |
+| Dependency | OpenZeppelin `ECDSA` only |
+| Tests | 80 across 6 files in `contracts/test/`, all passing 2026-09-22 |
+
+Secondary, and lower priority: `DinnerRatings.sol` (144 lines, 11 tests).
+`DinnerNode.sol` is the v1 instance. It carries the critical defect in 1.1, it
+remains callable on chain, and nothing in this repository points at it. It is
+out of scope except as history.
+
+Off-chain code a reviewer needs in order to judge the contract, rather than as
+review targets in their own right: `src/host.ts` for the settlement and
+checkpoint cadence, `src/takeover.ts` for the handover refusals taken before
+gas is spent, `src/billing.ts` for `serveCeiling` and `affordableTokens`, and
+`web/src/lib.ts` for the browser's `openJob` and the authorisation it signs.
+
+### 5.2 The questions worth paying for
+
+Listed in the order they would change what we do. These are where our own
+review has the least confidence, not a summary of the contract.
+
+1. **`_allowed` is the whole safety property.** Every payment path clamps
+   through it. 1.1 was the defect it exists to fix. It combines an
+   elapsed-time throughput bound, a published-checkpoint bound and the escrow,
+   and the interaction of those three under an adversarial provider is the
+   single highest-value question in this file.
+2. **`_reassign` pays the outgoing provider before handing the job on**, and
+   deliberately pays nothing when no checkpoint exists. Both directions of that
+   are attack surface: a guest timing a handover to take work for free, and a
+   provider timing checkpoints to be paid for work it did not do.
+3. **`reassignWithAuth` and the EIP-712 digest.** A wildcard authorisation is
+   tried before the named form, `maxReassigns` doubles as the replay
+   protection with no separate nonce, and `msg.sender == newProvider` is the
+   only thing binding the submitter. We believe the guest risks liveness and
+   not money. That belief is worth checking by someone who did not write it.
+4. **The rate and throughput ratchets on handover.** Both are supposed to move
+   only downward, so a handover cannot raise a ceiling the guest agreed to.
+   Confirm the ratchet cannot be walked upward across several handovers.
+5. **`commitPlan` versus escrow.** Two ceilings bind the same job and
+   `require(ceiling >= j.paid)` is the only thing stopping a retroactive
+   recap. Confirm they cannot be played against each other.
+6. **`_isArmsLength` and reputation.** Self-dealt jobs are excluded from
+   `tokensServed` and `lifetimeEarned` while `earned` always accrues. Confirm
+   the exclusion cannot be evaded, since discovery ranks on `tokensServed`.
+7. **`withdraw` and `refund`** are the only paths value leaves by. Ordinary
+   reentrancy and accounting questions.
+8. **2.4, which we have already found and cannot fix alone.** The checkpoint
+   commitment is unsalted by necessity. We would value a second opinion on
+   whether a salted scheme reaches the replacement provider without a new
+   trusted channel.
+
+### 5.3 What a reviewer should be told up front
+
+Stated here so it is not discovered mid-engagement and priced as a surprise.
+
+- Testnet only. No real value has ever moved through this contract.
+- One operator runs both live nodes, on one machine, sharing one ollama. The
+  provider set is not adversarial today because it is not a set.
+- The known-defects list in sections 1 and 2 of this file is complete as far as
+  we know it, and 1.1 through 1.18 are the findings of our own reviews. A
+  reviewer should read them first and is not being asked to rediscover them.
+- The contract has never been reviewed by anyone outside this project.
+
+### 5.4 The decision this is waiting on
+
+Commissioning it. The review needs an outside firm or auditor, which is the
+operator's call and the operator's budget, and nothing in this repository can
+advance it further than this section. The outreach note that carries this
+package to a firm is drafted at `.context/drafts/audit-outreach.md`: the email,
+what to attach, how to run the process, and a shortlist table to fill. Two
+fields in it want the operator, timing and budget, and auditors triage on
+exactly those. The relevant sequencing fact is that
+section 4 item 1 gates mainnet, and section 2.3 now also gates advertising,
+because inviting strangers to escrow against unreviewed code is the step that
+turns a reputational exposure into a financial one.

@@ -1,0 +1,18 @@
+# https://www.dinnernode.xyz/
+
+User-agent: *
+Allow: /
+
+# Serverless endpoints. Nothing here renders a page, and a crawler hitting
+# /api/topup would be asking a wallet to send a transaction.
+Disallow: /api/
+
+# The pitch deck. Public, and deliberately not offered as a search result:
+# somebody looking for DinnerNode should land on the app or the hosting page,
+# not on a slide out of context.
+Disallow: /slides.html
+
+# Domain ownership proofs. No reason to crawl them.
+Disallow: /.well-known/
+
+Sitemap: https://www.dinnernode.xyz/sitemap.xml

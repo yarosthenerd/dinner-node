@@ -1,2 +1,4 @@
 @semaphore-protocol/contracts/=node_modules/@semaphore-protocol/contracts/contracts/
 poseidon-solidity/=node_modules/poseidon-solidity/
+semaphore/=lib/semaphore/
+@zk-kit/=node_modules/@zk-kit/

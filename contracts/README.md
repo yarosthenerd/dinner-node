@@ -1,66 +1,83 @@
-## Foundry
+# DinnerNode contracts
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+Three sources, one of them retired. Foundry project; `forge test` runs 72 tests
+across 5 suites.
 
-Foundry consists of:
+| Source | Deployed | State |
+|---|---|---|
+| `src/DinnerNodeV2.sol` | [`0xcf642a144f3cb1159b05563506698fc2db375029`](https://testnet.monadvision.com/address/0xcf642a144f3cb1159b05563506698fc2db375029) | **Live** since 2026-09-22, source `0082bad`. Everything in the repo points here |
+| `src/DinnerNodeV2.sol` | [`0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c`](https://testnet.monadvision.com/address/0x7E98Cd3E2312e43F98E406477efA5C3EaCb3423c) | Superseded 2026-09-22 by the D2 fix (`j.tokens` overstated what was paid). Jobs #1 to #19 in `.context/option1-claims.md` are on it. Still callable for `withdraw` and `refund`: about 0.456 MON remains in it |
+| `src/DinnerNodeV2.sol` | [`0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd`](https://testnet.monadvision.com/address/0x2881051F957Ba0be7253c80DD47aF3Cc39FFEbCd) | Superseded 2026-09-03, still callable. The first V2, before `reassignWithAuth`: `getJob` answers and `DOMAIN_SEPARATOR` reverts, checked on chain 2026-09-22. This row labelled it `src/DinnerNode.sol` until then. Reach for it only to `withdraw` or `refund` |
+| `src/DinnerNode.sol` | `0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92` | V1, superseded, still callable. The address `web/src/config.ts` names as V1 |
+| `src/DinnerRatings.sol` | [`0x1e7a662877268d60592164dd5efd3cf0f55ea0c7`](https://testnet.monadvision.com/address/0x1e7a662877268d60592164dd5efd3cf0f55ea0c7) | **Live** since 2026-09-22, bound to `0xcf64…5029` (checked with `node()` after deploy). Semaphore `0x6ef77d1901a62035a955e303bb883425a871a2e8`, new; verifier `0x3175d4dd8d6973521e04191c6acbcb88e3f91bbd` and PoseidonT3 `0x15444a746c5a73d61974ef9cf4e88eb22b349c9c` reused from the previous stack. What `web/.env` sets as `VITE_RATINGS_ADDRESS`. **Redeploy this whenever the registry is redeployed**: `node` is immutable |
+| `src/DinnerRatings.sol` | `0xb418490c7679765ae5e05069c6ebedc132cba731` | **Superseded 2026-09-22; stranded since 2026-09-03.** Deployed 2026-08-28 and bound to `0x2881…EbCd` (`node()`, immutable), so it has checked every job id against a registry the site stopped using on 2026-09-03, and every join from the site reverted. Checked 2026-09-22: 0 members, 0 ratings, nothing lost. The widget now reads `node()` and pauses itself on a mismatch, so this cannot recur silently |
+| `src/DinnerRatings.sol` | `0xeb0de71314322e6b0b5d754997dc3ddc1358d87f` | Superseded. Bound to V1 and not repointable: `node` is immutable and the old IDinnerNode decoded V1's six-field `jobs()`. Its group had no members, so nothing was lost. This row said "Live" until 2026-09-12 |
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+**Two rows above name a V1 that the code spells differently, and this is not
+resolved.** `src/chain.ts` exports `V1_ADDR` as
+`0xaF2c9E9080c6C8232E2630d05e5FfC1082c83A92`, which is also what
+`web/src/config.ts` and `.context/HANDOFF.md` call the superseded registry. The
+`0x2881…FebCd` in the table has no other mention anywhere in the repo. One of
+the two is wrong and neither is load-bearing, since nothing points at either.
+Read it off the chain before quoting it.
 
-## Documentation
+## What V2 changes
 
-https://book.getfoundry.sh/
+Three things, and the first two are why the redeploy happened.
 
-## Usage
+**`reassignWithAuth`.** An EIP-712 authorisation the guest signs at order time,
+submitted by the incoming provider at the moment of handover, bounded by a
+deadline, a monotonic reassign counter, a named-or-wildcard provider and
+`msg.sender == newProvider`. A node dying at 3am no longer waits for the guest
+to reach their wallet. `DOMAIN_SEPARATOR()` answers on this instance and
+reverts on the superseded one, which is the check for whether a deployment has
+it.
 
-### Build
+**Bounded settlement.** `_allowed` caps a settlement by
+`elapsed × maxTokensPerSecond` and, once a checkpoint exists, by the unpaid
+tail of published progress. The superseded contract accepted any `tokensDelta`
+up to the remaining escrow, so one call could take all of it for zero work.
+`test_worst_case_loss_is_one_settlement_interval` is the test that draws the
+line.
 
-```shell
-$ forge build
+**Named struct reads.** `getJob`, `getProvider`, `getCheckpoint` and `getPlan`
+return structs. This is the reason V2 is not a drop-in for V1: `open` moves
+from index 5 to index 9 under positional decoding, and the value at the old
+index is a non-zero rate, which reads as truthy. Every liveness check would
+have gone on passing against a closed job.
+
+## Tests
+
+```
+forge test              # 72 tests, 5 suites
+forge test -vvv         # with traces
 ```
 
-### Test
+| Suite | Covers |
+|---|---|
+| `DinnerNodeV2Auth.t.sol` | the EIP-712 authorisation path |
+| `DinnerNodeV2AuthVector.t.sol` | signature vectors against a fixed domain |
+| `DinnerNodeV2Defects.t.sol` | every defect found in review, one test each |
+| `DinnerNodeV2Plan.t.sol` | plan commitments and ceilings |
+| `DinnerRatings.t.sol` | Semaphore membership and the job burn |
 
-```shell
-$ forge test
+## Deploying
+
+There is no Foundry script. Deployment is `scripts/deploy-v2.mjs` in the repo
+root, which is read-only until `--send` and reports its own estimate first:
+
+```
+node scripts/deploy-v2.mjs          # estimate, changes nothing
+node scripts/deploy-v2.mjs --send   # deploy
+node scripts/set-registry.mjs 0x…   # rewrite the nine places that name it
 ```
 
-### Format
+`set-registry.mjs` calls `eth_getCode` and refuses an address with no code on
+it, because a previous cutover was given the deployer's address instead of the
+registry's, and every node then "registered" successfully against an account
+with no code.
 
-```shell
-$ forge fmt
-```
-
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+**Changing the registry address is a three-service restart**, not two:
+`dinnernode-discovery` reads the registry at import and will otherwise keep
+serving providers read off the old contract while browsers open jobs on the
+new one. `GET /health` on discovery publishes which registry it is using.

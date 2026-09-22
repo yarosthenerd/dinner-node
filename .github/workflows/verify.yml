@@ -1,0 +1,75 @@
+# The four verification surfaces this repo has, in one job.
+#
+# It exists because `npm run build` was broken from c545abd until 2026-09-10
+# and nothing noticed: `npm test` covers 376 of the 603 tests and none of the
+# build, `forge test` was in no suite anybody ran, and the one command the
+# deploy runbook uses was the one nobody ran by hand. The whole chain takes
+# about six seconds locally, so there is no argument for running less of it.
+#
+# The job deliberately holds no logic of its own. Everything it runs is
+# `npm run verify`, which is what a developer runs before pushing, so the check
+# cannot drift from the check. That is the same rule the two launchers follow.
+#
+# Nothing here needs a secret. All four surfaces are hermetic: no chain, no
+# keys, no network. Hermetic is not the same as needing no setup, which the
+# first two runs of this workflow demonstrated: two tests were reading the
+# runner's PATH, and forge needs contracts/node_modules that only exists
+# locally. The e2e scripts that DO need a chain are not run here and
+# want a harness that does not exist yet.
+name: verify
+
+# `push` is scoped to main so a branch with an open PR is not verified twice
+# for the same commit. Everything else is covered by `pull_request`.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch makes the first one's answer irrelevant.
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # contracts/lib/forge-std is vendored rather than a submodule, so the
+      # plain checkout above is enough for `forge test`.
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the local toolchain and the 24.x Vercel builds the site
+          # with, so a build that passes here passes there.
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+            contracts/package-lock.json
+
+      - name: install root dependencies
+        run: npm ci
+
+      # Three packages, three lockfiles. forge-std IS vendored under
+      # contracts/lib, but that is not the whole story: remappings.txt resolves
+      # @zk-kit/, @semaphore-protocol/ and poseidon-solidity/ out of
+      # contracts/node_modules, which is gitignored, so `forge test` cannot
+      # compile lib/semaphore without this install. Locally it passes because
+      # the directory is already there.
+      - name: install web dependencies
+        run: npm ci --prefix web
+
+      - name: install contract dependencies
+        run: npm ci --prefix contracts
+
+      - name: verify
+        run: npm run verify
